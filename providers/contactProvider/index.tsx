@@ -1,0 +1,187 @@
+"use client";
+
+import { useCallback, useContext, useEffect, useState } from "react";
+
+import { useAuthState } from "@/providers/authProvider";
+import {
+  type BackendContactDto,
+  type BackendPagedResult,
+  backendRequest,
+  buildCreateContactPayload,
+  buildUpdateContactPayload,
+  coerceItems,
+  getSessionToken,
+  isMockSessionToken,
+  mapBackendContact,
+} from "@/lib/client/backend-api";
+import { initialContacts } from "@/providers/domainSeeds";
+import { ContactActionContext, ContactStateContext } from "./context";
+import type { IContact } from "@/providers/salesTypes";
+
+export const useContactState = () => {
+  const context = useContext(ContactStateContext);
+
+  if (context === undefined) {
+    throw new Error("useContactState must be used within ContactProvider.");
+  }
+
+  return context;
+};
+
+export const useContactActions = () => {
+  const context = useContext(ContactActionContext);
+
+  if (context === undefined) {
+    throw new Error("useContactActions must be used within ContactProvider.");
+  }
+
+  return context;
+};
+
+type ContactProviderProps = Readonly<{
+  children: React.ReactNode;
+}>;
+
+export default function ContactProvider({
+  children,
+}: ContactProviderProps) {
+  const { isAuthenticated } = useAuthState();
+  const [contacts, setContacts] = useState<IContact[]>([]);
+  const isDemoMode = isMockSessionToken(getSessionToken());
+
+  const loadContacts = useCallback(async () => {
+    const payload = await backendRequest<BackendPagedResult<BackendContactDto> | BackendContactDto[]>(
+      "/api/Contacts?pageNumber=1&pageSize=100",
+    );
+
+    setContacts(coerceItems(payload).map(mapBackendContact));
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    let isActive = true;
+
+    if (isDemoMode) {
+      const timer = window.setTimeout(() => {
+        void loadContacts().catch((error) => {
+          console.error(error);
+
+          if (isActive) {
+            setContacts(initialContacts());
+          }
+        });
+      }, 0);
+
+      const handleWorkspaceUpdate = () => {
+        void loadContacts().catch((error) => {
+          console.error(error);
+        });
+      };
+
+      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+
+      return () => {
+        isActive = false;
+        window.clearTimeout(timer);
+        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+      };
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadContacts().catch((error) => {
+        console.error(error);
+      });
+    }, 0);
+
+    return () => {
+      isActive = false;
+      window.clearTimeout(timer);
+    };
+  }, [isAuthenticated, isDemoMode, loadContacts]);
+
+  return (
+    <ContactStateContext.Provider value={{ contacts: isAuthenticated ? contacts : [] }}>
+      <ContactActionContext.Provider
+        value={{
+          addContact: async (payload) => {
+            if (isDemoMode) {
+              const response = await backendRequest<BackendContactDto>("/api/Contacts", {
+                body: JSON.stringify(buildCreateContactPayload(payload)),
+                method: "POST",
+              });
+              const nextContact = mapBackendContact(response);
+
+              setContacts((current) => [...current, nextContact]);
+              return nextContact;
+            }
+
+            const response = await backendRequest<BackendContactDto>("/api/Contacts", {
+              body: JSON.stringify(buildCreateContactPayload(payload)),
+              method: "POST",
+            });
+            const nextContact = mapBackendContact(response);
+
+            setContacts((current) => [...current, nextContact]);
+
+            return nextContact;
+          },
+          deleteContact: async (id) => {
+            if (isDemoMode) {
+              await backendRequest<void>(`/api/Contacts/${id}`, {
+                method: "DELETE",
+              });
+              setContacts((current) => current.filter((item) => item.id !== id));
+              return;
+            }
+
+            await backendRequest<void>(`/api/Contacts/${id}`, {
+              method: "DELETE",
+            });
+
+            setContacts((current) => current.filter((item) => item.id !== id));
+          },
+          updateContact: async (id, payload) => {
+            const existing = contacts.find((item) => item.id === id);
+
+            if (!existing) {
+              return undefined;
+            }
+
+            const nextContact = { ...existing, ...payload };
+
+            if (isDemoMode) {
+              const response = await backendRequest<BackendContactDto>(`/api/Contacts/${id}`, {
+                body: JSON.stringify(buildUpdateContactPayload(nextContact)),
+                method: "PUT",
+              });
+              const mappedContact = mapBackendContact(response);
+
+              setContacts((current) =>
+                current.map((item) => (item.id === id ? mappedContact : item)),
+              );
+
+              return mappedContact;
+            }
+
+            const response = await backendRequest<BackendContactDto>(`/api/Contacts/${id}`, {
+              body: JSON.stringify(buildUpdateContactPayload(nextContact)),
+              method: "PUT",
+            });
+            const mappedContact = mapBackendContact(response);
+
+            setContacts((current) =>
+              current.map((item) => (item.id === id ? mappedContact : item)),
+            );
+
+            return mappedContact;
+          },
+        }}
+      >
+        {children}
+      </ContactActionContext.Provider>
+    </ContactStateContext.Provider>
+  );
+}
