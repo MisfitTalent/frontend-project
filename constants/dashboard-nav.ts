@@ -1,0 +1,147 @@
+import {
+  BarChartOutlined,
+  ClockCircleOutlined,
+  CommentOutlined,
+  ContactsOutlined,
+  FileTextOutlined,
+  FolderOpenOutlined,
+  HomeOutlined,
+  IdcardOutlined,
+  NotificationOutlined,
+  ProfileOutlined,
+  ScheduleOutlined,
+  SolutionOutlined,
+  TeamOutlined,
+} from "@ant-design/icons";
+
+import { type UserRole } from "@/providers/salesTypes";
+
+type DashboardNavItem = {
+  access: UserRole[];
+  description: string;
+  href: string;
+  headerTitle?: string;
+  icon: typeof HomeOutlined;
+  key: string;
+  label: string;
+};
+
+export const dashboardNavItems: DashboardNavItem[] = [
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "Track pipeline movement, workload, and the next actions that need attention.",
+    href: "/dashboard",
+    headerTitle: "Sales command center",
+    icon: HomeOutlined,
+    key: "/dashboard",
+    label: "Command Center",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "Ask for account updates, pipeline guidance, renewal risk, and the next best action.",
+    href: "/dashboard/assistant",
+    headerTitle: "Secure sales assistant",
+    icon: CommentOutlined,
+    key: "/dashboard/assistant",
+    label: "Assistant",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "Track live opportunities, owners, deadlines, and priority across the pipeline.",
+    href: "/dashboard/opportunities",
+    headerTitle: "Opportunity pipeline",
+    icon: SolutionOutlined,
+    key: "/dashboard/opportunities",
+    label: "Opportunities",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "Manage calls, tasks, meetings, and the follow-ups that keep deals moving.",
+    href: "/dashboard/activities",
+    headerTitle: "Follow-ups",
+    icon: ClockCircleOutlined,
+    key: "/dashboard/activities",
+    label: "Follow-ups",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager"],
+    description: "Manage accounts, ownership, and the commercial work tied to each client.",
+    href: "/dashboard/clients",
+    headerTitle: "Clients",
+    icon: TeamOutlined,
+    key: "/dashboard/clients",
+    label: "Clients",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager"],
+    description: "Keep decision-makers, champions, and key stakeholders attached to the right account.",
+    href: "/dashboard/contacts",
+    headerTitle: "Contacts",
+    icon: ContactsOutlined,
+    key: "/dashboard/contacts",
+    label: "Contacts",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "Keep commercial responses, approvals, and proposal progress visible in one place.",
+    href: "/dashboard/proposals",
+    headerTitle: "Proposals",
+    icon: FileTextOutlined,
+    key: "/dashboard/proposals",
+    label: "Proposals",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "Coordinate pricing requests before final commercials go out to the client.",
+    href: "/dashboard/pricing-requests",
+    headerTitle: "Pricing requests",
+    icon: ScheduleOutlined,
+    key: "/dashboard/pricing-requests",
+    label: "Pricing Requests",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager"],
+    description: "Monitor renewals, contract health, and upcoming deadlines before they become risks.",
+    href: "/dashboard/contracts",
+    headerTitle: "Contracts and renewals",
+    icon: ProfileOutlined,
+    key: "/dashboard/contracts",
+    label: "Contracts",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "Keep commercial files organized against the right client and deal records.",
+    href: "/dashboard/documents",
+    headerTitle: "Documents",
+    icon: FolderOpenOutlined,
+    key: "/dashboard/documents",
+    label: "Documents",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "Capture context, handover notes, and deal history without losing the thread.",
+    href: "/dashboard/notes",
+    headerTitle: "Notes",
+    icon: NotificationOutlined,
+    key: "/dashboard/notes",
+    label: "Notes",
+  },
+  {
+    access: ["Admin", "SalesManager"],
+    description: "Review pipeline health, priority shifts, and team workload at a glance.",
+    href: "/dashboard/reports",
+    headerTitle: "Reports",
+    icon: BarChartOutlined,
+    key: "/dashboard/reports",
+    label: "Reports",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "View your account details, role, and workspace information.",
+    href: "/dashboard/profile",
+    headerTitle: "Profile",
+    icon: IdcardOutlined,
+    key: "/dashboard/profile",
+    label: "Profile",
+  },
+] as const;

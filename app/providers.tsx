@@ -1,13 +1,13 @@
 "use client";
 
-import AuthProvider from "@/providers/authProvider";
+import Providers from "@/providers";
 
 type AppProvidersProps = Readonly<{
   children: React.ReactNode;
 }>;
 
 export function AppProviders({ children }: AppProvidersProps) {
-  return <AuthProvider>{children}</AuthProvider>;
+  return <Providers>{children}</Providers>;
 }
 
 export default AppProviders;
