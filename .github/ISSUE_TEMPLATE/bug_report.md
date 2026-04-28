@@ -2,8 +2,9 @@
 name: Bug report
 about: Report a defect so it can be reproduced and fixed
 title: "[Bug]: "
-labels: bug
-assignees: ""
+labels: bug, enhancement
+assignees: ''
+
 ---
 
 ## Describe the bug

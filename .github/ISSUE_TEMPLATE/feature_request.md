@@ -3,7 +3,8 @@ name: Feature request
 about: Suggest a new feature or enhancement
 title: "[Feature]: "
 labels: enhancement
-assignees: ""
+assignees: ''
+
 ---
 
 ## Is your feature request related to a problem? Please describe.
