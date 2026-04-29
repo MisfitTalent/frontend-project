@@ -22,7 +22,7 @@ type AssistantMessage = {
   mutations?: Array<{
     entityId: string;
     entityType: "client" | "opportunity" | "proposal";
-    operation: "create";
+    operation: "create" | "delete" | "update";
     title: string;
   }>;
   role: "assistant" | "user";
@@ -189,7 +189,7 @@ export function AssistantPanel() {
         mutations?: Array<{
           entityId: string;
           entityType: "client" | "opportunity" | "proposal";
-          operation: "create";
+          operation: "create" | "delete" | "update";
           title: string;
         }>;
         scopeLabel?: string;
