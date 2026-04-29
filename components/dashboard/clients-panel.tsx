@@ -2,6 +2,7 @@
 
 import { Button, Tag, Typography } from "antd";
 import { PlusOutlined, DeleteOutlined, EditOutlined } from "@ant-design/icons";
+import Link from "next/link";
 import { useState } from "react";
 
 import { useClientActions, useClientState } from "@/providers/clientProvider";
@@ -27,9 +28,16 @@ export function ClientsPanel() {
 
   const columns = [
     {
-      title: "Client Name",
-      dataIndex: "name",
       key: "name",
+      render: (_: unknown, record: IClient) => (
+        <Link
+          className="font-medium text-[#1f365c] transition-colors hover:text-[#f28c28]"
+          href={`/dashboard/clients/${record.id}`}
+        >
+          {record.name}
+        </Link>
+      ),
+      title: "Client Name",
     },
     {
       title: "Email",

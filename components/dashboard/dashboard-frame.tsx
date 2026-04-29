@@ -27,7 +27,9 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
   const { logout } = useAuthActions();
   const { isAuthenticated, isPending, user } = useAuthState();
   const activeRole: UserRole = getPrimaryUserRole(user?.roles);
-  const activeNavItem = dashboardNavItems.find((item) => item.key === pathname);
+  const activeNavItem = dashboardNavItems.find(
+    (item) => pathname === item.key || pathname.startsWith(`${item.key}/`),
+  );
   const headerTitle = activeNavItem?.headerTitle ?? "Sales command center";
   const headerDescription =
     activeNavItem?.description ??
@@ -97,7 +99,7 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
             className="min-h-0 flex-1 overflow-y-auto border-0 bg-transparent px-3 py-4"
             items={menuItems}
             mode="inline"
-            selectedKeys={[pathname]}
+            selectedKeys={[activeNavItem?.key ?? pathname]}
             theme="dark"
           />
 
