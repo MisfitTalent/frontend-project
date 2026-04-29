@@ -69,6 +69,7 @@ export function AssistantPanel() {
           "Summarize my pipeline in plain language.",
           "Create a new opportunity for an existing client.",
           "Create a draft proposal for an existing opportunity.",
+          "Delete a proposal or opportunity I no longer need.",
         ]
       : [
           "Which deals need action first this week?",
