@@ -288,7 +288,10 @@ const createToolset = (workspace: IAssistantWorkspace) => {
     return directClient;
   };
 
-  const resolveOpportunity = (args: Record<string, unknown>) => {
+  const resolveOpportunity = (
+    args: Record<string, unknown>,
+    options?: { allowCreateIfMissing?: boolean },
+  ) => {
     const directOpportunity =
       findOpportunityByReference(args.opportunityId) ??
       findOpportunityByReference(args.opportunityTitle);
@@ -320,6 +323,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
     }
 
     const shouldCreateOpportunity =
+      options?.allowCreateIfMissing !== false &&
       args.createOpportunityIfMissing !== false &&
       typeof args.title === "string" &&
       args.title.trim().length > 0 &&
@@ -329,7 +333,9 @@ const createToolset = (workspace: IAssistantWorkspace) => {
 
     if (!shouldCreateOpportunity) {
       throw new Error(
-        `No opportunity was found for ${client.name}. Provide an opportunity title or enough detail for me to create one first.`,
+        options?.allowCreateIfMissing === false
+          ? `No matching opportunity was found for ${client.name}. Provide a valid opportunity title or id.`
+          : `No opportunity was found for ${client.name}. Provide an opportunity title or enough detail for me to create one first.`,
       );
     }
 
@@ -983,7 +989,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
         };
       }
       case "delete_opportunity": {
-        const opportunity = resolveOpportunity(args);
+        const opportunity = resolveOpportunity(args, { allowCreateIfMissing: false });
 
         deleteMockOpportunity(workspace.tenantId, opportunity.id);
         workspace.salesData.opportunities = workspace.salesData.opportunities.filter(
