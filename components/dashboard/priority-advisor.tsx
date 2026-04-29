@@ -21,8 +21,62 @@ const OWNER_PROMPT =
 
 type AdvisorAction = "ask" | "follow-up" | "owner";
 
+const GREETING_PROMPTS = new Set([
+  "hello",
+  "hello there",
+  "hey",
+  "hey there",
+  "hi",
+  "hi there",
+]);
+
+const ADVISOR_INTENT_KEYWORDS = [
+  "action",
+  "activity",
+  "assign",
+  "client",
+  "close",
+  "deal",
+  "follow",
+  "next",
+  "opportunity",
+  "owner",
+  "pipeline",
+  "priorit",
+  "proposal",
+  "renewal",
+  "sale",
+  "task",
+];
+
 const buildAdvisorPrompt = (prompt: string) =>
   `Act as the dashboard sales advisor. Answer briefly and practically using the current workspace only. Include the best recommendation, the reason, and the next action. User request: ${prompt}`;
+
+const normalizePrompt = (prompt: string) =>
+  prompt
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const getAdvisorClarification = (prompt: string) => {
+  const normalizedPrompt = normalizePrompt(prompt);
+
+  if (GREETING_PROMPTS.has(normalizedPrompt)) {
+    return "Hi. Ask me which deal to prioritize, what follow-up to do next, or who should own the top opportunity.";
+  }
+
+  const promptWords = normalizedPrompt.split(" ").filter(Boolean);
+  const hasAdvisorIntent = ADVISOR_INTENT_KEYWORDS.some((keyword) =>
+    normalizedPrompt.includes(keyword),
+  );
+
+  if (promptWords.length <= 2 && !hasAdvisorIntent) {
+    return "Ask a sales question such as which deal to prioritize, what follow-up to do next, or who should own the top opportunity.";
+  }
+
+  return null;
+};
 
 export function PriorityAdvisor() {
   const { salesData } = useDashboardState();
@@ -50,6 +104,15 @@ export function PriorityAdvisor() {
     const trimmedPrompt = nextPrompt.trim();
 
     if (!trimmedPrompt) {
+      return;
+    }
+
+    const clarification = getAdvisorClarification(trimmedPrompt);
+
+    if (clarification) {
+      setAssistantMode("rules");
+      setError(null);
+      setResponse(clarification);
       return;
     }
 
