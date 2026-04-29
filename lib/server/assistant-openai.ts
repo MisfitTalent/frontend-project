@@ -161,6 +161,17 @@ const normalizeLookupValue = (value: string) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
+const upsertById = <T extends { id: string }>(items: T[], nextItem: T) => {
+  const index = items.findIndex((item) => item.id === nextItem.id);
+
+  if (index >= 0) {
+    items[index] = nextItem;
+    return;
+  }
+
+  items.push(nextItem);
+};
+
 const createAssistantActor = (workspace: IAssistantWorkspace): AssistantActor => ({
   email: "",
   firstName: workspace.userDisplayName.split(" ")[0] ?? "Assistant",
@@ -324,7 +335,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
           : `${client.name} proposal opportunity`,
     });
 
-    salesData.opportunities.push(generatedOpportunity);
+    upsertById(salesData.opportunities, generatedOpportunity);
 
     return generatedOpportunity;
   };
@@ -877,7 +888,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
             website: typeof args.website === "string" ? args.website : undefined,
           });
 
-        workspace.salesData.clients.push(client);
+        upsertById(workspace.salesData.clients, client);
 
         return {
           client,
@@ -902,7 +913,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
           title: String(args.title ?? "Untitled opportunity"),
         });
 
-        workspace.salesData.opportunities.push(opportunity);
+        upsertById(workspace.salesData.opportunities, opportunity);
 
         return {
           client: {
@@ -940,7 +951,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
           validUntil: String(args.validUntil ?? ""),
         });
 
-        workspace.salesData.proposals.push(proposal);
+        upsertById(workspace.salesData.proposals, proposal);
 
         return {
           mutation: {
