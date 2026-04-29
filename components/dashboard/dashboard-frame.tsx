@@ -9,7 +9,11 @@ import { useEffect, useMemo, useState } from "react";
 import { getSessionToken } from "@/lib/client/backend-api";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
 import { dashboardNavItems } from "@/constants/dashboard-nav";
-import { canAccessDashboardPath, DASHBOARD_HOME_PATH } from "@/lib/auth/dashboard-access";
+import {
+  canAccessDashboardPath,
+  DASHBOARD_HOME_PATH,
+  getDashboardNavItemForPath,
+} from "@/lib/auth/dashboard-access";
 import { useAuthActions, useAuthState } from "@/providers/authProvider";
 import { type UserRole } from "@/providers/salesTypes";
 import { BoxfusionLogo } from "./boxfusion-logo";
@@ -27,9 +31,7 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
   const { logout } = useAuthActions();
   const { isAuthenticated, isPending, user } = useAuthState();
   const activeRole: UserRole = getPrimaryUserRole(user?.roles);
-  const activeNavItem = dashboardNavItems.find(
-    (item) => pathname === item.key || pathname.startsWith(`${item.key}/`),
-  );
+  const activeNavItem = getDashboardNavItemForPath(pathname);
   const headerTitle = activeNavItem?.headerTitle ?? "Sales command center";
   const headerDescription =
     activeNavItem?.description ??
