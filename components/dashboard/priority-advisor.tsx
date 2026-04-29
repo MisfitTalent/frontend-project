@@ -19,6 +19,8 @@ const FOLLOW_UP_PROMPT =
 const OWNER_PROMPT =
   "Who should own the top priority deal right now, and why?";
 
+type AdvisorAction = "ask" | "follow-up" | "owner";
+
 const buildAdvisorPrompt = (prompt: string) =>
   `Act as the dashboard sales advisor. Answer briefly and practically using the current workspace only. Include the best recommendation, the reason, and the next action. User request: ${prompt}`;
 
@@ -26,10 +28,12 @@ export function PriorityAdvisor() {
   const { salesData } = useDashboardState();
   const defaultResponse = useMemo(() => getAdvisorResponse(salesData), [salesData]);
   const [prompt, setPrompt] = useState(() => readSessionDraft<string>(PRIORITY_ADVISOR_DRAFT_KEY) ?? "");
+  const hasPrompt = prompt.trim().length > 0;
   const [response, setResponse] = useState(defaultResponse);
   const [assistantMode, setAssistantMode] = useState<"groq" | "offline" | "openai" | "rules">(
     "rules",
   );
+  const [activeAction, setActiveAction] = useState<AdvisorAction>("ask");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -132,15 +136,32 @@ export function PriorityAdvisor() {
         <div className="flex flex-wrap gap-3">
           <Button
             loading={isLoading}
-            onClick={() => void requestAdvisor(prompt || DEFAULT_ADVISOR_PROMPT)}
-            type="primary"
+            onClick={() => {
+              setActiveAction("ask");
+              void requestAdvisor(prompt || DEFAULT_ADVISOR_PROMPT);
+            }}
+            type={activeAction === "ask" ? "primary" : "default"}
           >
-            Ask advisor
+            {hasPrompt ? "Submit question" : "Ask advisor"}
           </Button>
-          <Button loading={isLoading} onClick={() => void requestAdvisor(FOLLOW_UP_PROMPT)}>
+          <Button
+            loading={isLoading}
+            onClick={() => {
+              setActiveAction("follow-up");
+              void requestAdvisor(FOLLOW_UP_PROMPT);
+            }}
+            type={activeAction === "follow-up" ? "primary" : "default"}
+          >
             Best follow-up
           </Button>
-          <Button loading={isLoading} onClick={() => void requestAdvisor(OWNER_PROMPT)}>
+          <Button
+            loading={isLoading}
+            onClick={() => {
+              setActiveAction("owner");
+              void requestAdvisor(OWNER_PROMPT);
+            }}
+            type={activeAction === "owner" ? "primary" : "default"}
+          >
             Best owner
           </Button>
         </div>
