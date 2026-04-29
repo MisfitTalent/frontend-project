@@ -83,6 +83,15 @@ export const dashboardNavItems: DashboardNavItem[] = [
   },
   {
     access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "View team members, availability, workload, and current ownership across the workspace.",
+    href: "/dashboard/team-members",
+    headerTitle: "Team members",
+    icon: TeamOutlined,
+    key: "/dashboard/team-members",
+    label: "Team",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
     description: "Keep commercial responses, approvals, and proposal progress visible in one place.",
     href: "/dashboard/proposals",
     headerTitle: "Proposals",

@@ -14,6 +14,7 @@ type PageModuleKey =
   | "contract"
   | "document"
   | "note"
+  | "team"
   | "report"
   | "profile";
 
@@ -84,6 +85,12 @@ export const ContactProvider = createModuleProvider({
   description: "Keep decision-makers, champions, and key stakeholders attached to the right account.",
   key: "contact",
   title: "Contacts",
+});
+
+export const TeamProvider = createModuleProvider({
+  description: "View team members, availability, workload, and who currently owns active commercial work.",
+  key: "team",
+  title: "Team members",
 });
 
 export const ContractProvider = createModuleProvider({
