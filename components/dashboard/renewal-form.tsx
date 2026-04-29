@@ -64,6 +64,7 @@ export function RenewalForm({ isOpen, editingId, onClose }: RenewalFormProps) {
 
   return (
     <Modal
+      forceRender
       title={editingId ? "Edit Renewal" : "Add Renewal"}
       open={isOpen}
       onCancel={onClose}

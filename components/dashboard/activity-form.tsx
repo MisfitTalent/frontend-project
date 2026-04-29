@@ -90,6 +90,7 @@ export default function ActivityForm({
 
   return (
     <Modal
+      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}
