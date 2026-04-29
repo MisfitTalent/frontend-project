@@ -1,5 +1,6 @@
 "use client";
 
+import { SendOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Input, Spin, Tag, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
@@ -98,6 +99,11 @@ export function PriorityAdvisor() {
     }
   };
 
+  const submitTypedPrompt = () => {
+    setActiveAction("ask");
+    void requestAdvisor(prompt || DEFAULT_ADVISOR_PROMPT);
+  };
+
   useEffect(() => {
     void requestAdvisor(DEFAULT_ADVISOR_PROMPT);
   // Intentionally load once per mount; manual asks should not be overwritten by state churn.
@@ -128,18 +134,27 @@ export function PriorityAdvisor() {
 
         <Input.TextArea
           onChange={(event) => setPrompt(event.target.value)}
+          onPressEnter={(event) => {
+            if (!event.shiftKey) {
+              event.preventDefault();
+              submitTypedPrompt();
+            }
+          }}
           placeholder="Ask which sale to prioritize, who should own it, or what follow-up to do next."
           rows={3}
           value={prompt}
         />
 
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Typography.Text className="!text-slate-500">
+            Press Enter to send. Use Shift+Enter for a new line.
+          </Typography.Text>
+
+          <div className="flex flex-wrap gap-3">
           <Button
+            icon={<SendOutlined />}
             loading={isLoading}
-            onClick={() => {
-              setActiveAction("ask");
-              void requestAdvisor(prompt || DEFAULT_ADVISOR_PROMPT);
-            }}
+            onClick={submitTypedPrompt}
             type={activeAction === "ask" ? "primary" : "default"}
           >
             {hasPrompt ? "Submit question" : "Ask advisor"}
@@ -164,6 +179,7 @@ export function PriorityAdvisor() {
           >
             Best owner
           </Button>
+          </div>
         </div>
       </div>
     </Card>
