@@ -22,7 +22,7 @@ type AssistantMessage = {
   mutations?: Array<{
     entityId: string;
     entityType: "client" | "opportunity" | "proposal";
-    operation: "create";
+    operation: "create" | "delete" | "update";
     title: string;
   }>;
   role: "assistant" | "user";
@@ -37,8 +37,8 @@ const MAX_VISIBLE_MESSAGES = 12;
 
 const getIntroMessage = (role: UserRole) =>
   isManagerRole(role)
-    ? "I can help with pipeline risk, next actions, proposal bottlenecks, renewal risk, workload pressure, workspace search, and creating new clients, opportunities, or draft proposals when you ask explicitly."
-    : "I can help with your assigned opportunities, proposal progress, pricing requests, activities, workspace search, and creating new opportunities or draft proposals when you ask explicitly.";
+    ? "I can help with pipeline risk, next actions, proposal bottlenecks, renewal risk, workload pressure, workspace search, and creating clients, opportunities, and draft proposals or deleting opportunities and draft proposals when you ask explicitly."
+    : "I can help with your assigned opportunities, proposal progress, pricing requests, activities, workspace search, and creating or deleting opportunities and draft proposals when you ask explicitly.";
 
 export function AssistantPanel() {
   const { user } = useAuthState();
@@ -69,6 +69,7 @@ export function AssistantPanel() {
           "Summarize my pipeline in plain language.",
           "Create a new opportunity for an existing client.",
           "Create a draft proposal for an existing opportunity.",
+          "Delete a proposal or opportunity I no longer need.",
         ]
       : [
           "Which deals need action first this week?",
@@ -76,6 +77,7 @@ export function AssistantPanel() {
           "Who looks overloaded and what should I reassign?",
           "Create a new opportunity for an existing client.",
           "Create a draft proposal for an existing opportunity.",
+          "Delete a proposal or opportunity I no longer need.",
           "Search the workspace for a client, proposal, or contract.",
       ];
 
@@ -189,7 +191,7 @@ export function AssistantPanel() {
         mutations?: Array<{
           entityId: string;
           entityType: "client" | "opportunity" | "proposal";
-          operation: "create";
+          operation: "create" | "delete" | "update";
           title: string;
         }>;
         scopeLabel?: string;
@@ -323,7 +325,7 @@ export function AssistantPanel() {
                   void sendMessage(draft);
                 }
               }}
-              placeholder="Ask for pipeline advice, account status, follow-ups, workspace search, or ask me to create a client, opportunity, or draft proposal."
+              placeholder="Ask for pipeline advice, account status, follow-ups, workspace search, or ask me to create a client, opportunity, or draft proposal, or delete an opportunity or draft proposal."
               rows={4}
               value={draft}
             />
@@ -397,7 +399,7 @@ export function AssistantPanel() {
               <p>Renewal risk and deadline pressure</p>
               <p>Follow-ups, workload pressure, and role-appropriate business summaries</p>
               <p>Workspace search across clients, opportunities, proposals, contracts, notes, documents, pricing requests, and renewals</p>
-              <p>Create a new client, opportunity, or draft proposal when you provide enough detail</p>
+              <p>Create a client, opportunity, or draft proposal, or delete an opportunity or draft proposal, when you provide enough detail</p>
             </div>
           </Card>
         </div>

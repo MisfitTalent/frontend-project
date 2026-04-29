@@ -14,6 +14,8 @@ import type { IAssistantWorkspace } from "./assistant-workspace";
 import { isManagerRole } from "@/lib/auth/roles";
 import {
   createMockClient,
+  deleteMockOpportunity,
+  deleteMockProposal,
   createMockOpportunity,
   createMockProposal,
   updateMockActivity,
@@ -34,7 +36,7 @@ export type AssistantTraceStep = {
 export type AssistantMutation = {
   entityId: string;
   entityType: "activity" | "client" | "opportunity" | "proposal";
-  operation: "create" | "update";
+  operation: "create" | "delete" | "update";
   title: string;
 };
 
@@ -137,6 +139,7 @@ Behavior rules:
 - When helpful, recommend the next 1 to 3 actions.
 - Keep answers concise and business-ready.
 - Only create records when the user explicitly asks you to create, add, draft, or open something.
+- Only delete records when the user explicitly asks you to delete, remove, or cancel them.
 
 Authorized scope summary:
 ${JSON.stringify(summarizeWorkspace(workspace), null, 2)}
@@ -157,6 +160,19 @@ const normalizeLookupValue = (value: string) =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+
+const isOpenOpportunityStage = (stage: string) => !["Won", "Lost"].includes(stage);
+
+const upsertById = <T extends { id: string }>(items: T[], nextItem: T) => {
+  const index = items.findIndex((item) => item.id === nextItem.id);
+
+  if (index >= 0) {
+    items[index] = nextItem;
+    return;
+  }
+
+  items.push(nextItem);
+};
 
 const createAssistantActor = (workspace: IAssistantWorkspace): AssistantActor => ({
   email: "",
@@ -205,8 +221,14 @@ const createToolset = (workspace: IAssistantWorkspace) => {
       salesData.opportunities.find(
         (opportunity) => normalizeLookupValue(opportunity.title) === normalizedReference,
       ) ??
+      salesData.opportunities.find(
+        (opportunity) => normalizeLookupValue(opportunity.name ?? "") === normalizedReference,
+      ) ??
       salesData.opportunities.find((opportunity) =>
         normalizeLookupValue(opportunity.title).includes(normalizedReference),
+      ) ??
+      salesData.opportunities.find((opportunity) =>
+        normalizeLookupValue(opportunity.name ?? "").includes(normalizedReference),
       ) ??
       null
     );
@@ -229,6 +251,27 @@ const createToolset = (workspace: IAssistantWorkspace) => {
     );
   };
 
+  const findProposalByReference = (reference: unknown) => {
+    if (typeof reference !== "string" || !reference.trim()) {
+      return null;
+    }
+
+    const normalizedReference = normalizeLookupValue(reference);
+
+    return (
+      salesData.proposals.find(
+        (proposal) => normalizeLookupValue(proposal.id) === normalizedReference,
+      ) ??
+      salesData.proposals.find(
+        (proposal) => normalizeLookupValue(proposal.title) === normalizedReference,
+      ) ??
+      salesData.proposals.find((proposal) =>
+        normalizeLookupValue(proposal.title).includes(normalizedReference),
+      ) ??
+      null
+    );
+  };
+
   const resolveClient = (args: Record<string, unknown>) => {
     const directClient =
       findClientByReference(args.clientId) ??
@@ -245,7 +288,10 @@ const createToolset = (workspace: IAssistantWorkspace) => {
     return directClient;
   };
 
-  const resolveOpportunity = (args: Record<string, unknown>) => {
+  const resolveOpportunity = (
+    args: Record<string, unknown>,
+    options?: { allowCreateIfMissing?: boolean },
+  ) => {
     const directOpportunity =
       findOpportunityByReference(args.opportunityId) ??
       findOpportunityByReference(args.opportunityTitle);
@@ -258,18 +304,26 @@ const createToolset = (workspace: IAssistantWorkspace) => {
     const clientOpportunities = salesData.opportunities.filter(
       (opportunity) => opportunity.clientId === client.id,
     );
+    const openClientOpportunities = clientOpportunities.filter((opportunity) =>
+      isOpenOpportunityStage(String(opportunity.stage)),
+    );
+
+    if (openClientOpportunities.length === 1) {
+      return openClientOpportunities[0];
+    }
 
     if (clientOpportunities.length === 1) {
       return clientOpportunities[0];
     }
 
-    if (clientOpportunities.length > 1) {
+    if (openClientOpportunities.length > 1) {
       throw new Error(
-        `Multiple opportunities were found for ${client.name}. Specify the opportunity title so I can attach the proposal to the right deal.`,
+        `Multiple open opportunities were found for ${client.name}. Specify the opportunity title so I can attach the proposal to the right deal.`,
       );
     }
 
     const shouldCreateOpportunity =
+      options?.allowCreateIfMissing !== false &&
       args.createOpportunityIfMissing !== false &&
       typeof args.title === "string" &&
       args.title.trim().length > 0 &&
@@ -279,7 +333,9 @@ const createToolset = (workspace: IAssistantWorkspace) => {
 
     if (!shouldCreateOpportunity) {
       throw new Error(
-        `No opportunity was found for ${client.name}. Provide an opportunity title or enough detail for me to create one first.`,
+        options?.allowCreateIfMissing === false
+          ? `No matching opportunity was found for ${client.name}. Provide a valid opportunity title or id.`
+          : `No opportunity was found for ${client.name}. Provide an opportunity title or enough detail for me to create one first.`,
       );
     }
 
@@ -300,9 +356,55 @@ const createToolset = (workspace: IAssistantWorkspace) => {
           : `${client.name} proposal opportunity`,
     });
 
-    salesData.opportunities.push(generatedOpportunity);
+    upsertById(salesData.opportunities, generatedOpportunity);
 
     return generatedOpportunity;
+  };
+
+  const resolveProposal = (args: Record<string, unknown>) => {
+    const directProposal =
+      findProposalByReference(args.proposalId) ??
+      findProposalByReference(args.proposalTitle) ??
+      findProposalByReference(args.title);
+
+    if (directProposal) {
+      return directProposal;
+    }
+
+    const client =
+      findClientByReference(args.clientId) ??
+      findClientByReference(args.clientName) ??
+      findClientByReference(args.organizationName) ??
+      findClientByReference(args.accountName);
+    const opportunity =
+      findOpportunityByReference(args.opportunityId) ??
+      findOpportunityByReference(args.opportunityTitle);
+
+    const scopedProposals = salesData.proposals.filter((proposal) => {
+      if (opportunity && proposal.opportunityId !== opportunity.id) {
+        return false;
+      }
+
+      if (client && proposal.clientId !== client.id) {
+        return false;
+      }
+
+      return true;
+    });
+
+    if (scopedProposals.length === 1) {
+      return scopedProposals[0];
+    }
+
+    if (scopedProposals.length > 1) {
+      throw new Error(
+        "Multiple proposals match this request. Provide the proposal title or id so I delete the correct record.",
+      );
+    }
+
+    throw new Error(
+      "No matching proposal was found in your current workspace. Provide a valid proposal title or id.",
+    );
   };
 
   const resolveOpportunityReferences = (references: unknown) => {
@@ -526,6 +628,43 @@ const createToolset = (workspace: IAssistantWorkspace) => {
           validUntil: { type: "string" },
         },
         required: ["title", "validUntil"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Delete an existing opportunity when the user explicitly asks you to remove it from the pipeline.",
+      name: "delete_opportunity",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          accountName: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          opportunityId: { type: "string" },
+          opportunityTitle: { type: "string" },
+          organizationName: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Delete an existing proposal when the user explicitly asks you to remove it.",
+      name: "delete_proposal",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          accountName: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          opportunityId: { type: "string" },
+          opportunityTitle: { type: "string" },
+          organizationName: { type: "string" },
+          proposalId: { type: "string" },
+          proposalTitle: { type: "string" },
+          title: { type: "string" },
+        },
         type: "object",
       },
     },
@@ -770,7 +909,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
             website: typeof args.website === "string" ? args.website : undefined,
           });
 
-        workspace.salesData.clients.push(client);
+        upsertById(workspace.salesData.clients, client);
 
         return {
           client,
@@ -795,7 +934,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
           title: String(args.title ?? "Untitled opportunity"),
         });
 
-        workspace.salesData.opportunities.push(opportunity);
+        upsertById(workspace.salesData.opportunities, opportunity);
 
         return {
           client: {
@@ -833,7 +972,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
           validUntil: String(args.validUntil ?? ""),
         });
 
-        workspace.salesData.proposals.push(proposal);
+        upsertById(workspace.salesData.proposals, proposal);
 
         return {
           mutation: {
@@ -847,6 +986,51 @@ const createToolset = (workspace: IAssistantWorkspace) => {
             title: opportunity.title,
           },
           proposal,
+        };
+      }
+      case "delete_opportunity": {
+        const opportunity = resolveOpportunity(args, { allowCreateIfMissing: false });
+
+        deleteMockOpportunity(workspace.tenantId, opportunity.id);
+        workspace.salesData.opportunities = workspace.salesData.opportunities.filter(
+          (item) => item.id !== opportunity.id,
+        );
+        workspace.salesData.proposals = workspace.salesData.proposals.filter(
+          (item) => item.opportunityId !== opportunity.id,
+        );
+
+        return {
+          deletedOpportunity: {
+            id: opportunity.id,
+            title: opportunity.title,
+          },
+          mutation: {
+            entityId: opportunity.id,
+            entityType: "opportunity" as const,
+            operation: "delete" as const,
+            title: opportunity.title,
+          },
+        };
+      }
+      case "delete_proposal": {
+        const proposal = resolveProposal(args);
+
+        deleteMockProposal(workspace.tenantId, proposal.id);
+        workspace.salesData.proposals = workspace.salesData.proposals.filter(
+          (item) => item.id !== proposal.id,
+        );
+
+        return {
+          deletedProposal: {
+            id: proposal.id,
+            title: proposal.title,
+          },
+          mutation: {
+            entityId: proposal.id,
+            entityType: "proposal" as const,
+            operation: "delete" as const,
+            title: proposal.title,
+          },
         };
       }
       case "rebalance_responsibilities": {
