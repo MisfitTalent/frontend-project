@@ -320,7 +320,7 @@ export function ReassignmentSimulator() {
           <div className="space-y-4">
             <Alert
               description={result.summary}
-              message={`${result.recommendation} - ${result.scenarioRisk} risk`}
+              title={`${result.recommendation} - ${result.scenarioRisk} risk`}
               showIcon
               type={
                 result.recommendation === "Hold"
