@@ -68,6 +68,57 @@ body {
   padding-left: 0;
 }
 
+.dashboard-sidebar .ant-menu {
+  color: rgba(226, 232, 240, 0.88);
+}
+
+.dashboard-sidebar .ant-menu-inline {
+  border-inline-end: 0 !important;
+}
+
+.dashboard-sidebar .ant-menu-item,
+.dashboard-sidebar .ant-menu-submenu-title {
+  border-radius: 1rem;
+  margin-block: 0.25rem;
+  margin-inline: 0;
+  min-height: 3rem;
+  width: 100%;
+}
+
+.dashboard-sidebar .ant-menu-item .ant-menu-title-content a,
+.dashboard-sidebar .ant-menu-submenu-title .ant-menu-title-content {
+  color: inherit;
+}
+
+.dashboard-sidebar .ant-menu-item-selected {
+  background: linear-gradient(135deg, rgba(242, 140, 40, 0.95), rgba(247, 178, 103, 0.92)) !important;
+  box-shadow: 0 10px 24px rgba(242, 140, 40, 0.28);
+  color: #fff !important;
+  font-weight: 600;
+}
+
+.dashboard-sidebar .ant-menu-item-selected .ant-menu-item-icon,
+.dashboard-sidebar .ant-menu-item-selected .ant-menu-title-content,
+.dashboard-sidebar .ant-menu-item-selected .ant-menu-title-content a {
+  color: #fff !important;
+}
+
+.dashboard-sidebar .ant-menu-item-active,
+.dashboard-sidebar .ant-menu-item:hover,
+.dashboard-sidebar .ant-menu-submenu-title:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #fff !important;
+}
+
+.dashboard-sidebar .ant-menu-item-active .ant-menu-item-icon,
+.dashboard-sidebar .ant-menu-item:hover .ant-menu-item-icon,
+.dashboard-sidebar .ant-menu-item:hover .ant-menu-title-content,
+.dashboard-sidebar .ant-menu-item:hover .ant-menu-title-content a,
+.dashboard-sidebar .ant-menu-submenu-title:hover .ant-menu-item-icon,
+.dashboard-sidebar .ant-menu-submenu-title:hover .ant-menu-title-content {
+  color: #fff !important;
+}
+
 .dashboard-table-card {
   min-width: 0;
 }
