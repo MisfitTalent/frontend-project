@@ -161,6 +161,8 @@ const normalizeLookupValue = (value: string) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
+const isOpenOpportunityStage = (stage: string) => !["Won", "Lost"].includes(stage);
+
 const upsertById = <T extends { id: string }>(items: T[], nextItem: T) => {
   const index = items.findIndex((item) => item.id === nextItem.id);
 
@@ -219,8 +221,14 @@ const createToolset = (workspace: IAssistantWorkspace) => {
       salesData.opportunities.find(
         (opportunity) => normalizeLookupValue(opportunity.title) === normalizedReference,
       ) ??
+      salesData.opportunities.find(
+        (opportunity) => normalizeLookupValue(opportunity.name ?? "") === normalizedReference,
+      ) ??
       salesData.opportunities.find((opportunity) =>
         normalizeLookupValue(opportunity.title).includes(normalizedReference),
+      ) ??
+      salesData.opportunities.find((opportunity) =>
+        normalizeLookupValue(opportunity.name ?? "").includes(normalizedReference),
       ) ??
       null
     );
@@ -293,14 +301,21 @@ const createToolset = (workspace: IAssistantWorkspace) => {
     const clientOpportunities = salesData.opportunities.filter(
       (opportunity) => opportunity.clientId === client.id,
     );
+    const openClientOpportunities = clientOpportunities.filter((opportunity) =>
+      isOpenOpportunityStage(String(opportunity.stage)),
+    );
+
+    if (openClientOpportunities.length === 1) {
+      return openClientOpportunities[0];
+    }
 
     if (clientOpportunities.length === 1) {
       return clientOpportunities[0];
     }
 
-    if (clientOpportunities.length > 1) {
+    if (openClientOpportunities.length > 1) {
       throw new Error(
-        `Multiple opportunities were found for ${client.name}. Specify the opportunity title so I can attach the proposal to the right deal.`,
+        `Multiple open opportunities were found for ${client.name}. Specify the opportunity title so I can attach the proposal to the right deal.`,
       );
     }
 
