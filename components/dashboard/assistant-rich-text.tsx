@@ -198,13 +198,13 @@ const renderMarkdown = (content: string) => {
   return blocks.join("");
 };
 
-export function AssistantRichText({
+export const AssistantRichText = ({
   className,
   content,
 }: Readonly<{
   className?: string;
   content: string;
-}>) {
+}>) => {
   return (
     <div
       className={["assistant-rich-text", className].filter(Boolean).join(" ")}
