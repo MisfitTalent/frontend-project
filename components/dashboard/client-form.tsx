@@ -1,207 +1,135 @@
 "use client";
-
 import { Form, Input, InputNumber, Modal, Select } from "antd";
 import { useEffect } from "react";
-
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { OpportunityStage, type IClient } from "@/providers/salesTypes";
 import { useContactState } from "@/providers/contactProvider";
 import { getClientFormDraftKey } from "./draft-storage";
-
+import { useStyles } from "./client-form.styles";
 type ClientFormValues = {
-  contactEmail?: string;
-  contactFirstName?: string;
-  contactLastName?: string;
-  contactPhoneNumber?: string;
-  contactPosition?: string;
-  expectedCloseDate?: string;
-  industry: string;
-  name: string;
-  opportunityDescription?: string;
-  opportunityStage?: OpportunityStage;
-  opportunityTitle?: string;
-  opportunityValue?: number;
-  segment?: string;
+    contactEmail?: string;
+    contactFirstName?: string;
+    contactLastName?: string;
+    contactPhoneNumber?: string;
+    contactPosition?: string;
+    expectedCloseDate?: string;
+    industry: string;
+    name: string;
+    opportunityDescription?: string;
+    opportunityStage?: OpportunityStage;
+    opportunityTitle?: string;
+    opportunityValue?: number;
+    segment?: string;
 };
-
 interface ClientFormProps {
-  isOpen: boolean;
-  isSubmitting?: boolean;
-  editingClient: IClient | null;
-  onClose: () => void;
-  onSave: (values: ClientFormValues) => Promise<void> | void;
+    isOpen: boolean;
+    isSubmitting?: boolean;
+    editingClient: IClient | null;
+    onClose: () => void;
+    onSave: (values: ClientFormValues) => Promise<void> | void;
 }
-
-export function ClientForm({
-  isOpen,
-  isSubmitting = false,
-  editingClient,
-  onClose,
-  onSave,
-}: ClientFormProps) {
-  const [form] = Form.useForm<ClientFormValues>();
-  const { contacts } = useContactState();
-  const draftKey = getClientFormDraftKey(editingClient?.id);
-
-  useEffect(() => {
-    const savedDraft = readSessionDraft<Partial<ClientFormValues>>(draftKey);
-
-    if (editingClient) {
-      const primaryContact = contacts.find(
-        (contact) =>
-          contact.clientId === editingClient.id && contact.isPrimaryContact,
-      );
-
-      form.setFieldsValue({
-        contactEmail: primaryContact?.email,
-        contactFirstName: primaryContact?.firstName,
-        contactLastName: primaryContact?.lastName,
-        contactPhoneNumber: primaryContact?.phoneNumber,
-        contactPosition: primaryContact?.position,
-        industry: editingClient.industry,
-        name: editingClient.name,
-        segment: editingClient.segment,
-      });
-    } else {
-      form.resetFields();
-      form.setFieldsValue({
-        opportunityStage: OpportunityStage.New,
-      });
-    }
-
-    if (savedDraft) {
-      form.setFieldsValue(savedDraft);
-    }
-  }, [contacts, draftKey, editingClient, form, isOpen]);
-
-  const handleFinish = async (values: ClientFormValues) => {
-    await onSave(values);
-    clearSessionDraft(draftKey);
-  };
-
-  return (
-    <Modal
-      onCancel={onClose}
-      onOk={() => form.submit()}
-      okButtonProps={{ loading: isSubmitting }}
-      open={isOpen}
-      title={editingClient ? "Edit client" : "Add client and opportunity"}
-      width={760}
-    >
-      <Form
-        className="pt-4"
-        form={form}
-        layout="vertical"
-        onFinish={handleFinish}
-        onValuesChange={(_, allValues) =>
-          writeSessionDraft(draftKey, allValues satisfies Partial<ClientFormValues>)
+export const ClientForm = ({ isOpen, isSubmitting = false, editingClient, onClose, onSave, }: ClientFormProps) => {
+    const [form] = Form.useForm<ClientFormValues>();
+    const { styles } = useStyles();
+    const { contacts } = useContactState();
+    const draftKey = getClientFormDraftKey(editingClient?.id);
+    useEffect(() => {
+        const savedDraft = readSessionDraft<Partial<ClientFormValues>>(draftKey);
+        if (editingClient) {
+            const primaryContact = contacts.find((contact) => contact.clientId === editingClient.id && contact.isPrimaryContact);
+            form.setFieldsValue({
+                contactEmail: primaryContact?.email,
+                contactFirstName: primaryContact?.firstName,
+                contactLastName: primaryContact?.lastName,
+                contactPhoneNumber: primaryContact?.phoneNumber,
+                contactPosition: primaryContact?.position,
+                industry: editingClient.industry,
+                name: editingClient.name,
+                segment: editingClient.segment,
+            });
         }
-      >
-        <div className="grid gap-5 md:grid-cols-2">
-          <Form.Item
-            label="Client name"
-            name="name"
-            rules={[{ message: "Please enter the client name", required: true }]}
-          >
-            <Input placeholder="e.g., Northwind Foods" />
+        else {
+            form.resetFields();
+            form.setFieldsValue({
+                opportunityStage: OpportunityStage.New,
+            });
+        }
+        if (savedDraft) {
+            form.setFieldsValue(savedDraft);
+        }
+    }, [contacts, draftKey, editingClient, form, isOpen]);
+    const handleFinish = async (values: ClientFormValues) => {
+        await onSave(values);
+        clearSessionDraft(draftKey);
+    };
+    return (<Modal onCancel={onClose} onOk={() => form.submit()} okButtonProps={{ loading: isSubmitting }} open={isOpen} title={editingClient ? "Edit client" : "Add client and opportunity"} width={760}>
+      <Form className={styles.modalForm} form={form} layout="vertical" onFinish={handleFinish} onValuesChange={(_, allValues) => writeSessionDraft(draftKey, allValues satisfies Partial<ClientFormValues>)}>
+        <div className={styles.fieldGrid}>
+          <Form.Item label="Client name" name="name" rules={[{ message: "Please enter the client name", required: true }]}>
+            <Input placeholder="e.g., Northwind Foods"/>
           </Form.Item>
 
-          <Form.Item
-            label="Industry"
-            name="industry"
-            rules={[{ message: "Please enter the industry", required: true }]}
-          >
-            <Input placeholder="e.g., Manufacturing" />
+          <Form.Item label="Industry" name="industry" rules={[{ message: "Please enter the industry", required: true }]}>
+            <Input placeholder="e.g., Manufacturing"/>
           </Form.Item>
 
           <Form.Item label="Segment" name="segment">
-            <Select
-              options={[
-                { label: "Enterprise", value: "Enterprise" },
-                { label: "Growth", value: "Growth" },
-                { label: "SMB", value: "SMB" },
-              ]}
-              placeholder="Choose segment"
-            />
+            <Select options={[
+            { label: "Enterprise", value: "Enterprise" },
+            { label: "Growth", value: "Growth" },
+            { label: "SMB", value: "SMB" },
+        ]} placeholder="Choose segment"/>
           </Form.Item>
 
           <Form.Item label="Primary contact role" name="contactPosition">
-            <Input placeholder="e.g., Operations Director" />
+            <Input placeholder="e.g., Operations Director"/>
           </Form.Item>
 
           <Form.Item label="Primary contact first name" name="contactFirstName">
-            <Input placeholder="First name" />
+            <Input placeholder="First name"/>
           </Form.Item>
 
           <Form.Item label="Primary contact last name" name="contactLastName">
-            <Input placeholder="Last name" />
+            <Input placeholder="Last name"/>
           </Form.Item>
 
-          <Form.Item
-            label="Primary contact email"
-            name="contactEmail"
-            rules={[{ type: "email" }]}
-          >
-            <Input placeholder="contact@company.com" />
+          <Form.Item label="Primary contact email" name="contactEmail" rules={[{ type: "email" }]}>
+            <Input placeholder="contact@company.com"/>
           </Form.Item>
 
           <Form.Item label="Primary contact phone" name="contactPhoneNumber">
-            <Input placeholder="+27 11 000 0000" />
+            <Input placeholder="+27 11 000 0000"/>
           </Form.Item>
         </div>
 
-        {!editingClient ? (
-          <>
-            <div className="mt-2 grid gap-5 md:grid-cols-2">
-              <Form.Item
-                label="Opportunity title"
-                name="opportunityTitle"
-                rules={[{ message: "Please enter the opportunity title", required: true }]}
-              >
-                <Input placeholder="e.g., National reporting rollout" />
+        {!editingClient ? (<>
+            <div className={styles.secondaryFieldGrid}>
+              <Form.Item label="Opportunity title" name="opportunityTitle" rules={[{ message: "Please enter the opportunity title", required: true }]}>
+                <Input placeholder="e.g., National reporting rollout"/>
               </Form.Item>
 
-              <Form.Item
-                label="Pipeline stage"
-                name="opportunityStage"
-                initialValue={OpportunityStage.New}
-              >
-                <Select
-                  options={[
-                    { label: "New", value: OpportunityStage.New },
-                    { label: "Qualified", value: OpportunityStage.Qualified },
-                    { label: "Proposal Sent", value: OpportunityStage.ProposalSent },
-                    { label: "Negotiating", value: OpportunityStage.Negotiating },
-                  ]}
-                />
+              <Form.Item label="Pipeline stage" name="opportunityStage" initialValue={OpportunityStage.New}>
+                <Select options={[
+                { label: "New", value: OpportunityStage.New },
+                { label: "Qualified", value: OpportunityStage.Qualified },
+                { label: "Proposal Sent", value: OpportunityStage.ProposalSent },
+                { label: "Negotiating", value: OpportunityStage.Negotiating },
+            ]}/>
               </Form.Item>
 
-              <Form.Item
-                label="Opportunity value"
-                name="opportunityValue"
-                rules={[{ message: "Please enter the opportunity value", required: true }]}
-              >
-                <InputNumber className="!w-full" min={0} prefix="R" />
+              <Form.Item label="Opportunity value" name="opportunityValue" rules={[{ message: "Please enter the opportunity value", required: true }]}>
+                <InputNumber className={styles.fullWidth} min={0} prefix="R"/>
               </Form.Item>
 
-              <Form.Item
-                label="Expected close date"
-                name="expectedCloseDate"
-                rules={[{ message: "Please enter the close date", required: true }]}
-              >
-                <Input type="date" />
+              <Form.Item label="Expected close date" name="expectedCloseDate" rules={[{ message: "Please enter the close date", required: true }]}>
+                <Input type="date"/>
               </Form.Item>
             </div>
 
             <Form.Item label="Opportunity notes" name="opportunityDescription">
-              <Input.TextArea
-                placeholder="What is being sold and why is it important?"
-                rows={4}
-              />
+              <Input.TextArea placeholder="What is being sold and why is it important?" rows={4}/>
             </Form.Item>
-          </>
-        ) : null}
+          </>) : null}
       </Form>
-    </Modal>
-  );
-}
+    </Modal>);
+};
