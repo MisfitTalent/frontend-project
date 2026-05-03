@@ -1,9 +1,13 @@
 import { createContext } from "react";
 
+import { PROVIDER_REQUEST_IDLE } from "@/providers/provider-state";
 import type { IContact } from "@/providers/salesTypes";
 
 export interface IContactStateContext {
   contacts: IContact[];
+  isError: boolean;
+  isPending: boolean;
+  isSuccess: boolean;
 }
 
 export interface IContactActionContext {
@@ -14,6 +18,7 @@ export interface IContactActionContext {
 
 export const INITIAL_STATE: IContactStateContext = {
   contacts: [],
+  ...PROVIDER_REQUEST_IDLE,
 };
 
 export const ContactStateContext = createContext<IContactStateContext | undefined>(

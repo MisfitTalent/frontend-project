@@ -1,6 +1,8 @@
 import { createContext } from "react";
 
-export interface IProfileStateContext {
+import { PROVIDER_REQUEST_IDLE } from "@/providers/provider-state";
+
+export interface IProfileSnapshot {
   email: string;
   firstName: string;
   lastName: string;
@@ -8,13 +10,20 @@ export interface IProfileStateContext {
   workspace: string;
 }
 
+export interface IProfileStateContext extends IProfileSnapshot {
+  isError: boolean;
+  isPending: boolean;
+  isSuccess: boolean;
+}
+
 export interface IProfileActionContext {
-  syncProfile: (payload: IProfileStateContext) => void;
+  syncProfile: (payload: IProfileSnapshot) => void;
 }
 
 export const INITIAL_STATE: IProfileStateContext = {
   email: "Unknown",
   firstName: "Unknown",
+  ...PROVIDER_REQUEST_IDLE,
   lastName: "Unknown",
   role: "SalesRep",
   workspace: "AutoSales Workspace",

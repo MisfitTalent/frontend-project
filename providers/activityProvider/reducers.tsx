@@ -1,34 +1,68 @@
+import { handleActions } from "redux-actions";
 import type { IActivity } from "@/providers/salesTypes";
 
 import { ActivityActionEnums } from "./actions";
 import { INITIAL_STATE, type IActivityStateContext } from "./context";
 
-type ActivityAction =
-  | { payload: IActivity; type: ActivityActionEnums.add }
-  | { payload: string; type: ActivityActionEnums.delete }
-  | {
-      payload: Partial<IActivity> & { id: string };
-      type: ActivityActionEnums.update;
-    };
+type ActivityPayload =
+  | IActivity
+  | IActivity[]
+  | string
+  | (Partial<IActivity> & { id: string })
+  | undefined;
 
-export const ActivityReducer = (
-  state: IActivityStateContext = INITIAL_STATE,
-  action: ActivityAction,
-): IActivityStateContext => {
-  switch (action.type) {
-    case ActivityActionEnums.add:
-      return { activities: [...state.activities, action.payload] };
-    case ActivityActionEnums.update:
-      return {
-        activities: state.activities.map((item) =>
-          item.id === action.payload.id ? { ...item, ...action.payload } : item,
-        ),
-      };
-    case ActivityActionEnums.delete:
-      return {
-        activities: state.activities.filter((item) => item.id !== action.payload),
-      };
-    default:
-      return state;
-  }
-};
+export const ActivityReducer = handleActions<IActivityStateContext, ActivityPayload>(
+  {
+    [ActivityActionEnums.add]: (state, action) => ({
+      ...state,
+      activities: [...state.activities, action.payload as IActivity],
+      isError: false,
+      isPending: false,
+      isSuccess: true,
+    }),
+    [ActivityActionEnums.update]: (state, action) => ({
+      ...state,
+      activities: state.activities.map((item) =>
+        item.id === (action.payload as Partial<IActivity> & { id: string }).id
+          ? { ...item, ...(action.payload as Partial<IActivity> & { id: string }) }
+          : item,
+      ),
+      isError: false,
+      isPending: false,
+      isSuccess: true,
+    }),
+    [ActivityActionEnums.set]: (state, action) => ({
+      ...state,
+      activities: action.payload as IActivity[],
+      isError: false,
+      isPending: false,
+      isSuccess: true,
+    }),
+    [ActivityActionEnums.delete]: (state, action) => ({
+      ...state,
+      activities: state.activities.filter((item) => item.id !== (action.payload as string)),
+      isError: false,
+      isPending: false,
+      isSuccess: true,
+    }),
+    [ActivityActionEnums.pending]: (state) => ({
+      ...state,
+      isError: false,
+      isPending: true,
+      isSuccess: false,
+    }),
+    [ActivityActionEnums.success]: (state) => ({
+      ...state,
+      isError: false,
+      isPending: false,
+      isSuccess: true,
+    }),
+    [ActivityActionEnums.error]: (state) => ({
+      ...state,
+      isError: true,
+      isPending: false,
+      isSuccess: false,
+    }),
+  },
+  INITIAL_STATE,
+);

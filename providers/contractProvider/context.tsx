@@ -1,9 +1,13 @@
 import { createContext } from "react";
 
+import { PROVIDER_REQUEST_IDLE } from "@/providers/provider-state";
 import type { IContract, IRenewal } from "@/providers/salesTypes";
 
 export interface IContractStateContext {
   contracts: IContract[];
+  isError: boolean;
+  isPending: boolean;
+  isSuccess: boolean;
   renewals: IRenewal[];
 }
 
@@ -18,6 +22,7 @@ export interface IContractActionContext {
 
 export const INITIAL_STATE: IContractStateContext = {
   contracts: [],
+  ...PROVIDER_REQUEST_IDLE,
   renewals: [],
 };
 

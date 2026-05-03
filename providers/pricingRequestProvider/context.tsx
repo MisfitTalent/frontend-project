@@ -1,9 +1,13 @@
 import { createContext } from "react";
 
+import { PROVIDER_REQUEST_IDLE } from "@/providers/provider-state";
 import type { IPricingRequest } from "@/providers/salesTypes";
 
 export interface IPricingRequestStateContext {
   pricingRequests: IPricingRequest[];
+  isError: boolean;
+  isPending: boolean;
+  isSuccess: boolean;
 }
 
 export interface IPricingRequestActionContext {
@@ -19,6 +23,7 @@ export interface IPricingRequestActionContext {
 
 export const INITIAL_STATE: IPricingRequestStateContext = {
   pricingRequests: [],
+  ...PROVIDER_REQUEST_IDLE,
 };
 
 export const PricingRequestStateContext = createContext<

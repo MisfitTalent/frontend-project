@@ -1,9 +1,13 @@
 import { createContext } from "react";
 
+import { PROVIDER_REQUEST_IDLE } from "@/providers/provider-state";
 import type { IProposal, ProposalStatus } from "@/providers/salesTypes";
 
 export interface IProposalStateContext {
   proposals: IProposal[];
+  isError: boolean;
+  isPending: boolean;
+  isSuccess: boolean;
 }
 
 export interface IProposalActionContext {
@@ -19,6 +23,7 @@ export interface IProposalActionContext {
 
 export const INITIAL_STATE: IProposalStateContext = {
   proposals: [],
+  ...PROVIDER_REQUEST_IDLE,
 };
 
 export const ProposalStateContext = createContext<IProposalStateContext | undefined>(

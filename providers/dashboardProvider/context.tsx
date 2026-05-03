@@ -1,5 +1,6 @@
 import { createContext } from "react";
 
+import { PROVIDER_REQUEST_IDLE } from "@/providers/provider-state";
 import type {
   IAutomationEvent,
   IClientBundleInput,
@@ -9,6 +10,9 @@ import type {
 
 export interface IDashboardStateContext {
   automationFeed: IAutomationEvent[];
+  isError: boolean;
+  isPending: boolean;
+  isSuccess: boolean;
   salesData: ISalesData;
   teamMembers: ITeamMember[];
 }
@@ -20,6 +24,7 @@ export interface IDashboardActionContext {
 
 export const INITIAL_STATE: IDashboardStateContext = {
   automationFeed: [],
+  ...PROVIDER_REQUEST_IDLE,
   salesData: {
     activities: [],
     automationFeed: [],

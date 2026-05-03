@@ -1,19 +1,34 @@
+import { handleActions } from "redux-actions";
 import { ProfileActionEnums } from "./actions";
-import { INITIAL_STATE, type IProfileStateContext } from "./context";
+import { INITIAL_STATE, type IProfileSnapshot, type IProfileStateContext } from "./context";
 
-type ProfileAction = {
-  payload: IProfileStateContext;
-  type: ProfileActionEnums.sync;
-};
-
-export const ProfileReducer = (
-  state: IProfileStateContext = INITIAL_STATE,
-  action: ProfileAction,
-): IProfileStateContext => {
-  switch (action.type) {
-    case ProfileActionEnums.sync:
-      return action.payload;
-    default:
-      return state;
-  }
-};
+export const ProfileReducer = handleActions<IProfileStateContext, IProfileSnapshot | undefined>(
+  {
+    [ProfileActionEnums.sync]: (state, action) => ({
+      ...state,
+      ...action.payload,
+      isError: false,
+      isPending: false,
+      isSuccess: true,
+    }),
+    [ProfileActionEnums.pending]: (state) => ({
+      ...state,
+      isError: false,
+      isPending: true,
+      isSuccess: false,
+    }),
+    [ProfileActionEnums.success]: (state) => ({
+      ...state,
+      isError: false,
+      isPending: false,
+      isSuccess: true,
+    }),
+    [ProfileActionEnums.error]: (state) => ({
+      ...state,
+      isError: true,
+      isPending: false,
+      isSuccess: false,
+    }),
+  },
+  INITIAL_STATE,
+);

@@ -1,187 +1,134 @@
 "use client";
-
-import { useCallback, useContext, useEffect, useState } from "react";
-
+import { useCallback, useContext, useEffect, useReducer } from "react";
 import { useAuthState } from "@/providers/authProvider";
-import {
-  type BackendContactDto,
-  type BackendPagedResult,
-  backendRequest,
-  buildCreateContactPayload,
-  buildUpdateContactPayload,
-  coerceItems,
-  getSessionToken,
-  isMockSessionToken,
-  mapBackendContact,
-} from "@/lib/client/backend-api";
+import { type BackendContactDto, type BackendPagedResult, backendRequest, buildCreateContactPayload, buildUpdateContactPayload, coerceItems, mapBackendContact, } from "@/lib/client/backend-api";
 import { initialContacts } from "@/providers/domainSeeds";
-import { ContactActionContext, ContactStateContext } from "./context";
-import type { IContact } from "@/providers/salesTypes";
-
+import { PROVIDER_REQUEST_IDLE } from "@/providers/provider-state";
+import { addContactAction, contactErrorAction, contactPendingAction, deleteContactAction, setContactsAction, updateContactAction, } from "./actions";
+import { ContactActionContext, ContactStateContext, INITIAL_STATE } from "./context";
+import { ContactReducer } from "./reducers";
 export const useContactState = () => {
-  const context = useContext(ContactStateContext);
-
-  if (context === undefined) {
-    throw new Error("useContactState must be used within ContactProvider.");
-  }
-
-  return context;
+    const context = useContext(ContactStateContext);
+    if (context === undefined) {
+        throw new Error("useContactState must be used within ContactProvider.");
+    }
+    return context;
 };
-
 export const useContactActions = () => {
-  const context = useContext(ContactActionContext);
-
-  if (context === undefined) {
-    throw new Error("useContactActions must be used within ContactProvider.");
-  }
-
-  return context;
+    const context = useContext(ContactActionContext);
+    if (context === undefined) {
+        throw new Error("useContactActions must be used within ContactProvider.");
+    }
+    return context;
 };
-
 type ContactProviderProps = Readonly<{
-  children: React.ReactNode;
+    children: React.ReactNode;
 }>;
-
-export default function ContactProvider({
-  children,
-}: ContactProviderProps) {
-  const { isAuthenticated } = useAuthState();
-  const [contacts, setContacts] = useState<IContact[]>([]);
-  const isDemoMode = isMockSessionToken(getSessionToken());
-
-  const loadContacts = useCallback(async () => {
-    const payload = await backendRequest<BackendPagedResult<BackendContactDto> | BackendContactDto[]>(
-      "/api/Contacts?pageNumber=1&pageSize=100",
-    );
-
-    setContacts(coerceItems(payload).map(mapBackendContact));
-  }, []);
-
-  useEffect(() => {
-    if (!isAuthenticated) {
-      return;
-    }
-
-    let isActive = true;
-
-    if (isDemoMode) {
-      const timer = window.setTimeout(() => {
-        void loadContacts().catch((error) => {
-          console.error(error);
-
-          if (isActive) {
-            setContacts(initialContacts());
-          }
-        });
-      }, 0);
-
-      const handleWorkspaceUpdate = () => {
-        void loadContacts().catch((error) => {
-          console.error(error);
-        });
-      };
-
-      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-
-      return () => {
-        isActive = false;
-        window.clearTimeout(timer);
-        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-      };
-    }
-
-    const timer = window.setTimeout(() => {
-      void loadContacts().catch((error) => {
-        console.error(error);
-      });
-    }, 0);
-
-    return () => {
-      isActive = false;
-      window.clearTimeout(timer);
-    };
-  }, [isAuthenticated, isDemoMode, loadContacts]);
-
-  return (
-    <ContactStateContext.Provider value={{ contacts: isAuthenticated ? contacts : [] }}>
-      <ContactActionContext.Provider
-        value={{
-          addContact: async (payload) => {
-            if (isDemoMode) {
-              const response = await backendRequest<BackendContactDto>("/api/Contacts", {
-                body: JSON.stringify(buildCreateContactPayload(payload)),
-                method: "POST",
-              });
-              const nextContact = mapBackendContact(response);
-
-              setContacts((current) => [...current, nextContact]);
-              return nextContact;
-            }
-
-            const response = await backendRequest<BackendContactDto>("/api/Contacts", {
-              body: JSON.stringify(buildCreateContactPayload(payload)),
-              method: "POST",
+export const ContactProvider = ({ children, }: ContactProviderProps) => {
+    const { isAuthenticated, user } = useAuthState();
+    const [state, dispatch] = useReducer(ContactReducer, INITIAL_STATE);
+    const isDemoMode = Boolean(user?.isMockSession);
+    const loadContacts = useCallback(async () => {
+        dispatch(contactPendingAction());
+        const payload = await backendRequest<BackendPagedResult<BackendContactDto> | BackendContactDto[]>("/api/Contacts?pageNumber=1&pageSize=100");
+        dispatch(setContactsAction(coerceItems(payload).map(mapBackendContact)));
+    }, []);
+    useEffect(() => {
+        if (!isAuthenticated) {
+            return;
+        }
+        let isActive = true;
+        if (isDemoMode) {
+            const timer = window.setTimeout(() => {
+                void loadContacts().catch((error) => {
+                    console.error(error);
+                    if (isActive) {
+                        dispatch(setContactsAction(initialContacts()));
+                    }
+                });
+            }, 0);
+            const handleWorkspaceUpdate = () => {
+                void loadContacts().catch((error) => {
+                    console.error(error);
+                });
+            };
+            window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+            return () => {
+                isActive = false;
+                window.clearTimeout(timer);
+                window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+            };
+        }
+        const timer = window.setTimeout(() => {
+            void loadContacts().catch((error) => {
+                console.error(error);
+                if (isActive) {
+                    dispatch(contactErrorAction());
+                }
             });
-            const nextContact = mapBackendContact(response);
-
-            setContacts((current) => [...current, nextContact]);
-
-            return nextContact;
-          },
-          deleteContact: async (id) => {
-            if (isDemoMode) {
-              await backendRequest<void>(`/api/Contacts/${id}`, {
-                method: "DELETE",
-              });
-              setContacts((current) => current.filter((item) => item.id !== id));
-              return;
-            }
-
-            await backendRequest<void>(`/api/Contacts/${id}`, {
-              method: "DELETE",
-            });
-
-            setContacts((current) => current.filter((item) => item.id !== id));
-          },
-          updateContact: async (id, payload) => {
-            const existing = contacts.find((item) => item.id === id);
-
-            if (!existing) {
-              return undefined;
-            }
-
-            const nextContact = { ...existing, ...payload };
-
-            if (isDemoMode) {
-              const response = await backendRequest<BackendContactDto>(`/api/Contacts/${id}`, {
-                body: JSON.stringify(buildUpdateContactPayload(nextContact)),
-                method: "PUT",
-              });
-              const mappedContact = mapBackendContact(response);
-
-              setContacts((current) =>
-                current.map((item) => (item.id === id ? mappedContact : item)),
-              );
-
-              return mappedContact;
-            }
-
-            const response = await backendRequest<BackendContactDto>(`/api/Contacts/${id}`, {
-              body: JSON.stringify(buildUpdateContactPayload(nextContact)),
-              method: "PUT",
-            });
-            const mappedContact = mapBackendContact(response);
-
-            setContacts((current) =>
-              current.map((item) => (item.id === id ? mappedContact : item)),
-            );
-
-            return mappedContact;
-          },
-        }}
-      >
+        }, 0);
+        return () => {
+            isActive = false;
+            window.clearTimeout(timer);
+        };
+    }, [dispatch, isAuthenticated, isDemoMode, loadContacts]);
+    return (<ContactStateContext.Provider value={{
+            ...(isAuthenticated ? state : { ...state, ...PROVIDER_REQUEST_IDLE }),
+            contacts: isAuthenticated ? state.contacts : [],
+        }}>
+      <ContactActionContext.Provider value={{
+            addContact: async (payload) => {
+                dispatch(contactPendingAction());
+                try {
+                    const response = await backendRequest<BackendContactDto>("/api/Contacts", {
+                        body: JSON.stringify(buildCreateContactPayload(payload)),
+                        method: "POST",
+                    });
+                    const nextContact = mapBackendContact(response);
+                    dispatch(addContactAction(nextContact));
+                    return nextContact;
+                }
+                catch (error) {
+                    dispatch(contactErrorAction());
+                    throw error;
+                }
+            },
+            deleteContact: async (id) => {
+                dispatch(contactPendingAction());
+                try {
+                    await backendRequest<void>(`/api/Contacts/${id}`, {
+                        method: "DELETE",
+                    });
+                    dispatch(deleteContactAction(id));
+                }
+                catch (error) {
+                    dispatch(contactErrorAction());
+                    throw error;
+                }
+            },
+            updateContact: async (id, payload) => {
+                const existing = state.contacts.find((item) => item.id === id);
+                if (!existing) {
+                    return undefined;
+                }
+                const nextContact = { ...existing, ...payload };
+                dispatch(contactPendingAction());
+                try {
+                    const response = await backendRequest<BackendContactDto>(`/api/Contacts/${id}`, {
+                        body: JSON.stringify(buildUpdateContactPayload(nextContact)),
+                        method: "PUT",
+                    });
+                    const mappedContact = mapBackendContact(response);
+                    dispatch(updateContactAction(mappedContact));
+                    return mappedContact;
+                }
+                catch (error) {
+                    dispatch(contactErrorAction());
+                    throw error;
+                }
+            },
+        }}>
         {children}
       </ContactActionContext.Provider>
-    </ContactStateContext.Provider>
-  );
-}
+    </ContactStateContext.Provider>);
+};

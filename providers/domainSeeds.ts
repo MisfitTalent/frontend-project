@@ -14,7 +14,9 @@ import { INITIAL_SALES_DATA } from "./salesFixtures";
 
 export interface IDocumentItem {
   clientId?: string;
+  contentUrl?: string;
   id: string;
+  mimeType?: string;
   name: string;
   size: string;
   type: string;
@@ -27,6 +29,12 @@ export interface INoteItem {
   content: string;
   createdDate: string;
   id: string;
+  kind?: "client_feedback" | "client_message" | "general";
+  representativeId?: string;
+  representativeName?: string;
+  source?: "assistant" | "client_portal" | "workspace";
+  status?: "Acknowledged" | "Sent";
+  submittedBy?: string;
   title: string;
 }
 
@@ -86,6 +94,8 @@ export const initialNotes = (): INoteItem[] => [
     content: "Discuss Q2 budget allocation before final commercial review.",
     createdDate: "2026-04-20",
     id: "note-1",
+    kind: "general",
+    source: "workspace",
     title: "Follow-up with Boxfusion",
   },
   {
@@ -94,6 +104,8 @@ export const initialNotes = (): INoteItem[] => [
     content: "Review annual discount structure for healthcare rollouts.",
     createdDate: "2026-04-19",
     id: "note-2",
+    kind: "general",
+    source: "workspace",
     title: "Pricing review",
   },
 ];
