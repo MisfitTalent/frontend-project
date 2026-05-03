@@ -1,3 +1,6 @@
+import type { AuthSessionUser } from "@/lib/auth/auth-contract";
+import { MOCK_TEAM_MEMBERS } from "@/providers/salesFixtures";
+
 export type MockUserRole =
   | "Admin"
   | "SalesManager"
@@ -16,23 +19,94 @@ export interface IMockUser {
   tenantName: string;
 }
 
+const AUTO_SALES_TENANT_ID = "mock-tenant-autosales";
+const AUTO_SALES_TENANT_NAME = "AutoSales Mock Workspace";
+const AUTO_SALES_REP_PASSWORD = "Sales123";
+const AUTO_SALES_ADMIN_MEMBER_IDS = new Set(["tm02"]);
+
+const isClientFacingRole = (role: string) =>
+  [
+    "Account Executive",
+    "Sales Consultant",
+    "Client Success",
+    "Business Development",
+    "Pipeline Director",
+  ].some((token) => role.includes(token));
+
+const toAutoSalesRepEmail = (name: string) =>
+  `${name
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, "")
+    .trim()
+    .replace(/\s+/g, ".")}@autosales.com`;
+
+const createAutoSalesRepUser = (member: (typeof MOCK_TEAM_MEMBERS)[number]): IMockUser => {
+  const [firstName, ...rest] = member.name.split(" ");
+
+  return {
+    clientIds: [],
+    email: toAutoSalesRepEmail(member.name),
+    firstName: firstName ?? member.name,
+    id: member.id,
+    lastName: rest.join(" ") || "Rep",
+    password: AUTO_SALES_REP_PASSWORD,
+    role: AUTO_SALES_ADMIN_MEMBER_IDS.has(member.id) ? "Admin" : "SalesRep",
+    tenantId: AUTO_SALES_TENANT_ID,
+    tenantName: AUTO_SALES_TENANT_NAME,
+  };
+};
+
+const autoSalesRepUsers = MOCK_TEAM_MEMBERS.filter((member) =>
+  isClientFacingRole(member.role),
+).map(createAutoSalesRepUser);
+
 const users = new Map<string, IMockUser>([
   [
     "admin@autosales.com",
     {
+      clientIds: [],
       email: "admin@autosales.com",
       firstName: "Admin",
       id: "legacy-admin",
       lastName: "User",
       password: "Admin123",
       role: "Admin",
-      tenantId: "mock-tenant-autosales",
-      tenantName: "AutoSales Mock Workspace",
+      tenantId: AUTO_SALES_TENANT_ID,
+      tenantName: AUTO_SALES_TENANT_NAME,
+    },
+  ],
+  [
+    "clients@autosales.com",
+    {
+      clientIds: ["c1"],
+      email: "clients@autosales.com",
+      firstName: "Client",
+      id: "legacy-client-viewer",
+      lastName: "Tester",
+      password: "Clients123",
+      role: "SalesRep",
+      tenantId: AUTO_SALES_TENANT_ID,
+      tenantName: AUTO_SALES_TENANT_NAME,
+    },
+  ],
+  [
+    "salesrep@autosales.com",
+    {
+      clientIds: [],
+      email: "salesrep@autosales.com",
+      firstName: "Lebo",
+      id: "tm02",
+      lastName: "Dlamini",
+      password: AUTO_SALES_REP_PASSWORD,
+      role: "Admin",
+      tenantId: AUTO_SALES_TENANT_ID,
+      tenantName: AUTO_SALES_TENANT_NAME,
     },
   ],
   [
     "admin@salesautomation.com",
     {
+      clientIds: [],
       email: "admin@salesautomation.com",
       firstName: "Admin",
       id: "1",
@@ -46,6 +120,7 @@ const users = new Map<string, IMockUser>([
   [
     "salesrep@salesautomation.com",
     {
+      clientIds: [],
       email: "salesrep@salesautomation.com",
       firstName: "Demo",
       id: "2",
@@ -56,6 +131,7 @@ const users = new Map<string, IMockUser>([
       tenantName: "Shared Demo Tenant",
     },
   ],
+  ...autoSalesRepUsers.map((user) => [user.email, user] as const),
 ]);
 
 let nextId = 3;
@@ -94,6 +170,7 @@ export const registerMockUser = ({
   }
 
   const user: IMockUser = {
+    clientIds: [],
     email: normalizedEmail,
     firstName,
     id: String(nextId++),
@@ -109,7 +186,8 @@ export const registerMockUser = ({
   return user;
 };
 
-export const toAuthPayload = (user: IMockUser) => ({
+export const toAuthPayload = (user: IMockUser): AuthSessionUser => ({
+  clientIds: user.clientIds ?? [],
   email: user.email,
   firstName: user.firstName,
   lastName: user.lastName,
