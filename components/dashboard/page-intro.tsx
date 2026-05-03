@@ -1,20 +1,32 @@
 "use client";
-
 import { Typography } from "antd";
-
+import { usePathname } from "next/navigation";
+import { dashboardNavItems } from "@/constants/dashboard-nav";
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import { useAuthState } from "@/providers/authProvider";
 import { usePageModule } from "@/providers/pageProviders";
-
-export function PageIntro() {
-  const page = usePageModule();
-
-  return (
-    <div className="space-y-2">
-      <Typography.Title className="!mb-0 !text-slate-900" level={2}>
-        {page.title}
+import { useStyles } from "./page-intro.styles";
+export const PageIntro = () => {
+    const { styles } = useStyles();
+    const pathname = usePathname();
+    const { user } = useAuthState();
+    const page = usePageModule();
+    const isClientScoped = isClientScopedUser(user?.clientIds);
+    const activeNavItem = [...dashboardNavItems]
+        .sort((left, right) => right.href.length - left.href.length)
+        .find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
+    const title = isClientScoped
+        ? activeNavItem?.clientScopedHeaderTitle ?? page.title
+        : page.title;
+    const description = isClientScoped
+        ? activeNavItem?.clientScopedDescription ?? page.description
+        : page.description;
+    return (<div className={styles.container}>
+      <Typography.Title className={styles.title} level={2}>
+        {title}
       </Typography.Title>
-      <Typography.Paragraph className="!mb-0 max-w-3xl !text-slate-500">
-        {page.description}
+      <Typography.Paragraph className={styles.description}>
+        {description}
       </Typography.Paragraph>
-    </div>
-  );
-}
+    </div>);
+};

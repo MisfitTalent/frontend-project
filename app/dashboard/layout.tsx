@@ -1,9 +1,7 @@
 import { DashboardFrame } from "@/components/dashboard/dashboard-frame";
-
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  return <DashboardFrame>{children}</DashboardFrame>;
-}
+const DashboardLayout = ({ children, }: {
+    children: React.ReactNode;
+}) => {
+    return <DashboardFrame>{children}</DashboardFrame>;
+};
+export default DashboardLayout;

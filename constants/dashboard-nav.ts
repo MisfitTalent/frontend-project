@@ -18,6 +18,9 @@ import { type UserRole } from "@/providers/salesTypes";
 
 type DashboardNavItem = {
   access: UserRole[];
+  clientScopedDescription?: string;
+  clientScopedHeaderTitle?: string;
+  clientScopedLabel?: string;
   description: string;
   href: string;
   headerTitle?: string;
@@ -29,6 +32,9 @@ type DashboardNavItem = {
 export const dashboardNavItems: DashboardNavItem[] = [
   {
     access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    clientScopedDescription: "Start here to review your account, meetings, proposals, documents, and next steps.",
+    clientScopedHeaderTitle: "Client portal",
+    clientScopedLabel: "Home",
     description: "Track pipeline movement, workload, and the next actions that need attention.",
     href: "/dashboard",
     headerTitle: "Sales command center",
@@ -38,6 +44,9 @@ export const dashboardNavItems: DashboardNavItem[] = [
   },
   {
     access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    clientScopedDescription: "Tell me what you want to achieve and I will help clarify the best commercial next steps.",
+    clientScopedHeaderTitle: "Client advisor",
+    clientScopedLabel: "Advisor",
     description: "Ask for account updates, pipeline guidance, renewal risk, and the next best action.",
     href: "/dashboard/assistant",
     headerTitle: "Secure sales assistant",
@@ -56,6 +65,9 @@ export const dashboardNavItems: DashboardNavItem[] = [
   },
   {
     access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    clientScopedDescription: "View scheduled calls and meetings connected to your account.",
+    clientScopedHeaderTitle: "Meetings",
+    clientScopedLabel: "Meetings",
     description: "Manage calls, tasks, meetings, and the follow-ups that keep deals moving.",
     href: "/dashboard/activities",
     headerTitle: "Follow-ups",
@@ -65,6 +77,9 @@ export const dashboardNavItems: DashboardNavItem[] = [
   },
   {
     access: ["Admin", "BusinessDevelopmentManager", "SalesManager"],
+    clientScopedDescription: "Review your organization profile, contacts, active commercials, and agreement details.",
+    clientScopedHeaderTitle: "Account",
+    clientScopedLabel: "Account",
     description: "Manage accounts, ownership, and the commercial work tied to each client.",
     href: "/dashboard/clients",
     headerTitle: "Clients",
@@ -83,6 +98,18 @@ export const dashboardNavItems: DashboardNavItem[] = [
   },
   {
     access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "View team members, availability, workload, and current ownership across the workspace.",
+    href: "/dashboard/team-members",
+    headerTitle: "Team members",
+    icon: TeamOutlined,
+    key: "/dashboard/team-members",
+    label: "Team",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    clientScopedDescription: "Review the commercials that have been shared with your account and track their current status.",
+    clientScopedHeaderTitle: "Proposals",
+    clientScopedLabel: "Commercials",
     description: "Keep commercial responses, approvals, and proposal progress visible in one place.",
     href: "/dashboard/proposals",
     headerTitle: "Proposals",
@@ -110,6 +137,9 @@ export const dashboardNavItems: DashboardNavItem[] = [
   },
   {
     access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    clientScopedDescription: "View the files that have been shared with your account.",
+    clientScopedHeaderTitle: "Documents",
+    clientScopedLabel: "Documents",
     description: "Keep commercial files organized against the right client and deal records.",
     href: "/dashboard/documents",
     headerTitle: "Documents",
@@ -137,6 +167,9 @@ export const dashboardNavItems: DashboardNavItem[] = [
   },
   {
     access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    clientScopedDescription: "View your client workspace identity and account access.",
+    clientScopedHeaderTitle: "Profile",
+    clientScopedLabel: "Profile",
     description: "View your account details, role, and workspace information.",
     href: "/dashboard/profile",
     headerTitle: "Profile",
