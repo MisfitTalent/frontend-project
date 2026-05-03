@@ -1,18 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { AUTH_COOKIE_NAME, AUTH_COOKIE_OPTIONS } from "@/app/api/Auth/session-cookie";
+import { AUTH_COOKIE_NAME, AUTH_COOKIE_OPTIONS, sanitizeAuthPayload } from "@/app/api/Auth/session-cookie";
 import { type IMockUser } from "@/app/api/Auth/mock-users";
 import { getUserFromSessionToken } from "@/lib/auth/session-user";
 import { getBackendBaseUrl } from "@/lib/server/backend-url";
 import {
   addMockProposalLineItem,
   assignMockOpportunity,
+  createMockActivity,
   createMockClient,
   createMockContact,
+  createMockNote,
   createMockOpportunity,
   createMockProposal,
   deleteMockClient,
   deleteMockContact,
+  deleteMockNote,
   deleteMockOpportunity,
   deleteMockProposal,
   deleteMockProposalLineItem,
@@ -20,12 +23,15 @@ import {
   listMockActivities,
   listMockClients,
   listMockContacts,
+  listMockNotes,
   listMockOpportunities,
   listMockProposals,
+  listMockTeamMembers,
   transitionMockProposal,
   updateMockActivity,
   updateMockClient,
   updateMockContact,
+  updateMockNote,
   updateMockOpportunity,
   updateMockOpportunityStage,
   updateMockProposal,
@@ -66,9 +72,13 @@ const createProxyResponse = async (upstream: Response, pathSegments: string[]) =
   }
 
   const payload = text ? (JSON.parse(text) as Record<string, unknown>) : null;
-  const response = NextResponse.json(payload, { status: upstream.status });
+  const shouldSanitizeSessionPayload = Boolean(payload) && shouldPersistSession(pathSegments);
+  const response = NextResponse.json(
+    shouldSanitizeSessionPayload ? sanitizeAuthPayload(payload as Record<string, unknown>) : payload,
+    { status: upstream.status },
+  );
 
-  if (upstream.ok && shouldPersistSession(pathSegments)) {
+  if (upstream.ok && shouldSanitizeSessionPayload) {
     const token = typeof payload?.token === "string" ? payload.token : "";
 
     response.cookies.set(AUTH_COOKIE_NAME, token, AUTH_COOKIE_OPTIONS);
@@ -229,6 +239,183 @@ const toProposalDto = (proposal: ReturnType<typeof listMockProposals>[number]) =
 
 const json = (payload: unknown, status = 200) => NextResponse.json(payload, { status });
 
+const isClientScoped = (user: IMockUser) => (user.clientIds?.length ?? 0) > 0;
+
+const canAccessClient = (user: IMockUser, clientId?: string | null) =>
+  !isClientScoped(user) || Boolean(clientId && user.clientIds?.includes(clientId));
+
+const getAccessibleClientIds = (user: IMockUser) =>
+  isClientScoped(user) ? new Set(user.clientIds) : null;
+
+const clientScopedMutationBlocked = (user: IMockUser) =>
+  isClientScoped(user)
+    ? json({ message: "This client workspace is read-only." }, 403)
+    : null;
+
+const filterClientScopedClients = (
+  user: IMockUser,
+  clients: ReturnType<typeof listMockClients>,
+) => {
+  const allowedClientIds = getAccessibleClientIds(user);
+
+  return allowedClientIds
+    ? clients.filter((client) => allowedClientIds.has(client.id))
+    : clients;
+};
+
+const filterClientScopedContacts = (
+  user: IMockUser,
+  contacts: ReturnType<typeof listMockContacts>,
+) => {
+  const allowedClientIds = getAccessibleClientIds(user);
+
+  return allowedClientIds
+    ? contacts.filter((contact) => allowedClientIds.has(contact.clientId))
+    : contacts;
+};
+
+const filterClientScopedOpportunities = (
+  user: IMockUser,
+  opportunities: ReturnType<typeof listMockOpportunities>,
+) => {
+  const allowedClientIds = getAccessibleClientIds(user);
+
+  return allowedClientIds
+    ? opportunities.filter((opportunity) => allowedClientIds.has(opportunity.clientId))
+    : opportunities;
+};
+
+const filterClientScopedProposals = (
+  user: IMockUser,
+  proposals: ReturnType<typeof listMockProposals>,
+) => {
+  const allowedClientIds = getAccessibleClientIds(user);
+
+  return allowedClientIds
+    ? proposals.filter((proposal) => allowedClientIds.has(proposal.clientId))
+    : proposals;
+};
+
+const filterClientScopedActivities = (
+  user: IMockUser,
+  activities: ReturnType<typeof listMockActivities>,
+) => {
+  if (!isClientScoped(user)) {
+    return activities;
+  }
+
+  const accessibleOpportunityIds = new Set(
+    filterClientScopedOpportunities(user, listMockOpportunities(user.tenantId)).map((item) => item.id),
+  );
+  const accessibleProposalIds = new Set(
+    filterClientScopedProposals(user, listMockProposals(user.tenantId)).map((item) => item.id),
+  );
+  const accessibleClientIds = getAccessibleClientIds(user);
+
+  return activities.filter(
+    (activity) =>
+      (accessibleClientIds ? accessibleClientIds.has(activity.relatedToId) : false) ||
+      accessibleOpportunityIds.has(activity.relatedToId) ||
+      accessibleProposalIds.has(activity.relatedToId),
+  );
+};
+
+const isClientVisibleNote = (note: ReturnType<typeof listMockNotes>[number]) =>
+  note.kind === "client_message" ||
+  note.kind === "client_feedback" ||
+  note.category === "Client Message" ||
+  note.category === "Client Commercial Feedback";
+
+const filterClientScopedNotes = (
+  user: IMockUser,
+  notes: ReturnType<typeof listMockNotes>,
+) => {
+  if (!isClientScoped(user)) {
+    return notes;
+  }
+
+  const accessibleClientIds = getAccessibleClientIds(user);
+
+  return notes.filter(
+    (note) =>
+      note.clientId &&
+      (accessibleClientIds ? accessibleClientIds.has(note.clientId) : false) &&
+      isClientVisibleNote(note),
+  );
+};
+
+const activityTypeFromBackend = (value?: number) => {
+  switch (value) {
+    case 1:
+      return "Meeting";
+    case 2:
+      return "Call";
+    case 3:
+      return "Email";
+    case 4:
+      return "Task";
+    case 5:
+      return "Presentation";
+    case 6:
+    default:
+      return "Other";
+  }
+};
+
+const canCreateClientScopedActivity = (
+  user: IMockUser,
+  body: Record<string, unknown>,
+) => {
+  if (!isClientScoped(user)) {
+    return true;
+  }
+
+  const activityType = activityTypeFromBackend(Number(body.type ?? 0));
+
+  if (!["Meeting", "Call"].includes(activityType)) {
+    return false;
+  }
+
+  const relatedToId = body.relatedToId ? String(body.relatedToId) : "";
+  const accessibleClientIds = getAccessibleClientIds(user);
+
+  if (accessibleClientIds?.has(relatedToId)) {
+    return true;
+  }
+
+  return (
+    filterClientScopedOpportunities(user, listMockOpportunities(user.tenantId)).some(
+      (item) => item.id === relatedToId,
+    ) ||
+    filterClientScopedProposals(user, listMockProposals(user.tenantId)).some(
+      (item) => item.id === relatedToId,
+    )
+  );
+};
+
+const canCreateClientScopedNote = (
+  user: IMockUser,
+  body: Record<string, unknown>,
+) => {
+  if (!isClientScoped(user)) {
+    return true;
+  }
+
+  const clientId = body.clientId ? String(body.clientId) : "";
+  const accessibleClientIds = getAccessibleClientIds(user);
+  const category = String(body.category ?? "");
+  const kind = body.kind ? String(body.kind) : "";
+
+  return (
+    !!clientId &&
+    (accessibleClientIds ? accessibleClientIds.has(clientId) : false) &&
+    (kind === "client_message" ||
+      kind === "client_feedback" ||
+      category === "Client Message" ||
+      category === "Client Commercial Feedback")
+  );
+};
+
 const toClientDto = (client: ReturnType<typeof listMockClients>[number]) => ({
   billingAddress: client.billingAddress ?? null,
   clientType: client.clientType ?? 2,
@@ -306,18 +493,24 @@ const handleMockRequest = async (
 
   if (resource === "Opportunities" || resource === "opportunities") {
     if (!id && request.method === "GET") {
-      const items = listMockOpportunities(user.tenantId);
+      const items = filterClientScopedOpportunities(user, listMockOpportunities(user.tenantId));
       return json({ items: items.map(toOpportunityDto) });
     }
 
     if (resource === "opportunities" && id === "my-opportunities" && request.method === "GET") {
-      const items = listMockOpportunities(user.tenantId).filter(
+      const items = filterClientScopedOpportunities(user, listMockOpportunities(user.tenantId)).filter(
         (item) => item.ownerId === user.id,
       );
       return json({ items: items.map(toOpportunityDto) });
     }
 
     if (!id && request.method === "POST" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const opportunity = createMockOpportunity(user, {
         clientId: String(body.clientId ?? ""),
         contactId: body.contactId ? String(body.contactId) : undefined,
@@ -335,6 +528,12 @@ const handleMockRequest = async (
     }
 
     if (id && !nested && request.method === "PUT" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const opportunity = updateMockOpportunity(user.tenantId, id, {
         contactId: body.contactId ? String(body.contactId) : undefined,
         currency: body.currency ? String(body.currency) : "ZAR",
@@ -352,6 +551,12 @@ const handleMockRequest = async (
     }
 
     if (id && nested === "assign" && request.method === "POST" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const opportunity = assignMockOpportunity(user.tenantId, id, String(body.userId ?? ""));
 
       return opportunity
@@ -360,6 +565,12 @@ const handleMockRequest = async (
     }
 
     if (id && nested === "stage" && request.method === "PUT" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const opportunity = updateMockOpportunityStage(
         user.tenantId,
         id,
@@ -372,6 +583,22 @@ const handleMockRequest = async (
     }
 
     if (id && request.method === "DELETE") {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
+      if (
+        isClientScoped(user) &&
+        !canAccessClient(
+          user,
+          listMockOpportunities(user.tenantId).find((item) => item.id === id)?.clientId,
+        )
+      ) {
+        return json({ message: "Opportunity not found." }, 404);
+      }
+
       deleteMockOpportunity(user.tenantId, id);
       return new NextResponse(null, { status: 204 });
     }
@@ -379,10 +606,16 @@ const handleMockRequest = async (
 
   if (resource === "Clients") {
     if (!id && request.method === "GET") {
-      return json({ items: listMockClients(user.tenantId).map(toClientDto) });
+      return json({ items: filterClientScopedClients(user, listMockClients(user.tenantId)).map(toClientDto) });
     }
 
     if (!id && request.method === "POST" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const client = createMockClient(user, {
         billingAddress: body.billingAddress ? String(body.billingAddress) : undefined,
         clientType: Number(body.clientType ?? 2),
@@ -397,6 +630,16 @@ const handleMockRequest = async (
     }
 
     if (id && request.method === "PUT" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
+      if (!canAccessClient(user, id)) {
+        return json({ message: "Client not found." }, 404);
+      }
+
       const client = updateMockClient(user.tenantId, id, {
         billingAddress: body.billingAddress ? String(body.billingAddress) : undefined,
         clientType: Number(body.clientType ?? 2),
@@ -412,6 +655,16 @@ const handleMockRequest = async (
     }
 
     if (id && request.method === "DELETE") {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
+      if (!canAccessClient(user, id)) {
+        return json({ message: "Client not found." }, 404);
+      }
+
       deleteMockClient(user.tenantId, id);
       return new NextResponse(null, { status: 204 });
     }
@@ -419,10 +672,16 @@ const handleMockRequest = async (
 
   if (resource === "Contacts") {
     if (!id && request.method === "GET") {
-      return json({ items: listMockContacts(user.tenantId).map(toContactDto) });
+      return json({ items: filterClientScopedContacts(user, listMockContacts(user.tenantId)).map(toContactDto) });
     }
 
     if (!id && request.method === "POST" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const contact = createMockContact(user, {
         clientId: String(body.clientId ?? ""),
         createdAt: new Date().toISOString(),
@@ -438,6 +697,22 @@ const handleMockRequest = async (
     }
 
     if (id && request.method === "PUT" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
+      if (
+        isClientScoped(user) &&
+        !canAccessClient(
+          user,
+          listMockContacts(user.tenantId).find((item) => item.id === id)?.clientId,
+        )
+      ) {
+        return json({ message: "Contact not found." }, 404);
+      }
+
       const contact = updateMockContact(user.tenantId, id, {
         email: String(body.email ?? ""),
         firstName: String(body.firstName ?? ""),
@@ -451,6 +726,22 @@ const handleMockRequest = async (
     }
 
     if (id && request.method === "DELETE") {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
+      if (
+        isClientScoped(user) &&
+        !canAccessClient(
+          user,
+          listMockContacts(user.tenantId).find((item) => item.id === id)?.clientId,
+        )
+      ) {
+        return json({ message: "Contact not found." }, 404);
+      }
+
       deleteMockContact(user.tenantId, id);
       return new NextResponse(null, { status: 204 });
     }
@@ -460,18 +751,56 @@ const handleMockRequest = async (
     if (!id && request.method === "GET") {
       const items =
         resource === "activities" && path[2] === "my-activities"
-          ? listMockActivities(user.tenantId).filter((item) => item.assignedToId === user.id)
-          : listMockActivities(user.tenantId);
+          ? filterClientScopedActivities(user, listMockActivities(user.tenantId)).filter((item) => item.assignedToId === user.id)
+          : filterClientScopedActivities(user, listMockActivities(user.tenantId));
 
       return json({ items: items.map(toActivityDto) });
     }
 
     if (resource === "activities" && id === "my-activities" && request.method === "GET") {
-      const items = listMockActivities(user.tenantId).filter((item) => item.assignedToId === user.id);
+      const items = filterClientScopedActivities(user, listMockActivities(user.tenantId)).filter((item) => item.assignedToId === user.id);
       return json({ items: items.map(toActivityDto) });
     }
 
+    if (!id && request.method === "POST" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked && !canCreateClientScopedActivity(user, body)) {
+        return blocked;
+      }
+
+      const assignedToId = body.assignedToId ? String(body.assignedToId) : undefined;
+      const assignedToName = assignedToId
+        ? listMockTeamMembers(user.tenantId).find((member) => member.id === assignedToId)?.name
+        : undefined;
+
+      const activity = createMockActivity(user, {
+        assignedToId,
+        assignedToName,
+        completed: false,
+        description: body.description ? String(body.description) : "",
+        dueDate: body.dueDate ? String(body.dueDate).split("T")[0] : new Date().toISOString().split("T")[0],
+        duration: body.duration ? Number(body.duration) : undefined,
+        location: body.location ? String(body.location) : undefined,
+        priority: body.priority ? Number(body.priority) : 2,
+        relatedToId: body.relatedToId ? String(body.relatedToId) : "",
+        relatedToType: body.relatedToType ? Number(body.relatedToType) : 2,
+        status: "Scheduled",
+        subject: body.subject ? String(body.subject) : "Untitled activity",
+        title: body.subject ? String(body.subject) : "Untitled activity",
+        type: activityTypeFromBackend(Number(body.type ?? 0)),
+      });
+
+      return json(toActivityDto(activity), 201);
+    }
+
     if (id && request.method === "PUT" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const activity = updateMockActivity(user.tenantId, id, {
         assignedToId: body.assignedToId ? String(body.assignedToId) : undefined,
         assignedToName: body.assignedToName ? String(body.assignedToName) : undefined,
@@ -489,15 +818,144 @@ const handleMockRequest = async (
 
       return activity ? json(toActivityDto(activity)) : json({ message: "Activity not found." }, 404);
     }
+
+    if (id && request.method === "DELETE") {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
+      const activity = updateMockActivity(user.tenantId, id, { status: "Cancelled" });
+
+      return activity ? json(toActivityDto(activity)) : json({ message: "Activity not found." }, 404);
+    }
+  }
+
+  if (resource === "Notes") {
+    if (!id && request.method === "GET") {
+      const items = filterClientScopedNotes(user, listMockNotes(user.tenantId));
+      return json({ items });
+    }
+
+    if (!id && request.method === "POST" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked && !canCreateClientScopedNote(user, body)) {
+        return blocked;
+      }
+
+      const note = createMockNote(user, {
+        category: String(body.category ?? "General"),
+        clientId: body.clientId ? String(body.clientId) : undefined,
+        content: String(body.content ?? ""),
+        createdDate: body.createdDate ? String(body.createdDate) : new Date().toISOString().split("T")[0],
+        id: body.id ? String(body.id) : undefined,
+        kind: body.kind
+          ? String(body.kind) === "client_feedback"
+            ? "client_feedback"
+            : String(body.kind) === "client_message"
+              ? "client_message"
+              : "general"
+          : undefined,
+        representativeId: body.representativeId ? String(body.representativeId) : undefined,
+        representativeName: body.representativeName ? String(body.representativeName) : undefined,
+        source: body.source
+          ? String(body.source) === "assistant"
+            ? "assistant"
+            : String(body.source) === "client_portal"
+              ? "client_portal"
+              : "workspace"
+          : undefined,
+        status: body.status
+          ? String(body.status) === "Acknowledged"
+            ? "Acknowledged"
+            : "Sent"
+          : undefined,
+        submittedBy: body.submittedBy ? String(body.submittedBy) : undefined,
+        title: String(body.title ?? "Untitled note"),
+      });
+
+      return json(note, 201);
+    }
+
+    if (id && request.method === "PUT" && body) {
+      const existing = listMockNotes(user.tenantId).find((item) => item.id === id);
+
+      if (!existing) {
+        return json({ message: "Note not found." }, 404);
+      }
+
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
+      const note = updateMockNote(user.tenantId, id, {
+        category: body.category ? String(body.category) : undefined,
+        clientId: body.clientId ? String(body.clientId) : undefined,
+        content: body.content ? String(body.content) : undefined,
+        createdDate: body.createdDate ? String(body.createdDate) : undefined,
+        kind: body.kind
+          ? String(body.kind) === "client_feedback"
+            ? "client_feedback"
+            : String(body.kind) === "client_message"
+              ? "client_message"
+              : "general"
+          : undefined,
+        representativeId: body.representativeId ? String(body.representativeId) : undefined,
+        representativeName: body.representativeName ? String(body.representativeName) : undefined,
+        source: body.source
+          ? String(body.source) === "assistant"
+            ? "assistant"
+            : String(body.source) === "client_portal"
+              ? "client_portal"
+              : "workspace"
+          : undefined,
+        status: body.status
+          ? String(body.status) === "Acknowledged"
+            ? "Acknowledged"
+            : "Sent"
+          : undefined,
+        submittedBy: body.submittedBy ? String(body.submittedBy) : undefined,
+        title: body.title ? String(body.title) : undefined,
+      });
+
+      return note ? json(note) : json({ message: "Note not found." }, 404);
+    }
+
+    if (id && request.method === "DELETE") {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
+      const existing = listMockNotes(user.tenantId).find((item) => item.id === id);
+
+      if (!existing) {
+        return json({ message: "Note not found." }, 404);
+      }
+
+      deleteMockNote(user.tenantId, id);
+      return new NextResponse(null, { status: 204 });
+    }
   }
 
   if (resource === "Proposals") {
     if (!id && request.method === "GET") {
-      const items = listMockProposals(user.tenantId);
+      const items = filterClientScopedProposals(user, listMockProposals(user.tenantId));
       return json({ items: items.map(toProposalDto) });
     }
 
     if (!id && request.method === "POST" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const proposal = createMockProposal(user, {
         currency: body.currency ? String(body.currency) : "ZAR",
         description: body.description ? String(body.description) : undefined,
@@ -540,12 +998,20 @@ const handleMockRequest = async (
     if (id && !nested && request.method === "GET") {
       const proposal = getMockProposal(user.tenantId, id);
 
-      return proposal
-        ? json(toProposalDto(proposal))
-        : json({ message: "Proposal not found." }, 404);
+      if (!proposal || !canAccessClient(user, proposal.clientId)) {
+        return json({ message: "Proposal not found." }, 404);
+      }
+
+      return json(toProposalDto(proposal));
     }
 
     if (id && !nested && request.method === "PUT" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const proposal = updateMockProposal(user.tenantId, id, {
         currency: body.currency ? String(body.currency) : "ZAR",
         description: body.description ? String(body.description) : undefined,
@@ -559,6 +1025,12 @@ const handleMockRequest = async (
     }
 
     if (id && nested === "line-items" && request.method === "POST" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const proposal = addMockProposalLineItem(user.tenantId, id, {
         description: body.description ? String(body.description) : undefined,
         discount: Number(body.discount ?? 0),
@@ -574,6 +1046,12 @@ const handleMockRequest = async (
     }
 
     if (id && nested === "line-items" && nestedId && request.method === "PUT" && body) {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const proposal = updateMockProposalLineItem(user.tenantId, id, nestedId, {
         description: body.description ? String(body.description) : undefined,
         discount: Number(body.discount ?? 0),
@@ -589,6 +1067,12 @@ const handleMockRequest = async (
     }
 
     if (id && nested === "line-items" && nestedId && request.method === "DELETE") {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const proposal = deleteMockProposalLineItem(user.tenantId, id, nestedId);
 
       return proposal
@@ -597,6 +1081,12 @@ const handleMockRequest = async (
     }
 
     if (id && nested && ["submit", "approve", "reject"].includes(nested) && request.method === "PUT") {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
       const proposal = transitionMockProposal(
         user.tenantId,
         id,
@@ -610,6 +1100,18 @@ const handleMockRequest = async (
     }
 
     if (id && request.method === "DELETE") {
+      const blocked = clientScopedMutationBlocked(user);
+
+      if (blocked) {
+        return blocked;
+      }
+
+      const proposal = getMockProposal(user.tenantId, id);
+
+      if (!proposal || !canAccessClient(user, proposal.clientId)) {
+        return json({ message: "Proposal not found." }, 404);
+      }
+
       deleteMockProposal(user.tenantId, id);
       return new NextResponse(null, { status: 204 });
     }
