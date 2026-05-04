@@ -27,6 +27,11 @@ export interface INoteItem {
   content: string;
   createdDate: string;
   id: string;
+  kind?: "client_feedback" | "client_message" | "general";
+  representativeId?: string;
+  representativeName?: string;
+  source?: "assistant" | "client_portal" | "workspace";
+  status?: "Acknowledged" | "Sent";
   title: string;
 }
 

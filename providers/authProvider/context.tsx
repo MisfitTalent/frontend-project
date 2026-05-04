@@ -17,6 +17,7 @@ export interface IUserRegisterRequest {
 }
 
 export interface IUserLoginResponse {
+  clientIds?: string[] | null;
   email?: string | null;
   expiresAt?: string;
   firstName?: string | null;
