@@ -2,27 +2,31 @@
 
 import { Alert, Button, Card, Input, Spin, Tag, Typography } from "antd";
 import {
+  CheckCircleOutlined,
   DeleteOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
   SendOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
-import { getSessionToken } from "@/lib/client/backend-api";
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { useAuthState } from "@/providers/authProvider";
 import type { UserRole } from "@/providers/salesTypes";
 import { ASSISTANT_PANEL_DRAFT_KEY, ASSISTANT_PANEL_MESSAGES_KEY } from "./draft-storage";
 import { AssistantRichText } from "./assistant-rich-text";
+import { useStyles } from "./assistant-panel.styles";
 
 type AssistantMessage = {
   content: string;
   mutations?: Array<{
     entityId: string;
-    entityType: "client" | "opportunity" | "proposal";
+    entityType: "activity" | "client" | "opportunity" | "pricing_request" | "proposal";
     operation: "create" | "delete" | "update";
+    record?: Record<string, unknown>;
     title: string;
   }>;
   role: "assistant" | "user";
@@ -33,24 +37,92 @@ type AssistantMessage = {
   }>;
 };
 
+type AssistantMutation = NonNullable<AssistantMessage["mutations"]>[number];
+
 const MAX_VISIBLE_MESSAGES = 12;
 
-const getIntroMessage = (role: UserRole) =>
-  isManagerRole(role)
-    ? "I can help with pipeline risk, next actions, proposal bottlenecks, renewal risk, workload pressure, workspace search, and creating clients, opportunities, and draft proposals or deleting opportunities and draft proposals when you ask explicitly."
-    : "I can help with your assigned opportunities, proposal progress, pricing requests, activities, workspace search, and creating or deleting opportunities and draft proposals when you ask explicitly.";
+const getMutationRoute = (entityType: AssistantMutation["entityType"]) => {
+  switch (entityType) {
+    case "activity":
+      return "/dashboard/activities";
+    case "pricing_request":
+      return "/dashboard/proposals";
+    case "proposal":
+      return "/dashboard/proposals";
+    case "client":
+      return "/dashboard/clients";
+    case "opportunity":
+    default:
+      return "/dashboard/clients";
+  }
+};
 
-export function AssistantPanel() {
+const getMutationOutcome = (
+  mutation: AssistantMutation,
+  isClientPortal: boolean,
+) => {
+  const route = getMutationRoute(mutation.entityType);
+
+  if (!isClientPortal) {
+    return {
+      description: mutation.operation === "delete" ? "Workspace record removed." : "Workspace record updated.",
+      route,
+      title: mutation.title,
+    };
+  }
+
+  switch (mutation.entityType) {
+    case "activity":
+      return {
+        description:
+          mutation.operation === "create"
+            ? "A meeting or walkthrough request is now visible in your Meetings area."
+            : "Your meeting request was updated.",
+        route,
+        title: mutation.title || "Meeting request updated",
+      };
+    case "pricing_request":
+      return {
+        description:
+          mutation.operation === "create"
+            ? "Your commercial request was submitted to the account team."
+            : "Your commercial request was updated.",
+        route,
+        title: mutation.title || "Commercial request updated",
+      };
+    case "proposal":
+      return {
+        description: "The commercial record was updated. Review it in your Commercials area.",
+        route,
+        title: mutation.title || "Commercial record updated",
+      };
+    default:
+      return {
+        description: mutation.operation === "delete" ? "The request was removed." : "The request was recorded.",
+        route,
+        title: mutation.title,
+      };
+  }
+};
+
+const getIntroMessage = (role: UserRole, isClientPortal: boolean) =>
+  isClientPortal
+    ? "Tell me what you want to achieve, what you are evaluating, your timing, or what kind of commercial guidance you need. I can help you think through proposals, meetings, documents, the next client-facing step, and I can submit meeting or commercial requests when you ask explicitly."
+    : isManagerRole(role)
+      ? "I can help with pipeline risk, next actions, proposal bottlenecks, renewal risk, workload pressure, workspace search, and creating clients, opportunities, and draft proposals or deleting opportunities and draft proposals when you ask explicitly."
+      : "I can help with your assigned opportunities, proposal progress, pricing requests, activities, workspace search, and creating or deleting opportunities and draft proposals when you ask explicitly.";
+
+export const AssistantPanel=() =>{
   const { user } = useAuthState();
   const role = getPrimaryUserRole(user?.roles);
+  const isClientPortal = isClientScopedUser(user?.clientIds);
+  const { styles } = useStyles();
   const [draft, setDraft] = useState(() => readSessionDraft<string>(ASSISTANT_PANEL_DRAFT_KEY) ?? "");
   const [error, setError] = useState<string | null>(null);
   const [assistantMode, setAssistantMode] = useState<"groq" | "offline" | "openai" | null>(null);
   const [assistantReason, setAssistantReason] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [messages, setMessages] = useState<AssistantMessage[]>(
-    () => readSessionDraft<AssistantMessage[]>(ASSISTANT_PANEL_MESSAGES_KEY) ?? [],
-  );
+  const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [statusLabel, setStatusLabel] = useState("Awaiting your question");
 
   const resetConversation = () => {
@@ -62,7 +134,17 @@ export function AssistantPanel() {
   };
 
   const suggestedPrompts =
-    role === "SalesRep"
+    isClientPortal
+      ? [
+          "Our goal is to roll this out quickly. What should we clarify first?",
+          "Help me understand which proposal best fits our needs.",
+          "Request a proposal walkthrough with our representative.",
+          "Submit a commercial request for revised pricing.",
+          "What information should we prepare before the next meeting?",
+          "Summarize the current commercial status for our account.",
+          "What should we ask the representative before we decide?",
+        ]
+      : role === "SalesRep"
       ? [
           "What assigned work needs my attention first?",
           "Which pricing request or proposal is blocked?",
@@ -91,23 +173,15 @@ export function AssistantPanel() {
   }, [draft]);
 
   useEffect(() => {
-    if (messages.length > 0) {
-      writeSessionDraft(ASSISTANT_PANEL_MESSAGES_KEY, messages);
-      return;
-    }
-
     clearSessionDraft(ASSISTANT_PANEL_MESSAGES_KEY);
-  }, [messages]);
+  }, []);
 
   useEffect(() => {
     let isActive = true;
 
     const loadAssistantStatus = async () => {
       try {
-        const token = getSessionToken();
-        const response = await fetch("/api/assistant/status", {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        });
+        const response = await fetch("/api/assistant/status");
         const payload = (await response.json()) as {
           isConfigured?: boolean;
           message?: string;
@@ -174,13 +248,9 @@ export function AssistantPanel() {
     setIsSubmitting(true);
 
     try {
-      const token = getSessionToken();
       const response = await fetch("/api/assistant", {
         body: JSON.stringify({ messages: nextMessages }),
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        headers: { "Content-Type": "application/json" },
         method: "POST",
       });
 
@@ -190,8 +260,9 @@ export function AssistantPanel() {
         model?: string;
         mutations?: Array<{
           entityId: string;
-          entityType: "client" | "opportunity" | "proposal";
+          entityType: "activity" | "client" | "opportunity" | "pricing_request" | "proposal";
           operation: "create" | "delete" | "update";
+          record?: Record<string, unknown>;
           title: string;
         }>;
         scopeLabel?: string;
@@ -242,62 +313,99 @@ export function AssistantPanel() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
-        <Card className="min-w-0 border-slate-200">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <RobotOutlined className="text-slate-600" />
-                <Typography.Title className="!mb-0 !text-slate-900" level={4}>
-                  Secure sales assistant
+    <div className={styles.container}>
+      <div className={styles.layout}>
+        <Card className={styles.assistantCard}>
+          <div className={styles.header}>
+            <div className={styles.headerCopy}>
+              <div className={styles.headerRow}>
+                <RobotOutlined className={styles.mutedText} />
+                <Typography.Title className={styles.title} level={4}>
+                  {isClientPortal ? "Client advisor" : "Secure sales assistant"}
                 </Typography.Title>
               </div>
-              <Typography.Text className="block !text-slate-500">
+              <Typography.Text className={styles.panelText}>
                 {statusLabel}
               </Typography.Text>
             </div>
-            <Tag color={isManagerRole(role) ? "#f28c28" : "#4f7cac"}>
-              {isManagerRole(role) ? "Manager scope" : `${getUserRoleLabel(role)} scope`}
+            <Tag color={isClientPortal ? "orange" : isManagerRole(role) ? "orange" : "blue"}>
+              {isClientPortal
+                ? "Client account scope"
+                : isManagerRole(role)
+                  ? "Manager scope"
+                  : `${getUserRoleLabel(role)} scope`}
             </Tag>
           </div>
 
-          <div className="space-y-3">
+          <div className={styles.messageContainer}>
             {messages.length === 0 ? (
-              <div className="rounded-3xl bg-slate-50 p-4 text-slate-700">
-                <AssistantRichText className="text-slate-700" content={getIntroMessage(role)} />
+              <div className={styles.emptyMessage}>
+                <AssistantRichText
+                  className={styles.introText}
+                  content={getIntroMessage(role, isClientPortal)}
+                />
               </div>
             ) : null}
 
             {messages.map((message, index) => (
               <div
-                className={`rounded-3xl p-4 ${
-                  message.role === "assistant"
-                    ? "bg-slate-50 text-slate-700"
-                    : "bg-[#1f365c] text-white"
-                }`}
+                className={message.role === "assistant" ? styles.assistantMessage : styles.userMessage}
                 key={`${message.role}-${index}`}
               >
                 <AssistantRichText
-                  className={message.role === "assistant" ? "text-slate-700" : "text-white"}
+                  className={message.role === "assistant" ? styles.assistantText : styles.userText}
                   content={message.content}
                 />
-                {message.role === "assistant" && message.trace?.length ? (
-                  <details className="mt-3 rounded-2xl border border-slate-200 bg-white/70 px-3 py-2 text-sm text-slate-600">
-                    <summary className="cursor-pointer font-medium text-slate-700">
+                {message.role === "assistant" && message.mutations?.length ? (
+                  <div className={styles.messageBlock}>
+                    {message.mutations.map((mutation, mutationIndex) => {
+                      const outcome = getMutationOutcome(mutation, isClientPortal);
+
+                      return (
+                        <div
+                          className={styles.mutationCard}
+                          key={`${mutation.entityType}-${mutation.entityId}-${mutationIndex}`}
+                        >
+                          <div className={styles.mutationHeader}>
+                            <div className={styles.mutationInfo}>
+                              <CheckCircleOutlined className={styles.statusIcon} />
+                              <div className={styles.mutationCopy}>
+                                <Typography.Text className={styles.title}>
+                                  {outcome.title}
+                                </Typography.Text>
+                                <Typography.Text className={styles.mutationText}>
+                                  {outcome.description}
+                                </Typography.Text>
+                              </div>
+                            </div>
+                            <Link
+                              className={styles.link}
+                              href={outcome.route}
+                            >
+                              Open
+                            </Link>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {message.role === "assistant" && message.trace?.length && !isClientPortal ? (
+                  <details className={styles.traceDetails}>
+                    <summary className={styles.traceSummary}>
                       View assistant trace
                     </summary>
-                    <div className="mt-3 space-y-3">
+                    <div className={styles.messageBlock}>
                       {message.trace.map((step, stepIndex) => (
                         <div
-                          className="rounded-2xl border border-slate-200 bg-slate-50 p-3"
+                          className={styles.traceCard}
                           key={`${step.tool}-${stepIndex}`}
                         >
                           <Typography.Text strong>{step.tool}</Typography.Text>
-                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-slate-600">
+                          <pre className={styles.tracePre}>
                             {JSON.stringify(step.arguments, null, 2)}
                           </pre>
-                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-slate-500">
+                          <pre className={styles.tracePreMuted}>
                             {step.outputPreview}
                           </pre>
                         </div>
@@ -309,14 +417,16 @@ export function AssistantPanel() {
             ))}
 
             {isSubmitting ? (
-              <div className="flex items-center gap-3 rounded-3xl bg-slate-50 p-4 text-slate-500">
-                <Spin size="small" />
-                <span>Reviewing authorized workspace data...</span>
+              <div className={styles.assistantMessage}>
+                <div className={styles.headerRow}>
+                  <Spin size="small" />
+                  <span>Reviewing authorized workspace data...</span>
+                </div>
               </div>
             ) : null}
           </div>
 
-          <div className="mt-5 space-y-3">
+          <div className={styles.submitRow}>
             <Input.TextArea
               onChange={(event) => setDraft(event.target.value)}
               onPressEnter={(event) => {
@@ -325,20 +435,24 @@ export function AssistantPanel() {
                   void sendMessage(draft);
                 }
               }}
-              placeholder="Ask for pipeline advice, account status, follow-ups, workspace search, or ask me to create a client, opportunity, or draft proposal, or delete an opportunity or draft proposal."
+              placeholder={
+                isClientPortal
+                  ? "Tell me your goals, what you are evaluating, what outcome you want, or ask me to request a meeting, walkthrough, or commercial follow-up for you."
+                  : "Ask for pipeline advice, account status, follow-ups, workspace search, or ask me to create a client, opportunity, or draft proposal, or delete an opportunity or draft proposal."
+              }
               rows={4}
               value={draft}
             />
 
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2">
+            <div className={styles.actionBar}>
+              <div className={styles.suggestionList}>
                 {suggestedPrompts.map((prompt) => (
                   <Button key={prompt} onClick={() => void sendMessage(prompt)}>
                     {prompt}
                   </Button>
                 ))}
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className={styles.actionGroup}>
                 <Button
                   disabled={messages.length === 0 && !draft}
                   icon={<DeleteOutlined />}
@@ -361,7 +475,7 @@ export function AssistantPanel() {
           </div>
         </Card>
 
-        <div className="space-y-4">
+        <div className={styles.rightColumn}>
           {assistantMode === "offline" ? (
             <Alert
               showIcon
@@ -375,31 +489,47 @@ export function AssistantPanel() {
             />
           ) : null}
 
-          <Card className="border-slate-200">
-            <div className="flex items-start gap-3">
-              <SafetyCertificateOutlined className="mt-1 text-[#f28c28]" />
-              <div className="space-y-2">
-                <Typography.Title className="!mb-0" level={5}>
-                  Security posture
+          <Card className={styles.helperCard}>
+            <div className={styles.helperCardBody}>
+              <SafetyCertificateOutlined className={styles.statusIcon} />
+              <div className={styles.helperCopy}>
+                <Typography.Title className={styles.title} level={5}>
+                  {isClientPortal ? "Client-safe guidance" : "Security posture"}
                 </Typography.Title>
-                <Typography.Paragraph className="!mb-0 !text-slate-600">
-                  Every assistant request is authorized on the server using your bearer token before any data is exposed to the model.
+                <Typography.Paragraph className={styles.helperText}>
+                  {isClientPortal
+                    ? "Your questions are answered using only the records visible to your account in this client workspace."
+                    : "Every assistant request is authorized on the server using your bearer token before any data is exposed to the model."}
                 </Typography.Paragraph>
-                <Typography.Paragraph className="!mb-0 !text-slate-600">
-                  Responses are constrained by your tenant and your role, with manager-focused or contributor-focused guidance depending on your permissions.
+                <Typography.Paragraph className={styles.helperText}>
+                  {isClientPortal
+                    ? "The advisor is intended to help you clarify goals, understand your commercial status, and prepare for the next conversation."
+                    : "Responses are constrained by your tenant and your role, with manager-focused or contributor-focused guidance depending on your permissions."}
                 </Typography.Paragraph>
               </div>
             </div>
           </Card>
 
-          <Card className="border-slate-200" title="What You Can Ask">
-            <div className="space-y-3 text-sm text-slate-600">
-              <p>Pipeline priority and next actions</p>
-              <p>Proposal status and blockers</p>
-              <p>Renewal risk and deadline pressure</p>
-              <p>Follow-ups, workload pressure, and role-appropriate business summaries</p>
-              <p>Workspace search across clients, opportunities, proposals, contracts, notes, documents, pricing requests, and renewals</p>
-              <p>Create a client, opportunity, or draft proposal, or delete an opportunity or draft proposal, when you provide enough detail</p>
+          <Card className={styles.helperCard} title="What You Can Ask">
+            <div className={styles.helperList}>
+              {isClientPortal ? (
+                <>
+                  <p>Your goals, desired outcomes, and evaluation questions</p>
+                  <p>Proposal status, current commercials, and what to clarify next</p>
+                  <p>Meeting preparation, document requests, and account questions</p>
+                  <p>Request a meeting, proposal walkthrough, or commercial follow-up</p>
+                  <p>Guidance on what to ask your representative before deciding</p>
+                </>
+              ) : (
+                <>
+                  <p>Pipeline priority and next actions</p>
+                  <p>Proposal status and blockers</p>
+                  <p>Renewal risk and deadline pressure</p>
+                  <p>Follow-ups, workload pressure, and role-appropriate business summaries</p>
+                  <p>Workspace search across clients, opportunities, proposals, contracts, notes, documents, pricing requests, and renewals</p>
+                  <p>Create a client, opportunity, or draft proposal, or delete an opportunity or draft proposal, when you provide enough detail</p>
+                </>
+              )}
             </div>
           </Card>
         </div>
