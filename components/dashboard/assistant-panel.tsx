@@ -21,8 +21,15 @@ type AssistantMessage = {
   content: string;
   mutations?: Array<{
     entityId: string;
-    entityType: "client" | "opportunity" | "proposal";
+    entityType:
+      | "activity"
+      | "client"
+      | "note"
+      | "opportunity"
+      | "pricing_request"
+      | "proposal";
     operation: "create" | "delete" | "update";
+    record?: Record<string, unknown>;
     title: string;
   }>;
   role: "assistant" | "user";
@@ -190,8 +197,15 @@ export function AssistantPanel() {
         model?: string;
         mutations?: Array<{
           entityId: string;
-          entityType: "client" | "opportunity" | "proposal";
+          entityType:
+            | "activity"
+            | "client"
+            | "note"
+            | "opportunity"
+            | "pricing_request"
+            | "proposal";
           operation: "create" | "delete" | "update";
+          record?: Record<string, unknown>;
           title: string;
         }>;
         scopeLabel?: string;

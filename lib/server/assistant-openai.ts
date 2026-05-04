@@ -13,17 +13,27 @@ import { getAssistantServerConfig } from "./assistant-config";
 import type { IAssistantWorkspace } from "./assistant-workspace";
 import { isManagerRole } from "@/lib/auth/roles";
 import {
+  createMockActivity,
   createMockClient,
+  createMockNote,
+  deleteMockClient,
   deleteMockOpportunity,
   deleteMockProposal,
+  deleteMockActivity,
+  deleteMockNote,
+  deleteMockPricingRequest,
   createMockOpportunity,
+  createMockPricingRequest,
   createMockProposal,
   updateMockActivity,
+  updateMockNote,
   updateMockOpportunity,
+  updateMockPricingRequest,
 } from "@/lib/server/mock-workspace-store";
 
 export type AssistantMessage = {
   content: string;
+  mutations?: AssistantMutation[];
   role: "assistant" | "user";
 };
 
@@ -35,8 +45,9 @@ export type AssistantTraceStep = {
 
 export type AssistantMutation = {
   entityId: string;
-  entityType: "activity" | "client" | "opportunity" | "proposal";
+  entityType: "activity" | "client" | "note" | "opportunity" | "pricing_request" | "proposal";
   operation: "create" | "delete" | "update";
+  record?: Record<string, unknown>;
   title: string;
 };
 
@@ -185,10 +196,23 @@ const createAssistantActor = (workspace: IAssistantWorkspace): AssistantActor =>
   tenantName: workspace.scopeLabel,
 });
 
-const createToolset = (workspace: IAssistantWorkspace) => {
+const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessage[]) => {
   const { salesData } = workspace;
   const opportunityInsights = getOpportunityInsights(salesData);
   const actor = createAssistantActor(workspace);
+  const recentMutations = [...messages]
+    .reverse()
+    .filter((message) => message.role === "assistant")
+    .flatMap((message) => message.mutations ?? []);
+
+  const getRecentMutation = (...entityTypes: AssistantMutation["entityType"][]) =>
+    recentMutations.find(
+      (mutation) =>
+        mutation.operation === "create" && entityTypes.includes(mutation.entityType),
+    );
+
+  const hasValueReference = (value: unknown) =>
+    typeof value === "string" && value.trim().length > 0;
 
   const findClientByReference = (reference: unknown) => {
     if (typeof reference !== "string" || !reference.trim()) {
@@ -272,12 +296,61 @@ const createToolset = (workspace: IAssistantWorkspace) => {
     );
   };
 
-  const resolveClient = (args: Record<string, unknown>) => {
+  const getRecentClient = () => {
+    const recentClientMutation = getRecentMutation("client");
+
+    if (!recentClientMutation) {
+      return null;
+    }
+
+    return findClientByReference(recentClientMutation.entityId) ?? null;
+  };
+
+  const getRecentOpportunity = () => {
+    const recentOpportunityMutation = getRecentMutation("opportunity");
+
+    if (!recentOpportunityMutation) {
+      return null;
+    }
+
+    return findOpportunityByReference(recentOpportunityMutation.entityId) ?? null;
+  };
+
+  const getRecentProposal = () => {
+    const recentProposalMutation = getRecentMutation("proposal");
+
+    if (!recentProposalMutation) {
+      return null;
+    }
+
+    return findProposalByReference(recentProposalMutation.entityId) ?? null;
+  };
+
+  const resolveClient = (
+    args: Record<string, unknown>,
+    options?: { allowRecentFallback?: boolean },
+  ) => {
     const directClient =
       findClientByReference(args.clientId) ??
       findClientByReference(args.clientName) ??
       findClientByReference(args.organizationName) ??
       findClientByReference(args.accountName);
+
+    if (!directClient && options?.allowRecentFallback) {
+      const hasExplicitClientReference =
+        hasValueReference(args.clientId) ||
+        hasValueReference(args.clientName) ||
+        hasValueReference(args.organizationName) ||
+        hasValueReference(args.accountName);
+
+      if (!hasExplicitClientReference) {
+        const recentClient = getRecentClient();
+
+        if (recentClient) {
+          return recentClient;
+        }
+      }
+    }
 
     if (!directClient) {
       throw new Error(
@@ -290,7 +363,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
 
   const resolveOpportunity = (
     args: Record<string, unknown>,
-    options?: { allowCreateIfMissing?: boolean },
+    options?: { allowCreateIfMissing?: boolean; allowRecentFallback?: boolean },
   ) => {
     const directOpportunity =
       findOpportunityByReference(args.opportunityId) ??
@@ -300,7 +373,20 @@ const createToolset = (workspace: IAssistantWorkspace) => {
       return directOpportunity;
     }
 
-    const client = resolveClient(args);
+    if (options?.allowRecentFallback) {
+      const hasExplicitOpportunityReference =
+        hasValueReference(args.opportunityId) || hasValueReference(args.opportunityTitle);
+
+      if (!hasExplicitOpportunityReference) {
+        const recentOpportunity = getRecentOpportunity();
+
+        if (recentOpportunity) {
+          return recentOpportunity;
+        }
+      }
+    }
+
+    const client = resolveClient(args, { allowRecentFallback: options?.allowRecentFallback });
     const clientOpportunities = salesData.opportunities.filter(
       (opportunity) => opportunity.clientId === client.id,
     );
@@ -361,7 +447,10 @@ const createToolset = (workspace: IAssistantWorkspace) => {
     return generatedOpportunity;
   };
 
-  const resolveProposal = (args: Record<string, unknown>) => {
+  const resolveProposal = (
+    args: Record<string, unknown>,
+    options?: { allowRecentFallback?: boolean },
+  ) => {
     const directProposal =
       findProposalByReference(args.proposalId) ??
       findProposalByReference(args.proposalTitle) ??
@@ -369,6 +458,21 @@ const createToolset = (workspace: IAssistantWorkspace) => {
 
     if (directProposal) {
       return directProposal;
+    }
+
+    if (options?.allowRecentFallback) {
+      const hasExplicitProposalReference =
+        hasValueReference(args.proposalId) ||
+        hasValueReference(args.proposalTitle) ||
+        hasValueReference(args.title);
+
+      if (!hasExplicitProposalReference) {
+        const recentProposal = getRecentProposal();
+
+        if (recentProposal) {
+          return recentProposal;
+        }
+      }
     }
 
     const client =
@@ -628,6 +732,21 @@ const createToolset = (workspace: IAssistantWorkspace) => {
           validUntil: { type: "string" },
         },
         required: ["title", "validUntil"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Delete an existing client and its linked mock opportunity and proposal records when the user explicitly asks to remove the account they just created or no longer need.",
+      name: "delete_client",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          accountName: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          organizationName: { type: "string" },
+        },
         type: "object",
       },
     },
@@ -988,8 +1107,41 @@ const createToolset = (workspace: IAssistantWorkspace) => {
           proposal,
         };
       }
+      case "delete_client": {
+        const client = resolveClient(args, { allowRecentFallback: true });
+
+        deleteMockClient(workspace.tenantId, client.id);
+        workspace.salesData.clients = workspace.salesData.clients.filter(
+          (item) => item.id !== client.id,
+        );
+        workspace.salesData.contacts = workspace.salesData.contacts.filter(
+          (item) => item.clientId !== client.id,
+        );
+        workspace.salesData.opportunities = workspace.salesData.opportunities.filter(
+          (item) => item.clientId !== client.id,
+        );
+        workspace.salesData.proposals = workspace.salesData.proposals.filter(
+          (item) => item.clientId !== client.id,
+        );
+
+        return {
+          deletedClient: {
+            id: client.id,
+            name: client.name,
+          },
+          mutation: {
+            entityId: client.id,
+            entityType: "client" as const,
+            operation: "delete" as const,
+            title: client.name,
+          },
+        };
+      }
       case "delete_opportunity": {
-        const opportunity = resolveOpportunity(args, { allowCreateIfMissing: false });
+        const opportunity = resolveOpportunity(args, {
+          allowCreateIfMissing: false,
+          allowRecentFallback: true,
+        });
 
         deleteMockOpportunity(workspace.tenantId, opportunity.id);
         workspace.salesData.opportunities = workspace.salesData.opportunities.filter(
@@ -1013,7 +1165,7 @@ const createToolset = (workspace: IAssistantWorkspace) => {
         };
       }
       case "delete_proposal": {
-        const proposal = resolveProposal(args);
+        const proposal = resolveProposal(args, { allowRecentFallback: true });
 
         deleteMockProposal(workspace.tenantId, proposal.id);
         workspace.salesData.proposals = workspace.salesData.proposals.filter(
@@ -1337,7 +1489,7 @@ export const runSecureAssistant = async ({
     };
   }
 
-  const { runTool, toolDefinitions } = createToolset(workspace);
+  const { runTool, toolDefinitions } = createToolset(workspace, messages);
   const toolMetadata = createToolMetadata(toolDefinitions);
   const trace: AssistantTraceStep[] = [];
   const mutations: AssistantMutation[] = [];
