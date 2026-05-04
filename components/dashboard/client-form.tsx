@@ -1,7 +1,7 @@
 "use client";
 
 import { Form, Input, InputNumber, Modal, Select } from "antd";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { OpportunityStage, type IClient } from "@/providers/salesTypes";
@@ -39,9 +39,14 @@ export function ClientForm({
   onClose,
   onSave,
 }: ClientFormProps) {
+  const [isClient, setIsClient] = useState(false);
   const [form] = Form.useForm<ClientFormValues>();
   const { contacts } = useContactState();
   const draftKey = getClientFormDraftKey(editingClient?.id);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   useEffect(() => {
     const savedDraft = readSessionDraft<Partial<ClientFormValues>>(draftKey);
@@ -79,8 +84,13 @@ export function ClientForm({
     clearSessionDraft(draftKey);
   };
 
+  if (!isClient) {
+    return null;
+  }
+
   return (
     <Modal
+      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}

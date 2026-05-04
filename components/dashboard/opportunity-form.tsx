@@ -2,7 +2,7 @@
 
 import { DatePicker, Form, Input, InputNumber, Modal, Select } from "antd";
 import dayjs from "dayjs";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { OPPORTUNITY_STAGE_ORDER, type IOpportunity } from "@/providers/salesTypes";
@@ -42,12 +42,17 @@ export function OpportunityForm({
   onSubmitStart,
   onSubmitEnd,
 }: OpportunityFormProps) {
+  const [isClient, setIsClient] = useState(false);
   const [form] = Form.useForm<OpportunityFormValues>();
   const { clients } = useClientState();
   const { teamMembers } = useDashboardState();
   const { opportunities } = useOpportunityState();
   const { addOpportunity, updateOpportunity } = useOpportunityActions();
   const draftKey = getOpportunityFormDraftKey(editingId);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   useEffect(() => {
     const savedDraft = readSessionDraft<PersistedOpportunityFormValues>(draftKey);
@@ -113,8 +118,13 @@ export function OpportunityForm({
     }
   };
 
+  if (!isClient) {
+    return null;
+  }
+
   return (
     <Modal
+      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}

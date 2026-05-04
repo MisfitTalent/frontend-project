@@ -1,7 +1,7 @@
 "use client";
 
 import { Form, Input, Modal, Select } from "antd";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { ActivityStatus, ActivityType, type IActivity } from "@/providers/salesTypes";
 import { useActivityActions, useActivityState } from "@/providers/activityProvider";
@@ -26,12 +26,17 @@ export default function ActivityForm({
   onSubmitStart,
   onSubmitEnd,
 }: ActivityFormProps) {
+  const [isClient, setIsClient] = useState(false);
   const [form] = Form.useForm();
   const { activities } = useActivityState();
   const { opportunities } = useOpportunityState();
   const { proposals } = useProposalState();
   const { teamMembers } = useDashboardState();
   const { addActivity, updateActivity } = useActivityActions();
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   useEffect(() => {
     if (editingId) {
@@ -87,6 +92,10 @@ export default function ActivityForm({
       onSubmitEnd?.();
     }
   };
+
+  if (!isClient) {
+    return null;
+  }
 
   return (
     <Modal

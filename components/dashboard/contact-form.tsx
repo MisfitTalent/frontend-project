@@ -1,7 +1,7 @@
 "use client";
 
 import { Form, Input, Modal, Select } from "antd";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { type IContact } from "@/providers/salesTypes";
 import { useClientState } from "@/providers/clientProvider";
@@ -21,8 +21,13 @@ export function ContactForm({
   onClose,
   onSave,
 }: ContactFormProps) {
+  const [isClient, setIsClient] = useState(false);
   const [form] = Form.useForm();
   const { clients } = useClientState();
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   useEffect(() => {
     if (editingContact) {
@@ -31,6 +36,10 @@ export function ContactForm({
       form.resetFields();
     }
   }, [editingContact, form, isOpen]);
+
+  if (!isClient) {
+    return null;
+  }
 
   return (
     <Modal

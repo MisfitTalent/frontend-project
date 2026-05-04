@@ -49,6 +49,7 @@ const getLineItemTotal = (item?: Partial<ILineItem>) => {
 };
 
 export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) {
+  const [isClient, setIsClient] = useState(false);
   const [form] = Form.useForm<ProposalFormValues>();
   const { proposals } = useProposalState();
   const { opportunities } = useOpportunityState();
@@ -64,6 +65,10 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
   const isLoadingProposal = Boolean(
     editingId && !editingProposal?.lineItems?.length && !watchedTitle,
   );
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   const proposalTotal = useMemo(
     () =>
@@ -180,8 +185,13 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
     }
   };
 
+  if (!isClient) {
+    return null;
+  }
+
   return (
     <Modal
+      forceRender
       onCancel={() => {
         setFormError(null);
         onClose();
@@ -192,20 +202,21 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
       title={editingId ? "Edit proposal" : "Create proposal"}
       width={920}
     >
-      {isLoadingProposal ? (
-        <div className="flex items-center justify-center py-16">
-          <Spin />
-        </div>
-      ) : (
-        <Form
-          className="pt-4"
-          form={form}
-          layout="vertical"
-          onFinish={handleSubmit}
-          onValuesChange={(_, allValues) =>
-            writeSessionDraft(draftKey, allValues satisfies Partial<ProposalFormValues>)
-          }
-        >
+      <Form
+        className="pt-4"
+        form={form}
+        layout="vertical"
+        onFinish={handleSubmit}
+        onValuesChange={(_, allValues) =>
+          writeSessionDraft(draftKey, allValues satisfies Partial<ProposalFormValues>)
+        }
+      >
+        {isLoadingProposal ? (
+          <div className="flex items-center justify-center py-16">
+            <Spin />
+          </div>
+        ) : (
+          <>
           <div className="grid gap-5 md:grid-cols-2">
             <Form.Item
               label="Opportunity"
@@ -372,8 +383,9 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
           {formError ? (
             <Alert className="mt-4" message={formError} type="error" />
           ) : null}
-        </Form>
-      )}
+          </>
+        )}
+      </Form>
     </Modal>
   );
 }

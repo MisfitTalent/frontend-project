@@ -1,7 +1,7 @@
 "use client";
 
 import { Form, Input, Modal, InputNumber } from "antd";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useContractActions, useContractState } from "@/providers/contractProvider";
 import { type IRenewal } from "@/providers/salesTypes";
 
@@ -19,9 +19,14 @@ interface RenewalFormValues {
 }
 
 export function RenewalForm({ isOpen, editingId, onClose }: RenewalFormProps) {
+  const [isClient, setIsClient] = useState(false);
   const [form] = Form.useForm();
   const { renewals } = useContractState();
   const { addRenewal, updateRenewal } = useContractActions();
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   useEffect(() => {
     if (editingId) {
@@ -61,6 +66,10 @@ export function RenewalForm({ isOpen, editingId, onClose }: RenewalFormProps) {
     onClose();
     form.resetFields();
   };
+
+  if (!isClient) {
+    return null;
+  }
 
   return (
     <Modal
