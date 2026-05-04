@@ -15,7 +15,6 @@ import {
   type ITeamMember,
 } from "@/providers/salesTypes";
 export { getSessionToken } from "@/lib/client/auth-session";
-import { getSessionToken } from "@/lib/client/auth-session";
 
 export type BackendPagedResult<T> = {
   items?: T[] | null;
@@ -184,11 +183,6 @@ export const backendRequest = async <T>(
   init: RequestInit = {},
 ): Promise<T> => {
   const headers = new Headers(init.headers);
-  const token = getSessionToken();
-
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
 
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
