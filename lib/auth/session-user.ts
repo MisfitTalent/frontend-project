@@ -33,6 +33,35 @@ const readStringClaim = (payload: JwtPayload, keys: string[]) => {
   return null;
 };
 
+const readStringArrayClaim = (payload: JwtPayload, keys: string[]) => {
+  for (const key of keys) {
+    const value = payload[key];
+
+    if (Array.isArray(value)) {
+      const items = value.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0,
+      );
+
+      if (items.length > 0) {
+        return items.map((item) => item.trim());
+      }
+    }
+
+    if (typeof value === "string" && value.trim()) {
+      const items = value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      if (items.length > 0) {
+        return items;
+      }
+    }
+  }
+
+  return [];
+};
+
 const readRoleClaim = (payload: JwtPayload): MockUserRole => {
   const candidates = [
     payload.role,
@@ -99,7 +128,12 @@ const getJwtUserFromToken = (token: string): IMockUser | null => {
   const [fallbackFirstName, ...fallbackLastNameParts] = fullName.split(" ").filter(Boolean);
 
   return {
-    clientIds: [],
+    clientIds: readStringArrayClaim(payload, [
+      "clientIds",
+      "client_ids",
+      "clients",
+      "clientScope",
+    ]),
     email,
     firstName: firstName || fallbackFirstName || email,
     id:
