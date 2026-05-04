@@ -29,6 +29,48 @@ const parseMessages = (value: unknown): AssistantMessage[] => {
       const role =
         (message as { role?: unknown }).role === "assistant" ? "assistant" : "user";
       const content = String((message as { content?: unknown }).content ?? "").trim();
+      const rawMutations = (message as { mutations?: unknown }).mutations;
+      let mutations: AssistantMutation[] | undefined;
+
+      if (Array.isArray(rawMutations)) {
+        mutations = rawMutations
+          .flatMap((mutation) => {
+            if (!mutation || typeof mutation !== "object") {
+              return [];
+            }
+
+            const candidate = mutation as {
+              entityId?: unknown;
+              entityType?: unknown;
+              operation?: unknown;
+              record?: unknown;
+              title?: unknown;
+            };
+
+            if (
+              typeof candidate.entityId !== "string" ||
+              typeof candidate.entityType !== "string" ||
+              typeof candidate.operation !== "string" ||
+              typeof candidate.title !== "string"
+            ) {
+              return [];
+            }
+
+            return [
+              {
+                entityId: candidate.entityId,
+                entityType: candidate.entityType as AssistantMutation["entityType"],
+                operation: candidate.operation as AssistantMutation["operation"],
+                record:
+                  candidate.record && typeof candidate.record === "object"
+                    ? (candidate.record as Record<string, unknown>)
+                    : undefined,
+                title: candidate.title,
+              },
+            ];
+          })
+          .slice(0, 8);
+      }
 
       if (!content) {
         throw new Error("Message content is required.");
@@ -36,6 +78,7 @@ const parseMessages = (value: unknown): AssistantMessage[] => {
 
       return {
         content: content.slice(0, MAX_MESSAGE_LENGTH),
+        mutations,
         role,
       };
     });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useState } from "react";
 
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import {
@@ -53,6 +53,19 @@ export default function PricingRequestProvider({
   const isDemoMode = isMockSessionToken(getSessionToken());
   const role = getPrimaryUserRole(user?.roles);
 
+  const listPath =
+    role === "SalesRep"
+      ? "/api/pricingrequests/my-requests?pageNumber=1&pageSize=100"
+      : "/api/PricingRequests?pageNumber=1&pageSize=100";
+
+  const loadPricingRequests = useCallback(async () => {
+    const payload = await backendRequest<BackendPagedResult<BackendPricingRequestDto> | BackendPricingRequestDto[]>(
+      listPath,
+    );
+
+    setPricingRequests(coerceItems(payload).map(mapBackendPricingRequest));
+  }, [listPath]);
+
   useEffect(() => {
     if (!isAuthenticated) {
       return;
@@ -61,37 +74,39 @@ export default function PricingRequestProvider({
     let isActive = true;
 
     if (isDemoMode) {
-      Promise.resolve().then(() => {
-        if (isActive) {
-          setPricingRequests(initialPricingRequests());
-        }
-      });
+      const timer = window.setTimeout(() => {
+        void loadPricingRequests().catch((error) => {
+          console.error(error);
+
+          if (isActive) {
+            setPricingRequests(initialPricingRequests());
+          }
+        });
+      }, 0);
+
+      const handleWorkspaceUpdate = () => {
+        void loadPricingRequests().catch((error) => {
+          console.error(error);
+        });
+      };
+
+      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
 
       return () => {
         isActive = false;
+        window.clearTimeout(timer);
+        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
       };
     }
 
-    void backendRequest<BackendPagedResult<BackendPricingRequestDto> | BackendPricingRequestDto[]>(
-      role === "SalesRep"
-        ? "/api/pricingrequests/my-requests?pageNumber=1&pageSize=100"
-        : "/api/PricingRequests?pageNumber=1&pageSize=100",
-    )
-      .then((payload) => {
-        if (!isActive) {
-          return;
-        }
-
-        setPricingRequests(coerceItems(payload).map(mapBackendPricingRequest));
-      })
-      .catch((error) => {
+    void loadPricingRequests().catch((error) => {
         console.error(error);
       });
 
     return () => {
       isActive = false;
     };
-  }, [isAuthenticated, isDemoMode, role]);
+  }, [isAuthenticated, isDemoMode, loadPricingRequests]);
 
   const replacePricingRequest = (request: IPricingRequest) => {
     setPricingRequests((current) => {
