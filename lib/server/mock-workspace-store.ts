@@ -38,6 +38,12 @@ type MockWorkspaceState = {
   salesData: ISalesData;
 };
 
+declare global {
+  // Keep one in-memory store across Next route bundles in the same Node process.
+  // eslint-disable-next-line no-var
+  var __mockWorkspaceStore__: Map<string, MockWorkspaceState> | undefined;
+}
+
 type CreateOpportunityInput = {
   clientId: string;
   contactId?: string;
@@ -78,13 +84,10 @@ type CreatePricingRequestInput = Omit<IPricingRequest, "createdAt" | "id"> & {
   id?: string;
 };
 
-declare global {
-  var __autosalesMockWorkspaceStore__: Map<string, MockWorkspaceState> | undefined;
-}
-
 const workspaceStore =
-  globalThis.__autosalesMockWorkspaceStore__ ??
-  (globalThis.__autosalesMockWorkspaceStore__ = new Map<string, MockWorkspaceState>());
+  globalThis.__mockWorkspaceStore__ ?? new Map<string, MockWorkspaceState>();
+
+globalThis.__mockWorkspaceStore__ = workspaceStore;
 
 const createId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -576,13 +579,77 @@ export const updateMockActivity = (
   return clone(workspace.salesData.activities[index]);
 };
 
+export const deleteMockActivity = (tenantId: string, activityId: string) => {
+  const workspace = getWorkspaceState(tenantId);
+  workspace.salesData.activities = workspace.salesData.activities.filter(
+    (item) => item.id !== activityId,
+  );
+};
+
 export const listMockPricingRequests = (tenantId: string): IPricingRequest[] =>
   clone(getWorkspaceState(tenantId).pricingRequests);
+
+export const createMockPricingRequest = (
+  user: IMockUser,
+  input: CreatePricingRequestInput,
+) => {
+  const workspace = getWorkspaceState(user.tenantId);
+  const pricingRequest: IPricingRequest = {
+    ...input,
+    createdAt: new Date().toISOString(),
+    id: input.id ?? createId("price"),
+    requiredByDate: normalizeDate(input.requiredByDate),
+  };
+
+  workspace.pricingRequests.push(pricingRequest);
+  workspace.salesData.automationFeed.unshift({
+    createdAt: new Date().toISOString(),
+    description:
+      `${user.firstName} ${user.lastName}`.trim() + ` submitted ${pricingRequest.title}.`,
+    id: createId("auto"),
+    title: "Commercial request created",
+  });
+
+  return clone(pricingRequest);
+};
+
+export const updateMockPricingRequest = (
+  tenantId: string,
+  pricingRequestId: string,
+  patch: Partial<IPricingRequest>,
+) => {
+  const workspace = getWorkspaceState(tenantId);
+  const index = workspace.pricingRequests.findIndex((item) => item.id === pricingRequestId);
+
+  if (index < 0) {
+    return null;
+  }
+
+  workspace.pricingRequests[index] = {
+    ...workspace.pricingRequests[index],
+    ...patch,
+    requiredByDate: normalizeDate(
+      patch.requiredByDate ?? workspace.pricingRequests[index].requiredByDate,
+    ),
+  };
+
+  return clone(workspace.pricingRequests[index]);
+};
+
+export const deleteMockPricingRequest = (tenantId: string, pricingRequestId: string) => {
+  const workspace = getWorkspaceState(tenantId);
+  workspace.pricingRequests = workspace.pricingRequests.filter(
+    (item) => item.id !== pricingRequestId,
+  );
+};
 
 export const listMockNotes = (tenantId: string): INoteItem[] =>
   clone(getWorkspaceState(tenantId).notes);
 
-export const createMockNote = (user: IMockUser, input: Omit<INoteItem, "id"> & { id?: string }) => {
+export const createMockNote = (
+  user: IMockUser,
+  input: Omit<INoteItem, "id"> & { id?: string },
+) => {
   const workspace = getWorkspaceState(user.tenantId);
   const note: INoteItem = {
     ...input,
@@ -591,6 +658,12 @@ export const createMockNote = (user: IMockUser, input: Omit<INoteItem, "id"> & {
   };
 
   workspace.notes.push(note);
+  workspace.salesData.automationFeed.unshift({
+    createdAt: new Date().toISOString(),
+    description: `${user.firstName} ${user.lastName}`.trim() + ` captured note "${note.title}".`,
+    id: createId("auto"),
+    title: "Note created",
+  });
 
   return clone(note);
 };
@@ -619,28 +692,4 @@ export const updateMockNote = (
 export const deleteMockNote = (tenantId: string, noteId: string) => {
   const workspace = getWorkspaceState(tenantId);
   workspace.notes = workspace.notes.filter((item) => item.id !== noteId);
-};
-
-export const createMockPricingRequest = (
-  user: IMockUser,
-  input: CreatePricingRequestInput,
-) => {
-  const workspace = getWorkspaceState(user.tenantId);
-  const pricingRequest: IPricingRequest = {
-    ...input,
-    createdAt: new Date().toISOString(),
-    id: input.id ?? createId("price"),
-    requiredByDate: normalizeDate(input.requiredByDate),
-  };
-
-  workspace.pricingRequests.push(pricingRequest);
-  workspace.salesData.automationFeed.unshift({
-    createdAt: new Date().toISOString(),
-    description:
-      `${user.firstName} ${user.lastName}`.trim() + ` submitted ${pricingRequest.title}.`,
-    id: createId("auto"),
-    title: "Commercial request created",
-  });
-
-  return clone(pricingRequest);
 };
