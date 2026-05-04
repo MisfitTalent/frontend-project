@@ -3,43 +3,91 @@
 import { Alert, Button, Card, Form, Input, Typography } from "antd";
 
 import { useAuthActions, useAuthState } from "@/providers/authProvider";
+import { useStyles } from "./login-form.styles";
 
 type LoginValues = {
   email: string;
   password: string;
 };
 
-export function LoginForm() {
+export const LoginForm = () => {
+  const { styles } = useStyles();
   const { login } = useAuthActions();
   const { isError, isPending } = useAuthState();
+  const [form] = Form.useForm<LoginValues>();
 
   const onFinish = async (values: LoginValues) => {
     await login(values);
   };
 
+  const applyMockCredentials = (values: LoginValues) => {
+    form.setFieldsValue(values);
+  };
+
   return (
-    <Card className="w-full max-w-md border-0 shadow-2xl shadow-slate-200/80">
-      <div className="mb-8 space-y-2">
-        <Typography.Title level={2} className="!mb-0">
+    <Card className={styles.card}>
+      <div className={styles.intro}>
+        <Typography.Title level={2} className={styles.title}>
           Welcome back
         </Typography.Title>
-        <Typography.Paragraph className="!mb-0 !text-slate-500">
-          Sign in with your organisation account to manage your sales workspace. For local testing, use the mock admin account below.
+        <Typography.Paragraph className={styles.mutedText}>
+          Sign in with your organisation account to manage your sales workspace. For local testing, use one of the local mock accounts below.
         </Typography.Paragraph>
-        <Typography.Text className="block !text-sm !text-slate-500">
+        <Typography.Text className={styles.helperRow}>
           Mock admin: <strong>admin@autosales.com</strong> / <strong>Admin123</strong>
         </Typography.Text>
+        <Typography.Text className={styles.helperRow}>
+          Mock client viewer: <strong>clients@autosales.com</strong> / <strong>Clients123</strong>
+        </Typography.Text>
+        <Typography.Text className={styles.helperRow}>
+          Mock rep inbox: <strong>lebo.dlamini@autosales.com</strong> / <strong>Sales123</strong>
+        </Typography.Text>
+        <Typography.Text className={styles.helperSmall}>
+          Client-facing rep inboxes use <strong>{`first.last@autosales.com`}</strong> with password <strong>Sales123</strong>.
+        </Typography.Text>
+        <div className={styles.quickFill}>
+          <Button
+            onClick={() =>
+              applyMockCredentials({
+                email: "admin@autosales.com",
+                password: "Admin123",
+              })
+            }
+          >
+            Use mock admin
+          </Button>
+          <Button
+            onClick={() =>
+              applyMockCredentials({
+                email: "clients@autosales.com",
+                password: "Clients123",
+              })
+            }
+          >
+            Use client tester
+          </Button>
+          <Button
+            onClick={() =>
+              applyMockCredentials({
+                email: "lebo.dlamini@autosales.com",
+                password: "Sales123",
+              })
+            }
+          >
+            Use rep inbox
+          </Button>
+        </div>
       </div>
 
       {isError ? (
         <Alert
-          className="mb-6"
+          className={styles.alert}
           message="We could not sign you in with those credentials."
           type="error"
         />
       ) : null}
 
-      <Form layout="vertical" onFinish={onFinish} requiredMark={false}>
+      <Form form={form} layout="vertical" onFinish={onFinish} requiredMark={false}>
         <Form.Item
           label="Email"
           name="email"
@@ -62,4 +110,4 @@ export function LoginForm() {
       </Form>
     </Card>
   );
-}
+};
