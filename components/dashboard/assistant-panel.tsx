@@ -43,14 +43,13 @@ const getIntroMessage = (role: UserRole) =>
 export function AssistantPanel() {
   const { user } = useAuthState();
   const role = getPrimaryUserRole(user?.roles);
-  const [draft, setDraft] = useState(() => readSessionDraft<string>(ASSISTANT_PANEL_DRAFT_KEY) ?? "");
+  const [hasHydrated, setHasHydrated] = useState(false);
+  const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [assistantMode, setAssistantMode] = useState<"groq" | "offline" | "openai" | null>(null);
   const [assistantReason, setAssistantReason] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [messages, setMessages] = useState<AssistantMessage[]>(
-    () => readSessionDraft<AssistantMessage[]>(ASSISTANT_PANEL_MESSAGES_KEY) ?? [],
-  );
+  const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [statusLabel, setStatusLabel] = useState("Awaiting your question");
 
   const resetConversation = () => {
@@ -82,22 +81,36 @@ export function AssistantPanel() {
       ];
 
   useEffect(() => {
+    setHasHydrated(true);
+    setDraft(readSessionDraft<string>(ASSISTANT_PANEL_DRAFT_KEY) ?? "");
+    setMessages(readSessionDraft<AssistantMessage[]>(ASSISTANT_PANEL_MESSAGES_KEY) ?? []);
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydrated) {
+      return;
+    }
+
     if (draft) {
       writeSessionDraft(ASSISTANT_PANEL_DRAFT_KEY, draft);
       return;
     }
 
     clearSessionDraft(ASSISTANT_PANEL_DRAFT_KEY);
-  }, [draft]);
+  }, [draft, hasHydrated]);
 
   useEffect(() => {
+    if (!hasHydrated) {
+      return;
+    }
+
     if (messages.length > 0) {
       writeSessionDraft(ASSISTANT_PANEL_MESSAGES_KEY, messages);
       return;
     }
 
     clearSessionDraft(ASSISTANT_PANEL_MESSAGES_KEY);
-  }, [messages]);
+  }, [messages, hasHydrated]);
 
   useEffect(() => {
     let isActive = true;
