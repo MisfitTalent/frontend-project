@@ -11,8 +11,44 @@ import { getAssistantWorkspaceForUser } from "@/lib/server/assistant-workspace";
 
 export const runtime = "nodejs";
 
-const MAX_MESSAGE_COUNT = 12;
-const MAX_MESSAGE_LENGTH = 2000;
+const MAX_MESSAGE_COUNT = 24;
+const MAX_MESSAGE_LENGTH = 3000;
+
+const parseTrace = (value: unknown): AssistantTraceStep[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value
+    .flatMap((step) => {
+      if (!step || typeof step !== "object") {
+        return [];
+      }
+
+      const candidate = step as {
+        arguments?: unknown;
+        outputPreview?: unknown;
+        tool?: unknown;
+      };
+
+      if (typeof candidate.tool !== "string") {
+        return [];
+      }
+
+      return [
+        {
+          arguments:
+            candidate.arguments && typeof candidate.arguments === "object"
+              ? (candidate.arguments as Record<string, unknown>)
+              : {},
+          outputPreview:
+            typeof candidate.outputPreview === "string" ? candidate.outputPreview : "",
+          tool: candidate.tool,
+        },
+      ];
+    })
+    .slice(0, 8);
+};
 
 const parseMessages = (value: unknown): AssistantMessage[] => {
   if (!Array.isArray(value) || value.length === 0) {
@@ -30,6 +66,7 @@ const parseMessages = (value: unknown): AssistantMessage[] => {
         (message as { role?: unknown }).role === "assistant" ? "assistant" : "user";
       const content = String((message as { content?: unknown }).content ?? "").trim();
       const rawMutations = (message as { mutations?: unknown }).mutations;
+      const trace = parseTrace((message as { trace?: unknown }).trace);
       let mutations: AssistantMutation[] | undefined;
 
       if (Array.isArray(rawMutations)) {
@@ -80,6 +117,7 @@ const parseMessages = (value: unknown): AssistantMessage[] => {
         content: content.slice(0, MAX_MESSAGE_LENGTH),
         mutations,
         role,
+        trace,
       };
     });
 };
@@ -117,6 +155,7 @@ export async function POST(request: NextRequest) {
       mode: result.mode,
       model: result.model,
       mutations: sanitizeMutations(result.mutations),
+      reason: result.reason,
       role: workspace.role,
       scopeLabel: workspace.scopeLabel,
       trace: sanitizeTrace(result.trace),

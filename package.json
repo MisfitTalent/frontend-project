@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/next-dist.mjs dev .next-dev --webpack",
+    "dev:turbo": "node scripts/next-dist.mjs dev .next-turbo --turbopack",
+    "dev:webpack": "node scripts/next-dist.mjs dev .next-webpack --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
