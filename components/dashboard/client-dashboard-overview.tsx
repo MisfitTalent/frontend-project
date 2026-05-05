@@ -88,7 +88,7 @@ export function ClientDashboardOverview() {
         <Col xs={24} sm={12} xl={6}>
           <Link href="/dashboard/proposals">
             <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
-              <Space direction="vertical" size={6}>
+              <Space orientation="vertical" size={6}>
                 <FileTextOutlined className="text-lg text-[#355c7d]" />
                 <Typography.Text className="!text-slate-500">Open proposals</Typography.Text>
                 <Typography.Title className="!m-0" level={3}>
@@ -104,7 +104,7 @@ export function ClientDashboardOverview() {
         <Col xs={24} sm={12} xl={6}>
           <Link href="/dashboard/documents">
             <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
-              <Space direction="vertical" size={6}>
+              <Space orientation="vertical" size={6}>
                 <FolderOpenOutlined className="text-lg text-[#355c7d]" />
                 <Typography.Text className="!text-slate-500">Shared documents</Typography.Text>
                 <Typography.Title className="!m-0" level={3}>
@@ -120,7 +120,7 @@ export function ClientDashboardOverview() {
         <Col xs={24} sm={12} xl={6}>
           <Link href="/dashboard/messages">
             <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
-              <Space direction="vertical" size={6}>
+              <Space orientation="vertical" size={6}>
                 <MessageOutlined className="text-lg text-[#355c7d]" />
                 <Typography.Text className="!text-slate-500">Messages</Typography.Text>
                 <Typography.Title className="!m-0" level={3}>
@@ -136,7 +136,7 @@ export function ClientDashboardOverview() {
         <Col xs={24} sm={12} xl={6}>
           <Link href="/dashboard/contracts">
             <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
-              <Space direction="vertical" size={6}>
+              <Space orientation="vertical" size={6}>
                 <ProfileOutlined className="text-lg text-[#355c7d]" />
                 <Typography.Text className="!text-slate-500">Active contracts</Typography.Text>
                 <Typography.Title className="!m-0" level={3}>

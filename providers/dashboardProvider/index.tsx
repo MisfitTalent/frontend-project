@@ -12,6 +12,7 @@ import {
   mapBackendUser,
 } from "@/lib/client/backend-api";
 import { getPrimaryUserRole } from "@/lib/auth/roles";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { useAuthState } from "@/providers/authProvider";
 import {
   ActivityStatus,
@@ -19,6 +20,7 @@ import {
   OpportunityStage,
   ProposalStatus,
 } from "@/providers/salesTypes";
+import type { ITeamMember } from "@/providers/salesTypes";
 import { initialAutomationFeed, initialTeamMembers } from "@/providers/domainSeeds";
 import { useActivityActions, useActivityState } from "@/providers/activityProvider";
 import { useClientActions, useClientState } from "@/providers/clientProvider";
@@ -63,10 +65,16 @@ export default function DashboardProvider({
     automationFeed: initialAutomationFeed(),
     teamMembers: fallbackTeamMembers,
   });
-  const [teamMembers, setTeamMembers] = useState(fallbackTeamMembers);
   const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
   const role = getPrimaryUserRole(user?.roles);
+  const teamMembersCacheKey = useMemo(
+    () => createProviderCacheKey("team-members", user?.tenantId, user?.userId, role),
+    [role, user?.tenantId, user?.userId],
+  );
+  const [teamMembers, setTeamMembers] = useState<ITeamMember[]>(
+    () => readProviderCache<ITeamMember[]>(teamMembersCacheKey) ?? fallbackTeamMembers,
+  );
 
   const { opportunities } = useOpportunityState();
   const { proposals } = useProposalState();
@@ -91,12 +99,16 @@ export default function DashboardProvider({
     const users = coerceItems(payload).map(mapBackendUser);
 
     if (users.length > 0) {
-      setTeamMembers(users);
+      setTeamMembers(writeProviderCache(teamMembersCacheKey, users));
       return;
     }
 
-    setTeamMembers(fallbackTeamMembers);
-  }, [fallbackTeamMembers, teamMembersPath]);
+    setTeamMembers(writeProviderCache(teamMembersCacheKey, fallbackTeamMembers));
+  }, [fallbackTeamMembers, teamMembersCacheKey, teamMembersPath]);
+
+  useEffect(() => {
+    writeProviderCache(teamMembersCacheKey, teamMembers);
+  }, [teamMembers, teamMembersCacheKey]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -111,7 +123,7 @@ export default function DashboardProvider({
           console.error(error);
 
           if (isActive) {
-            setTeamMembers(fallbackTeamMembers);
+            setTeamMembers(writeProviderCache(teamMembersCacheKey, fallbackTeamMembers));
           }
         });
       }, 0);
@@ -156,6 +168,7 @@ export default function DashboardProvider({
     isDemoMode,
     loadTeamMembers,
     role,
+    teamMembersCacheKey,
     teamMembersPath,
   ]);
 

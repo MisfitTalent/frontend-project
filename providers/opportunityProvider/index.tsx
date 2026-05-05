@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import { useAuthState } from "@/providers/authProvider";
@@ -17,6 +17,7 @@ import {
   isMockSessionToken,
   mapBackendOpportunity,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { initialOpportunities } from "@/providers/domainSeeds";
 import { OpportunityActionContext, OpportunityStateContext } from "./context";
 import { OpportunityStage, type IOpportunity } from "@/providers/salesTypes";
@@ -45,9 +46,15 @@ export default function OpportunityProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const { isAuthenticated, user } = useAuthState();
-  const [opportunities, setOpportunities] = useState<IOpportunity[]>([]);
   const isDemoMode = isMockSessionToken(getSessionToken());
   const role = getPrimaryUserRole(user?.roles);
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("opportunities", user?.tenantId, user?.userId, role),
+    [role, user?.tenantId, user?.userId],
+  );
+  const [opportunities, setOpportunities] = useState<IOpportunity[]>(
+    () => readProviderCache<IOpportunity[]>(cacheKey) ?? [],
+  );
 
   const loadOpportunities = useCallback(async () => {
     const payload = await backendRequest<BackendPagedResult<BackendOpportunityDto> | BackendOpportunityDto[]>(
@@ -56,8 +63,14 @@ export default function OpportunityProvider({
         : "/api/Opportunities?pageNumber=1&pageSize=100",
     );
 
-    setOpportunities(coerceItems(payload).map(mapBackendOpportunity));
-  }, [role]);
+    setOpportunities(
+      writeProviderCache(cacheKey, coerceItems(payload).map(mapBackendOpportunity)),
+    );
+  }, [cacheKey, role]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, opportunities);
+  }, [cacheKey, opportunities]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -72,7 +85,7 @@ export default function OpportunityProvider({
           console.error(error);
 
           if (isActive) {
-            setOpportunities(initialOpportunities());
+            setOpportunities(writeProviderCache(cacheKey, initialOpportunities()));
           }
         });
       }, 0);
@@ -111,7 +124,7 @@ export default function OpportunityProvider({
     return () => {
       isActive = false;
     };
-  }, [isAuthenticated, isDemoMode, loadOpportunities, role]);
+  }, [cacheKey, isAuthenticated, isDemoMode, loadOpportunities, role]);
 
   const assignIfNeeded = async (opportunity: IOpportunity, ownerId?: string) => {
     if (!ownerId) {

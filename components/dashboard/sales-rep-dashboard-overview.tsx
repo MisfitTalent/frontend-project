@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useMemo } from "react";
 
 import { PriorityAdvisor } from "@/components/dashboard/priority-advisor";
+import { getPrimaryUserRole } from "@/lib/auth/roles";
+import { getScopedMessageThreads } from "@/lib/dashboard/message-threads";
 import { useActivityState } from "@/providers/activityProvider";
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
@@ -14,14 +16,6 @@ import { useOpportunityState } from "@/providers/opportunityProvider";
 import { useProposalState } from "@/providers/proposalProvider";
 import { formatCurrency, getOpportunityInsights } from "@/providers/salesSelectors";
 
-const CLIENT_MESSAGE_CATEGORY = "Client Message";
-const LEGACY_CLIENT_MESSAGE_PREFIX = `${CLIENT_MESSAGE_CATEGORY} `;
-
-const isClientMessage = (note: INoteItem) =>
-  note.kind === "client_message" ||
-  note.category === CLIENT_MESSAGE_CATEGORY ||
-  note.category?.startsWith(LEGACY_CLIENT_MESSAGE_PREFIX);
-
 export function SalesRepDashboardOverview() {
   const { user } = useAuthState();
   const { activities } = useActivityState();
@@ -29,6 +23,7 @@ export function SalesRepDashboardOverview() {
   const { notes } = useNoteState();
   const { opportunities } = useOpportunityState();
   const { proposals } = useProposalState();
+  const role = getPrimaryUserRole(user?.roles);
 
   const ownedOpportunities = useMemo(
     () => opportunities.filter((item) => item.ownerId === user?.userId),
@@ -47,14 +42,17 @@ export function SalesRepDashboardOverview() {
       !item.completed,
   );
   const ownedProposals = proposals.filter((item) => ownedOpportunityIds.has(item.opportunityId));
-  const clientMessages = notes
-    .filter(
-      (item) =>
-        isClientMessage(item) &&
-        (item.representativeId === user?.userId ||
-          (item.clientId ? ownedClientIds.includes(item.clientId) : false)),
-    )
-    .sort((left, right) => right.createdDate.localeCompare(left.createdDate));
+  const clientMessages = useMemo(
+    () =>
+      getScopedMessageThreads({
+        clientIds: user?.clientIds,
+        notes,
+        opportunities,
+        role,
+        userId: user?.userId,
+      }),
+    [notes, opportunities, role, user?.clientIds, user?.userId],
+  );
 
   const pipelineValue = openOwnedOpportunities.reduce(
     (sum, item) => sum + (item.value ?? item.estimatedValue),
@@ -71,6 +69,22 @@ export function SalesRepDashboardOverview() {
     renewals: [],
     teamMembers: [],
   }).find((item) => item.opportunity.ownerId === user?.userId);
+
+  const buildMessageThreadHref = (note: INoteItem) => {
+    const params = new URLSearchParams();
+
+    if (note.clientId) {
+      params.set("clientId", note.clientId);
+    }
+
+    if (note.representativeId) {
+      params.set("representativeId", note.representativeId);
+    }
+
+    params.set("threadId", note.id);
+
+    return `/dashboard/messages?${params.toString()}`;
+  };
 
   return (
     <div className="space-y-6">
@@ -167,7 +181,18 @@ export function SalesRepDashboardOverview() {
           </Card>
         </Col>
         <Col xs={24} xl={10}>
-          <Card className="h-full border-slate-200 shadow-sm" title="Client messages">
+          <Card
+            className="h-full border-slate-200 shadow-sm"
+            extra={
+              <Link
+                className="text-[#355c7d] transition-colors hover:text-[#f28c28]"
+                href="/dashboard/messages"
+              >
+                Open inbox
+              </Link>
+            }
+            title="Client messages"
+          >
             {clientMessages.length > 0 ? (
               <div className="space-y-4">
                 {clientMessages.slice(0, 4).map((note) => (
@@ -176,7 +201,12 @@ export function SalesRepDashboardOverview() {
                     key={note.id}
                   >
                     <div className="flex flex-wrap items-center gap-2">
-                      <Typography.Text strong>{note.title}</Typography.Text>
+                      <Link
+                        className="font-medium text-[#1f365c] transition-colors hover:text-[#f28c28]"
+                        href={buildMessageThreadHref(note)}
+                      >
+                        {note.title}
+                      </Link>
                       <Tag color={note.source === "workspace" ? "gold" : "blue"}>
                         {note.source === "workspace" ? "Sent" : "Incoming"}
                       </Tag>
@@ -184,9 +214,12 @@ export function SalesRepDashboardOverview() {
                     <Typography.Paragraph className="!mb-1 !mt-2 !text-slate-600">
                       {note.content}
                     </Typography.Paragraph>
-                    <Typography.Text className="!text-slate-500">
-                      {note.createdDate}
-                    </Typography.Text>
+                    <Link
+                      className="text-sm text-[#355c7d] transition-colors hover:text-[#f28c28]"
+                      href={buildMessageThreadHref(note)}
+                    >
+                      Open in messages
+                    </Link>
                   </div>
                 ))}
               </div>
