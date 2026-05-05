@@ -1,6 +1,15 @@
 import "server-only";
 
 export type AssistantProvider = "groq" | "openai";
+export type AssistantServerConfig = {
+  apiKey: string;
+  baseUrl: string;
+  isConfigured: boolean;
+  model: string;
+  provider: AssistantProvider;
+  reason: string | null;
+  supportsPreviousResponseId: boolean;
+};
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
@@ -17,14 +26,10 @@ const normalizeProvider = (value: string | undefined): AssistantProvider | null 
   return null;
 };
 
-export const getAssistantServerConfig = () => {
-  const configuredProvider = normalizeProvider(process.env.ASSISTANT_PROVIDER);
-  const openaiApiKey = process.env.OPENAI_API_KEY?.trim() ?? "";
-  const groqApiKey = process.env.GROQ_API_KEY?.trim() ?? "";
-  const provider =
-    configuredProvider ??
-    (groqApiKey && !openaiApiKey ? "groq" : "openai");
-  const apiKey = provider === "groq" ? groqApiKey : openaiApiKey;
+const buildProviderConfig = (
+  provider: AssistantProvider,
+  apiKey: string,
+): AssistantServerConfig => {
   const model = provider === "groq" ? DEFAULT_GROQ_MODEL : DEFAULT_OPENAI_MODEL;
   const reason =
     apiKey.length > 0
@@ -43,3 +48,17 @@ export const getAssistantServerConfig = () => {
     supportsPreviousResponseId: provider === "openai",
   };
 };
+
+export const getAssistantServerConfigs = (): AssistantServerConfig[] => {
+  const configuredProvider = normalizeProvider(process.env.ASSISTANT_PROVIDER) ?? "groq";
+  const openaiApiKey = process.env.OPENAI_API_KEY?.trim() ?? "";
+  const groqApiKey = process.env.GROQ_API_KEY?.trim() ?? "";
+  const preferredOrder: AssistantProvider[] =
+    configuredProvider === "openai" ? ["openai", "groq"] : ["groq", "openai"];
+
+  return preferredOrder.map((provider) =>
+    buildProviderConfig(provider, provider === "groq" ? groqApiKey : openaiApiKey),
+  );
+};
+
+export const getAssistantServerConfig = () => getAssistantServerConfigs()[0];

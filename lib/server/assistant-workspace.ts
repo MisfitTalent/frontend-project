@@ -7,7 +7,10 @@ import { getUserRoleLabel, normalizeUserRole } from "@/lib/auth/roles";
 import { getMockWorkspaceSnapshot } from "@/lib/server/mock-workspace-store";
 
 export interface IAssistantWorkspace {
+  clientIds?: string[] | null;
   documents: IDocumentItem[];
+  userEmail?: string;
+  userId?: string;
   notes: INoteItem[];
   pricingRequests: IPricingRequest[];
   role: UserRole;
@@ -28,6 +31,7 @@ export const getAssistantWorkspaceForUser = (
   const pricingRequests = workspace.pricingRequests;
 
   return {
+    clientIds: user.clientIds ?? null,
     documents,
     notes,
     pricingRequests,
@@ -36,5 +40,7 @@ export const getAssistantWorkspaceForUser = (
     scopeLabel: `${getUserRoleLabel(role)} tenant scope`,
     tenantId: user.tenantId,
     userDisplayName: `${user.firstName} ${user.lastName}`.trim(),
+    userEmail: user.email,
+    userId: user.id,
   };
 };

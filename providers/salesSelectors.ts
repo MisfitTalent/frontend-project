@@ -2,10 +2,26 @@ import type {
   IActivity,
   IClient,
   IOpportunity,
+  IPricingRequest,
   ISalesData,
   ITeamMember,
   PriorityBand,
 } from "./salesTypes";
+
+type WorkloadOptions = {
+  pricingRequests?: IPricingRequest[];
+};
+
+export type TeamWorkloadProfile = {
+  activePricingRequests: number;
+  activeProposals: number;
+  assignments: number;
+  availableCapacity: number;
+  member: ITeamMember;
+  openFollowUps: number;
+  overdueFollowUps: number;
+  workloadUnits: number;
+};
 
 export interface IOpportunityInsight {
   client?: IClient;
@@ -20,8 +36,9 @@ export interface IOpportunityInsight {
   summary: string;
 }
 
-const MAX_DEADLINE_WEIGHT = 72;
-const MAX_MONEY_WEIGHT = 28;
+const MAX_PRIORITY_WEIGHT = 100;
+const DEADLINE_PRIORITY_SHARE = 0.6;
+const MONEY_PRIORITY_SHARE = 0.4;
 
 export const formatCurrency = (value: number) =>
   new Intl.NumberFormat("en-ZA", {
@@ -47,20 +64,28 @@ const getPriorityBand = (score: number): PriorityBand => {
 };
 
 const getDeadlineWeight = (daysToClose: number) => {
-  if (daysToClose <= 0) return MAX_DEADLINE_WEIGHT;
-  if (daysToClose <= 3) return 66;
-  if (daysToClose <= 7) return 58;
-  if (daysToClose <= 14) return 44;
-  if (daysToClose <= 30) return 28;
-  return 12;
+  if (daysToClose <= 0) return MAX_PRIORITY_WEIGHT;
+  if (daysToClose <= 3) return 92;
+  if (daysToClose <= 7) return 84;
+  if (daysToClose <= 14) return 68;
+  if (daysToClose <= 30) return 44;
+  return 20;
 };
 
 const getMoneyWeight = (value: number, maxValue: number) => {
   if (maxValue <= 0) return 0;
-  return Math.round((value / maxValue) * MAX_MONEY_WEIGHT);
+  return Math.round((value / maxValue) * MAX_PRIORITY_WEIGHT);
 };
 
 const isOpportunityOpen = (stage: string) => !["Won", "Lost"].includes(stage);
+const isProposalActive = (status: string) =>
+  !["accepted", "approved", "rejected", "declined", "expired", "won", "closed"].includes(
+    status.toLowerCase(),
+  );
+const isPricingRequestActive = (status?: string) =>
+  !["completed", "closed", "cancelled", "canceled", "resolved", "rejected"].includes(
+    String(status ?? "").toLowerCase(),
+  );
 
 export const getOpenPipelineValue = (state: ISalesData) =>
   state.opportunities
@@ -76,10 +101,66 @@ export const getAssignmentCount = (state: ISalesData, memberId: string) =>
       opportunity.ownerId === memberId && isOpportunityOpen(String(opportunity.stage)),
   ).length;
 
+export const getMemberWorkloadProfile = (
+  state: ISalesData,
+  memberId: string,
+  options: WorkloadOptions = {},
+): TeamWorkloadProfile | null => {
+  const member = state.teamMembers.find((item) => item.id === memberId);
+
+  if (!member) {
+    return null;
+  }
+
+  const assignments = getAssignmentCount(state, memberId);
+  const openFollowUps = state.activities.filter(
+    (activity) =>
+      activity.assignedToId === memberId &&
+      String(activity.status) !== "Completed" &&
+      !activity.completed,
+  );
+  const overdueFollowUps = openFollowUps.filter((activity) => getDaysUntil(activity.dueDate) < 0).length;
+  const activeProposalCount = state.proposals.filter((proposal) => {
+    const opportunity = state.opportunities.find((item) => item.id === proposal.opportunityId);
+
+    return opportunity?.ownerId === memberId && isProposalActive(String(proposal.status));
+  }).length;
+  const activePricingRequestCount = (options.pricingRequests ?? []).filter(
+    (request) =>
+      request.assignedToId === memberId &&
+      isPricingRequestActive(request.status),
+  ).length;
+  const workloadUnits =
+    assignments * 9 +
+    openFollowUps.length * 2 +
+    overdueFollowUps * 3 +
+    activeProposalCount * 3 +
+    activePricingRequestCount * 4;
+  const availableCapacity = Math.max(0, 100 - workloadUnits);
+
+  return {
+    activePricingRequests: activePricingRequestCount,
+    activeProposals: activeProposalCount,
+    assignments,
+    availableCapacity,
+    member,
+    openFollowUps: openFollowUps.length,
+    overdueFollowUps,
+    workloadUnits,
+  };
+};
+
+export const getAvailableCapacity = (
+  state: ISalesData,
+  member: ITeamMember,
+  options: WorkloadOptions = {},
+) => getMemberWorkloadProfile(state, member.id, options)?.availableCapacity ?? 100;
+
 export const getBestOwner = (
   state: ISalesData,
   value: number,
   industry: string,
+  options: WorkloadOptions = {},
 ): ITeamMember => {
   const ranked = [...state.teamMembers].sort((left, right) => {
     const leftMatch = left.skills.some((skill) =>
@@ -92,8 +173,8 @@ export const getBestOwner = (
     )
       ? 18
       : 0;
-    const leftCapacity = left.availabilityPercent - getAssignmentCount(state, left.id) * 9;
-    const rightCapacity = right.availabilityPercent - getAssignmentCount(state, right.id) * 9;
+    const leftCapacity = getAvailableCapacity(state, left, options);
+    const rightCapacity = getAvailableCapacity(state, right, options);
 
     return rightCapacity + rightMatch - (leftCapacity + leftMatch);
   });
@@ -115,7 +196,9 @@ export const getOpportunityInsights = (state: ISalesData): IOpportunityInsight[]
       const daysToClose = getDaysUntil(opportunity.expectedCloseDate);
       const moneyWeight = getMoneyWeight(amount, maxValue);
       const deadlineWeight = getDeadlineWeight(daysToClose);
-      const score = moneyWeight + deadlineWeight;
+      const score = Math.round(
+        deadlineWeight * DEADLINE_PRIORITY_SHARE + moneyWeight * MONEY_PRIORITY_SHARE,
+      );
       const client = state.clients.find((item) => item.id === opportunity.clientId);
       const owner = state.teamMembers.find((item) => item.id === opportunity.ownerId);
       const openFollowUps = state.activities.filter(
@@ -169,16 +252,16 @@ export const getAdvisorResponse = (state: ISalesData, prompt?: string) => {
   return `Prioritize ${topOpportunity.opportunity.title} first. It ranks ${topOpportunity.priorityBand.toLowerCase()} because it combines ${formatCurrency(topOpportunity.opportunity.value ?? topOpportunity.opportunity.estimatedValue)} in pipeline value with a close date ${topOpportunity.daysToClose <= 0 ? "that has already slipped." : `in ${topOpportunity.daysToClose} days.`}`;
 };
 
-export const getTeamCapacity = (state: ISalesData) =>
+export const getTeamCapacity = (
+  state: ISalesData,
+  options: WorkloadOptions = {},
+) =>
   state.teamMembers
-    .map((member) => ({
-      assignments: getAssignmentCount(state, member.id),
-      availableCapacity: member.availabilityPercent - getAssignmentCount(state, member.id) * 9,
-      member,
-    }))
+    .map((member) => getMemberWorkloadProfile(state, member.id, options))
+    .filter((item): item is TeamWorkloadProfile => Boolean(item))
     .sort((left, right) => {
-      if (right.assignments !== left.assignments) {
-        return right.assignments - left.assignments;
+      if (right.workloadUnits !== left.workloadUnits) {
+        return right.workloadUnits - left.workloadUnits;
       }
 
       if (left.availableCapacity !== right.availableCapacity) {
