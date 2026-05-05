@@ -7,6 +7,7 @@ import {
   FolderOpenOutlined,
   HomeOutlined,
   IdcardOutlined,
+  MessageOutlined,
   NotificationOutlined,
   ProfileOutlined,
   ScheduleOutlined,
@@ -64,7 +65,7 @@ export const dashboardNavItems: DashboardNavItem[] = [
     label: "Follow-ups",
   },
   {
-    access: ["Admin", "BusinessDevelopmentManager", "SalesManager"],
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
     description: "Manage accounts, ownership, and the commercial work tied to each client.",
     href: "/dashboard/clients",
     headerTitle: "Clients",
@@ -134,6 +135,15 @@ export const dashboardNavItems: DashboardNavItem[] = [
     icon: NotificationOutlined,
     key: "/dashboard/notes",
     label: "Notes",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "Review client conversations and reply from the workspace.",
+    href: "/dashboard/messages",
+    headerTitle: "Messages",
+    icon: MessageOutlined,
+    key: "/dashboard/messages",
+    label: "Messages",
   },
   {
     access: ["Admin", "SalesManager"],

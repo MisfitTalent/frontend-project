@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { isManagerRole } from "@/lib/auth/roles";
+import { isManagerRole, normalizeUserRole } from "@/lib/auth/roles";
 import { getAuthorizedUser } from "@/lib/server/assistant-auth";
 import { analyzeReassignmentScenario } from "@/lib/server/reassignment-simulator";
 import type { IReassignmentSimulationRequest } from "@/types/reassignment";
@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   }
 
-  if (!isManagerRole(user.role)) {
+  if (!isManagerRole(normalizeUserRole(user.role))) {
     return NextResponse.json(
       { message: "Only admins and sales managers can run the reassignment simulator." },
       { status: 403 },

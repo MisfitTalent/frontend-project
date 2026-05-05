@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext, useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useReducer, useState } from "react";
 
 import {
   type BackendPagedResult,
@@ -80,6 +80,23 @@ export default function DashboardProvider({
   const { addClient } = useClientActions();
   const { addContact } = useContactActions();
   const { addActivity } = useActivityActions();
+  const teamMembersPath = `/api/Users?pageNumber=1&pageSize=100&isActive=true${
+    role === "SalesRep" ? "&role=SalesRep" : ""
+  }`;
+
+  const loadTeamMembers = useCallback(async () => {
+    const payload = await backendRequest<BackendPagedResult<BackendUserDto> | BackendUserDto[]>(
+      teamMembersPath,
+    );
+    const users = coerceItems(payload).map(mapBackendUser);
+
+    if (users.length > 0) {
+      setTeamMembers(users);
+      return;
+    }
+
+    setTeamMembers(fallbackTeamMembers);
+  }, [fallbackTeamMembers, teamMembersPath]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -89,22 +106,32 @@ export default function DashboardProvider({
     let isActive = true;
 
     if (isDemoMode) {
-      Promise.resolve().then(() => {
-        if (isActive) {
-          setTeamMembers(fallbackTeamMembers);
-        }
-      });
+      const timer = window.setTimeout(() => {
+        void loadTeamMembers().catch((error) => {
+          console.error(error);
+
+          if (isActive) {
+            setTeamMembers(fallbackTeamMembers);
+          }
+        });
+      }, 0);
+
+      const handleWorkspaceUpdate = () => {
+        void loadTeamMembers().catch((error) => {
+          console.error(error);
+        });
+      };
+
+      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
 
       return () => {
         isActive = false;
+        window.clearTimeout(timer);
+        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
       };
     }
 
-    void backendRequest<BackendPagedResult<BackendUserDto> | BackendUserDto[]>(
-      `/api/Users?pageNumber=1&pageSize=100&isActive=true${
-        role === "SalesRep" ? "&role=SalesRep" : ""
-      }`,
-    )
+    void backendRequest<BackendPagedResult<BackendUserDto> | BackendUserDto[]>(teamMembersPath)
       .then((payload) => {
         if (!isActive) {
           return;
@@ -123,7 +150,14 @@ export default function DashboardProvider({
     return () => {
       isActive = false;
     };
-  }, [fallbackTeamMembers, isAuthenticated, isDemoMode, role]);
+  }, [
+    fallbackTeamMembers,
+    isAuthenticated,
+    isDemoMode,
+    loadTeamMembers,
+    role,
+    teamMembersPath,
+  ]);
 
   const visibleTeamMembers = isAuthenticated ? teamMembers : fallbackTeamMembers;
 

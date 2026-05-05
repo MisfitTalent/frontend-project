@@ -1,6 +1,6 @@
 "use client";
 
-import { LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from "@ant-design/icons";
+import { HomeOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from "@ant-design/icons";
 import { Button, Layout, Menu, Space, Tag, Typography } from "antd";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -12,6 +12,7 @@ import { dashboardNavItems } from "@/constants/dashboard-nav";
 import {
   canAccessDashboardPath,
   DASHBOARD_HOME_PATH,
+  getDashboardHomePath,
   getDashboardNavItemForPath,
 } from "@/lib/auth/dashboard-access";
 import { useAuthActions, useAuthState } from "@/providers/authProvider";
@@ -32,6 +33,8 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
   const { isAuthenticated, isPending, user } = useAuthState();
   const activeRole: UserRole = getPrimaryUserRole(user?.roles);
   const activeNavItem = getDashboardNavItemForPath(pathname);
+  const homePath = getDashboardHomePath(activeRole, user?.clientIds);
+  const isHomeRoute = pathname === homePath;
   const headerTitle = activeNavItem?.headerTitle ?? "Sales command center";
   const headerDescription =
     activeNavItem?.description ??
@@ -40,13 +43,17 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
   const menuItems = useMemo(
     () =>
       dashboardNavItems
-        .filter((item) => item.access.includes(activeRole))
+        .filter(
+          (item) =>
+            item.access.includes(activeRole) &&
+            canAccessDashboardPath(item.href, activeRole, user?.clientIds),
+        )
         .map((item) => ({
           icon: <item.icon />,
           key: item.key,
           label: <Link href={item.href}>{item.label}</Link>,
         })),
-    [activeRole],
+    [activeRole, user?.clientIds],
   );
 
   useEffect(() => {
@@ -59,10 +66,10 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
       return;
     }
 
-    if (isAuthenticated && !canAccessDashboardPath(pathname, activeRole)) {
-      router.replace(DASHBOARD_HOME_PATH);
+    if (isAuthenticated && !canAccessDashboardPath(pathname, activeRole, user?.clientIds)) {
+      router.replace(getDashboardHomePath(activeRole, user?.clientIds));
     }
-  }, [activeRole, isAuthenticated, isPending, pathname, router]);
+  }, [activeRole, isAuthenticated, isPending, pathname, router, user?.clientIds]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -85,7 +92,10 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
         className={`dashboard-sidebar ${collapsed ? "dashboard-sidebar--collapsed" : ""}`}
       >
         <div className="flex h-screen flex-col overflow-hidden bg-[#1f365c]">
-          <div className="flex items-center gap-3 border-b border-white/10 px-6 py-5">
+          <Link
+            className="flex items-center gap-3 border-b border-white/10 px-6 py-5 transition-colors hover:bg-white/5"
+            href={homePath}
+          >
             <BoxfusionLogo size={38} />
             <div className="min-w-0">
               <Typography.Title className="!mb-0 !text-lg !text-white" level={4}>
@@ -95,7 +105,7 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
                 Sales workflow hub
               </Typography.Text>
             </div>
-          </div>
+          </Link>
 
           <Menu
             className="min-h-0 flex-1 overflow-y-auto border-0 bg-transparent px-3 py-4"
@@ -153,7 +163,16 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
               </Typography.Text>
             </div>
           </Space>
-          <Tag color="#f28c28">{activeNavItem?.label ?? "Overview"}</Tag>
+          <Space size="middle">
+            {!isHomeRoute ? (
+              <Link href={homePath}>
+                <Button icon={<HomeOutlined />} type="default">
+                  Home
+                </Button>
+              </Link>
+            ) : null}
+            <Tag color="#f28c28">{activeNavItem?.label ?? "Overview"}</Tag>
+          </Space>
         </Header>
 
         <Content className="p-4 md:p-6">{children}</Content>

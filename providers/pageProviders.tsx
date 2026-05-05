@@ -6,6 +6,7 @@ type PageModuleKey =
   | "activity"
   | "assistant"
   | "pricing-request"
+  | "message"
   | "dashboard"
   | "opportunity"
   | "proposal"
@@ -73,6 +74,13 @@ export const PricingRequestProvider = createModuleProvider({
   description: "Coordinate pricing requests before final commercials go out to the client.",
   key: "pricing-request",
   title: "Pricing requests",
+});
+
+export const MessageProviderPage = createModuleProvider({
+  description:
+    "Review client conversations, acknowledge incoming notes, and reply from the workspace.",
+  key: "message",
+  title: "Messages",
 });
 
 export const ClientProvider = createModuleProvider({
