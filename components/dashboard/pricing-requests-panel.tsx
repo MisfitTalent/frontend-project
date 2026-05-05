@@ -8,12 +8,12 @@ import {
   PRICING_REQUEST_STATUS_COLORS,
   type IPricingRequest,
 } from "@/providers/salesTypes";
-import { useDashboardState } from "@/providers/dashboardProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
 import {
   usePricingRequestActions,
   usePricingRequestState,
 } from "@/providers/pricingRequestProvider";
+import { useTeamMembersState } from "@/providers/teamMembersProvider";
 import { AnimatedDashboardTable } from "./animated-dashboard-table";
 
 type PricingRequestFormValues = {
@@ -36,7 +36,7 @@ const formatDate = (value?: string) => value || "Not set";
 
 export function PricingRequestsPanel() {
   const { pricingRequests } = usePricingRequestState();
-  const { teamMembers } = useDashboardState();
+  const { teamMembers } = useTeamMembersState();
   const { opportunities } = useOpportunityState();
   const {
     addPricingRequest,

@@ -30,10 +30,10 @@ import {
 } from "@/lib/dashboard/message-threads";
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
-import { useDashboardState } from "@/providers/dashboardProvider";
 import type { INoteItem } from "@/providers/domainSeeds";
 import { useNoteActions, useNoteState } from "@/providers/noteProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
+import { useTeamMembersState } from "@/providers/teamMembersProvider";
 import { useStyles } from "./messages-panel.styles";
 
 type MessageFormValues = {
@@ -72,7 +72,7 @@ function MessagesPanelContent({
 }: MessagePanelContentProps) {
   const { user } = useAuthState();
   const { clients } = useClientState();
-  const { teamMembers } = useDashboardState();
+  const { teamMembers } = useTeamMembersState();
   const { notes } = useNoteState();
   const { addNote, updateNote } = useNoteActions();
   const { opportunities } = useOpportunityState();

@@ -16,6 +16,7 @@ import PricingRequestProvider from "./pricingRequestProvider";
 import ProfileProvider from "./profileProvider";
 import ProposalProvider from "./proposalProvider";
 import ReportProvider from "./reportProvider";
+import TeamMembersProvider from "./teamMembersProvider";
 
 type DashboardRouteProvidersProps = Readonly<{
   children: React.ReactNode;
@@ -60,25 +61,27 @@ export function DashboardRouteProviders({
 
   const needsDashboard =
     isDashboardHome ||
-    isActivitiesRoute ||
     isClientsRoute ||
-    isMessagesRoute ||
     isOpportunitiesRoute ||
-    isPricingRequestsRoute ||
     isReportsRoute ||
     isTeamMembersRoute;
+  const needsTeamMembersProvider =
+    needsDashboard || isActivitiesRoute || isMessagesRoute || isPricingRequestsRoute;
   const needsClientProvider =
     needsDashboard ||
+    isMessagesRoute ||
     isContactsRoute ||
     isOpportunitiesRoute ||
     isProposalsRoute;
   const needsContactProvider = needsDashboard || isContactsRoute;
   const needsOpportunityProvider =
     needsDashboard ||
+    isActivitiesRoute ||
+    isMessagesRoute ||
     isOpportunitiesRoute ||
     isPricingRequestsRoute ||
     isProposalsRoute;
-  const needsProposalProvider = needsDashboard || isProposalsRoute;
+  const needsProposalProvider = needsDashboard || isActivitiesRoute || isProposalsRoute;
   const needsContractProvider = needsDashboard || isContractsRoute;
   const needsActivityProvider = needsDashboard || isActivitiesRoute;
   const needsDocumentProvider = isDashboardHome || isClientsRoute || isDocumentsRoute;
@@ -108,6 +111,13 @@ export function DashboardRouteProviders({
     PricingRequestProvider,
   );
   content = composeProvider(content, "dashboard", scopeKey, needsDashboard, DashboardProvider);
+  content = composeProvider(
+    content,
+    "team-members",
+    scopeKey,
+    needsTeamMembersProvider,
+    TeamMembersProvider,
+  );
   content = composeProvider(content, "activity", scopeKey, needsActivityProvider, ActivityProvider);
   content = composeProvider(content, "contract", scopeKey, needsContractProvider, ContractProvider);
   content = composeProvider(content, "proposal", scopeKey, needsProposalProvider, ProposalProvider);

@@ -5,9 +5,9 @@ import { useEffect } from "react";
 
 import { ActivityStatus, ActivityType, type IActivity } from "@/providers/salesTypes";
 import { useActivityActions, useActivityState } from "@/providers/activityProvider";
-import { useDashboardState } from "@/providers/dashboardProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
 import { useProposalState } from "@/providers/proposalProvider";
+import { useTeamMembersState } from "@/providers/teamMembersProvider";
 
 interface ActivityFormProps {
   isOpen: boolean;
@@ -30,7 +30,7 @@ export default function ActivityForm({
   const { activities } = useActivityState();
   const { opportunities } = useOpportunityState();
   const { proposals } = useProposalState();
-  const { teamMembers } = useDashboardState();
+  const { teamMembers } = useTeamMembersState();
   const { addActivity, updateActivity } = useActivityActions();
 
   useEffect(() => {
