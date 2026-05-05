@@ -1,33 +1,21 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useMemo, useReducer, useState } from "react";
+import { useContext, useMemo, useReducer } from "react";
 
-import {
-  type BackendPagedResult,
-  type BackendUserDto,
-  backendRequest,
-  coerceItems,
-  getSessionToken,
-  isMockSessionToken,
-  mapBackendUser,
-} from "@/lib/client/backend-api";
-import { getPrimaryUserRole } from "@/lib/auth/roles";
-import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
-import { useAuthState } from "@/providers/authProvider";
 import {
   ActivityStatus,
   ActivityType,
   OpportunityStage,
   ProposalStatus,
 } from "@/providers/salesTypes";
-import type { ITeamMember } from "@/providers/salesTypes";
-import { initialAutomationFeed, initialTeamMembers } from "@/providers/domainSeeds";
+import { initialAutomationFeed } from "@/providers/domainSeeds";
 import { useActivityActions, useActivityState } from "@/providers/activityProvider";
 import { useClientActions, useClientState } from "@/providers/clientProvider";
 import { useContactActions, useContactState } from "@/providers/contactProvider";
 import { useContractState } from "@/providers/contractProvider";
 import { useOpportunityActions, useOpportunityState } from "@/providers/opportunityProvider";
 import { useProposalActions, useProposalState } from "@/providers/proposalProvider";
+import { useTeamMembersState } from "@/providers/teamMembersProvider";
 import { formatCurrency, getBestOwner } from "@/providers/salesSelectors";
 import type { IAutomationEvent, IClientBundleInput, ISalesData } from "@/providers/salesTypes";
 import { addAutomationEventAction } from "./actions";
@@ -60,21 +48,11 @@ const createId = (prefix: string) =>
 export default function DashboardProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  const fallbackTeamMembers = useMemo(() => initialTeamMembers(), []);
   const [localState, dispatch] = useReducer(DashboardReducer, {
     automationFeed: initialAutomationFeed(),
-    teamMembers: fallbackTeamMembers,
+    teamMembers: [],
   });
-  const { isAuthenticated, user } = useAuthState();
-  const isDemoMode = isMockSessionToken(getSessionToken());
-  const role = getPrimaryUserRole(user?.roles);
-  const teamMembersCacheKey = useMemo(
-    () => createProviderCacheKey("team-members", user?.tenantId, user?.userId, role),
-    [role, user?.tenantId, user?.userId],
-  );
-  const [teamMembers, setTeamMembers] = useState<ITeamMember[]>(
-    () => readProviderCache<ITeamMember[]>(teamMembersCacheKey) ?? fallbackTeamMembers,
-  );
+  const { teamMembers } = useTeamMembersState();
 
   const { opportunities } = useOpportunityState();
   const { proposals } = useProposalState();
@@ -88,91 +66,6 @@ export default function DashboardProvider({
   const { addClient } = useClientActions();
   const { addContact } = useContactActions();
   const { addActivity } = useActivityActions();
-  const teamMembersPath = `/api/Users?pageNumber=1&pageSize=100&isActive=true${
-    role === "SalesRep" ? "&role=SalesRep" : ""
-  }`;
-
-  const loadTeamMembers = useCallback(async () => {
-    const payload = await backendRequest<BackendPagedResult<BackendUserDto> | BackendUserDto[]>(
-      teamMembersPath,
-    );
-    const users = coerceItems(payload).map(mapBackendUser);
-
-    if (users.length > 0) {
-      setTeamMembers(writeProviderCache(teamMembersCacheKey, users));
-      return;
-    }
-
-    setTeamMembers(writeProviderCache(teamMembersCacheKey, fallbackTeamMembers));
-  }, [fallbackTeamMembers, teamMembersCacheKey, teamMembersPath]);
-
-  useEffect(() => {
-    writeProviderCache(teamMembersCacheKey, teamMembers);
-  }, [teamMembers, teamMembersCacheKey]);
-
-  useEffect(() => {
-    if (!isAuthenticated) {
-      return;
-    }
-
-    let isActive = true;
-
-    if (isDemoMode) {
-      const timer = window.setTimeout(() => {
-        void loadTeamMembers().catch((error) => {
-          console.error(error);
-
-          if (isActive) {
-            setTeamMembers(writeProviderCache(teamMembersCacheKey, fallbackTeamMembers));
-          }
-        });
-      }, 0);
-
-      const handleWorkspaceUpdate = () => {
-        void loadTeamMembers().catch((error) => {
-          console.error(error);
-        });
-      };
-
-      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-
-      return () => {
-        isActive = false;
-        window.clearTimeout(timer);
-        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-      };
-    }
-
-    void backendRequest<BackendPagedResult<BackendUserDto> | BackendUserDto[]>(teamMembersPath)
-      .then((payload) => {
-        if (!isActive) {
-          return;
-        }
-
-        const users = coerceItems(payload).map(mapBackendUser);
-
-        if (users.length > 0) {
-          setTeamMembers(users);
-        }
-      })
-      .catch((error) => {
-        console.error(error);
-      });
-
-    return () => {
-      isActive = false;
-    };
-  }, [
-    fallbackTeamMembers,
-    isAuthenticated,
-    isDemoMode,
-    loadTeamMembers,
-    role,
-    teamMembersCacheKey,
-    teamMembersPath,
-  ]);
-
-  const visibleTeamMembers = isAuthenticated ? teamMembers : fallbackTeamMembers;
 
   const salesData = useMemo<ISalesData>(
     () => ({
@@ -184,7 +77,7 @@ export default function DashboardProvider({
       opportunities,
       proposals,
       renewals,
-      teamMembers: visibleTeamMembers,
+      teamMembers,
     }),
     [
       activities,
@@ -195,7 +88,7 @@ export default function DashboardProvider({
       opportunities,
       proposals,
       renewals,
-      visibleTeamMembers,
+      teamMembers,
     ],
   );
 
@@ -303,7 +196,7 @@ export default function DashboardProvider({
       value={{
         automationFeed: localState.automationFeed,
         salesData,
-        teamMembers: visibleTeamMembers,
+        teamMembers,
       }}
     >
       <DashboardActionContext.Provider
