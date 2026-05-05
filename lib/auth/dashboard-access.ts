@@ -6,12 +6,13 @@ const CLIENT_SCOPED_HOME_PATH = "/dashboard";
 
 const CLIENT_SCOPED_ALLOWED_PATHS = [
   "/dashboard",
-  "/dashboard/clients",
   "/dashboard/activities",
   "/dashboard/assistant",
   "/dashboard/proposals",
   "/dashboard/documents",
   "/dashboard/messages",
+  "/dashboard/contracts",
+  "/dashboard/profile",
 ] as const;
 
 const matchesScopedPath = (pathname: string, path: string) =>

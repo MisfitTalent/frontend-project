@@ -693,3 +693,57 @@ export const deleteMockNote = (tenantId: string, noteId: string) => {
   const workspace = getWorkspaceState(tenantId);
   workspace.notes = workspace.notes.filter((item) => item.id !== noteId);
 };
+
+export const syncMockUserWorkspaceProfile = (
+  user: IMockUser,
+  options: { organizationName?: string } = {},
+) => {
+  const workspace = getWorkspaceState(user.tenantId);
+  const fullName = `${user.firstName} ${user.lastName}`.trim();
+  const organizationName = options.organizationName?.trim();
+  const linkedClientIds = new Set(user.clientIds ?? []);
+  const teamMemberIndex = workspace.salesData.teamMembers.findIndex(
+    (item) => item.id === user.id,
+  );
+
+  if (teamMemberIndex >= 0) {
+    workspace.salesData.teamMembers[teamMemberIndex] = {
+      ...workspace.salesData.teamMembers[teamMemberIndex],
+      name: fullName,
+    };
+  }
+
+  workspace.salesData.activities = workspace.salesData.activities.map((item) =>
+    item.assignedToId === user.id ? { ...item, assignedToName: fullName } : item,
+  );
+
+  workspace.pricingRequests = workspace.pricingRequests.map((item) => ({
+    ...item,
+    assignedToName: item.assignedToId === user.id ? fullName : item.assignedToName,
+    requestedByName: item.requestedById === user.id ? fullName : item.requestedByName,
+  }));
+
+  workspace.notes = workspace.notes.map((item) => ({
+    ...item,
+    representativeName:
+      item.representativeId === user.id ? fullName : item.representativeName,
+  }));
+
+  if (organizationName && linkedClientIds.size > 0) {
+    workspace.salesData.clients = workspace.salesData.clients.map((item) =>
+      linkedClientIds.has(item.id) ? { ...item, name: organizationName } : item,
+    );
+  }
+
+  workspace.salesData.automationFeed.unshift({
+    createdAt: new Date().toISOString(),
+    description:
+      linkedClientIds.size > 0 && organizationName
+        ? `${fullName} updated the linked client workspace name to ${organizationName}.`
+        : `${fullName} updated their workspace profile details.`,
+    id: createId("auto"),
+    title: linkedClientIds.size > 0 && organizationName ? "Client workspace updated" : "Profile updated",
+  });
+
+  return clone(workspace);
+};

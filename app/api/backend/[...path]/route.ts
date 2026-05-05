@@ -30,6 +30,7 @@ import {
   listMockOpportunities,
   listMockPricingRequests,
   listMockProposals,
+  listMockTeamMembers,
   transitionMockProposal,
   updateMockActivity,
   updateMockClient,
@@ -332,6 +333,19 @@ const toNoteDto = (note: ReturnType<typeof listMockNotes>[number]) => ({
   ...note,
 });
 
+const toUserDto = (member: ReturnType<typeof listMockTeamMembers>[number]) => ({
+  availabilityPercent: member.availabilityPercent,
+  email: null,
+  firstName: member.name.split(" ").slice(0, -1).join(" ") || member.name,
+  fullName: member.name,
+  id: member.id,
+  lastName: member.name.split(" ").slice(-1)[0] ?? "",
+  region: member.region,
+  role: member.role,
+  roles: [member.role],
+  skills: member.skills,
+});
+
 const handleMockRequest = async (
   request: NextRequest,
   path: string[],
@@ -498,6 +512,15 @@ const handleMockRequest = async (
       deleteMockContact(user.tenantId, id);
       return new NextResponse(null, { status: 204 });
     }
+  }
+
+  if (resource === "Users" && !id && request.method === "GET") {
+    const roleFilter = request.nextUrl.searchParams.get("role");
+    const items = listMockTeamMembers(user.tenantId).filter((item) =>
+      roleFilter ? item.role === roleFilter : true,
+    );
+
+    return json({ items: items.map(toUserDto) });
   }
 
   if (resource === "Activities" || resource === "activities") {
