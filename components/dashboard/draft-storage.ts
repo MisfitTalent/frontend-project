@@ -3,27 +3,31 @@ export const ASSISTANT_PANEL_MESSAGES_KEY = "autosales:draft:assistant-panel:mes
 export const PRIORITY_ADVISOR_DRAFT_KEY = "autosales:draft:priority-advisor";
 export const PRIORITY_ADVISOR_MESSAGES_KEY = "autosales:draft:priority-advisor:messages";
 
+type DraftScope = {
+  tenantId?: string | null;
+  userId?: string | null;
+};
+
 export const getScopedDraftKey = (
-  key: string,
-  scope?:
-    | string
-    | null
-    | {
-        tenantId?: string | null;
-        userId?: string | null;
-      },
+  baseKey: string,
+  scope?: string | DraftScope | null,
 ) => {
   if (!scope) {
-    return key;
+    return baseKey;
   }
 
   if (typeof scope === "string") {
-    return `${key}:${scope}`;
+    return `${baseKey}:${scope}`;
   }
 
-  const parts = [scope.tenantId, scope.userId].filter(Boolean);
+  const tenantId = scope.tenantId?.trim();
+  const userId = scope.userId?.trim();
 
-  return parts.length > 0 ? `${key}:${parts.join(":")}` : key;
+  if (!tenantId || !userId) {
+    return baseKey;
+  }
+
+  return `${baseKey}:${tenantId}:${userId}`;
 };
 
 export const getClientFormDraftKey = (clientId?: string | null) =>
