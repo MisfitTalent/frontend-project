@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import { useAuthState } from "@/providers/authProvider";
 import {
@@ -14,6 +14,7 @@ import {
   isMockSessionToken,
   mapBackendContact,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { initialContacts } from "@/providers/domainSeeds";
 import { ContactActionContext, ContactStateContext } from "./context";
 import type { IContact } from "@/providers/salesTypes";
@@ -45,17 +46,27 @@ type ContactProviderProps = Readonly<{
 export default function ContactProvider({
   children,
 }: ContactProviderProps) {
-  const { isAuthenticated } = useAuthState();
-  const [contacts, setContacts] = useState<IContact[]>([]);
+  const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("contacts", user?.tenantId, user?.userId),
+    [user?.tenantId, user?.userId],
+  );
+  const [contacts, setContacts] = useState<IContact[]>(
+    () => readProviderCache<IContact[]>(cacheKey) ?? [],
+  );
 
   const loadContacts = useCallback(async () => {
     const payload = await backendRequest<BackendPagedResult<BackendContactDto> | BackendContactDto[]>(
       "/api/Contacts?pageNumber=1&pageSize=100",
     );
 
-    setContacts(coerceItems(payload).map(mapBackendContact));
-  }, []);
+    setContacts(writeProviderCache(cacheKey, coerceItems(payload).map(mapBackendContact)));
+  }, [cacheKey]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, contacts);
+  }, [cacheKey, contacts]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -70,7 +81,7 @@ export default function ContactProvider({
           console.error(error);
 
           if (isActive) {
-            setContacts(initialContacts());
+            setContacts(writeProviderCache(cacheKey, initialContacts()));
           }
         });
       }, 0);
@@ -100,7 +111,7 @@ export default function ContactProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [isAuthenticated, isDemoMode, loadContacts]);
+  }, [cacheKey, isAuthenticated, isDemoMode, loadContacts]);
 
   return (
     <ContactStateContext.Provider value={{ contacts: isAuthenticated ? contacts : [] }}>

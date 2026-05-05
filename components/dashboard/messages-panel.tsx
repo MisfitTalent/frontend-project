@@ -17,10 +17,17 @@ import {
 } from "antd";
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { AnimatedDashboardTable } from "@/components/dashboard/animated-dashboard-table";
 import { ClientMessageCenter } from "@/components/dashboard/client-message-center";
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import { getPrimaryUserRole } from "@/lib/auth/roles";
+import {
+  CLIENT_MESSAGE_CATEGORY,
+  getScopedMessageThreads,
+  prioritizeMessageThread,
+} from "@/lib/dashboard/message-threads";
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
 import { useDashboardState } from "@/providers/dashboardProvider";
@@ -36,14 +43,6 @@ type MessageFormValues = {
   subject: string;
 };
 
-const CLIENT_MESSAGE_CATEGORY = "Client Message";
-const LEGACY_CLIENT_MESSAGE_PREFIX = `${CLIENT_MESSAGE_CATEGORY} `;
-
-const isClientMessage = (note: INoteItem) =>
-  note.kind === "client_message" ||
-  note.category === CLIENT_MESSAGE_CATEGORY ||
-  note.category?.startsWith(LEGACY_CLIENT_MESSAGE_PREFIX);
-
 const createMessageId = () =>
   `workspace-message-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -58,7 +57,19 @@ const clientFacingRole = (role: string) =>
     "Deal Desk Specialist",
   ].some((token) => role.includes(token));
 
-export function MessagesPanel() {
+type MessagePanelContentProps = Readonly<{
+  initialClientId: string;
+  initialRepresentativeId: string;
+  initialSource: string;
+  selectedThreadId?: string | null;
+}>;
+
+function MessagesPanelContent({
+  initialClientId,
+  initialRepresentativeId,
+  initialSource,
+  selectedThreadId,
+}: MessagePanelContentProps) {
   const { user } = useAuthState();
   const { clients } = useClientState();
   const { teamMembers } = useDashboardState();
@@ -66,10 +77,13 @@ export function MessagesPanel() {
   const { addNote, updateNote } = useNoteActions();
   const { opportunities } = useOpportunityState();
   const { styles } = useStyles();
+  const role = getPrimaryUserRole(user?.roles);
   const [messageApi, contextHolder] = message.useMessage();
-  const [selectedClientId, setSelectedClientId] = useState<string>("all");
-  const [selectedRepresentativeId, setSelectedRepresentativeId] = useState<string>("all");
-  const [selectedSource, setSelectedSource] = useState<string>("all");
+  const [selectedClientId, setSelectedClientId] = useState<string>(initialClientId);
+  const [selectedRepresentativeId, setSelectedRepresentativeId] = useState<string>(
+    initialRepresentativeId,
+  );
+  const [selectedSource, setSelectedSource] = useState<string>(initialSource);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeThread, setActiveThread] = useState<INoteItem | null>(null);
   const [form] = Form.useForm<MessageFormValues>();
@@ -78,10 +92,14 @@ export function MessagesPanel() {
 
   const messageThreads = useMemo(
     () =>
-      notes
-        .filter(isClientMessage)
-        .sort((left, right) => right.createdDate.localeCompare(left.createdDate)),
-    [notes],
+      getScopedMessageThreads({
+        clientIds: user?.clientIds,
+        notes,
+        opportunities,
+        role,
+        userId: user?.userId,
+      }),
+    [notes, opportunities, role, user?.clientIds, user?.userId],
   );
 
   const representativeOptions = useMemo(
@@ -96,27 +114,68 @@ export function MessagesPanel() {
     [teamMembers],
   );
 
-  const visibleThreads = useMemo(
+  const scopedClientIds = useMemo(
     () =>
-      messageThreads.filter((note) => {
-        if (selectedClientId !== "all" && note.clientId !== selectedClientId) {
-          return false;
-        }
+      [...new Set(messageThreads.map((thread) => thread.clientId).filter(Boolean))] as string[],
+    [messageThreads],
+  );
+  const scopedRepresentativeIds = useMemo(
+    () =>
+      [
+        ...new Set(
+          messageThreads.map((thread) => thread.representativeId).filter(Boolean),
+        ),
+      ] as string[],
+    [messageThreads],
+  );
+  const resolvedSelectedClientId =
+    selectedClientId !== "all" && !scopedClientIds.includes(selectedClientId)
+      ? "all"
+      : selectedClientId;
+  const resolvedSelectedRepresentativeId =
+    selectedRepresentativeId !== "all" &&
+    !scopedRepresentativeIds.includes(selectedRepresentativeId)
+      ? "all"
+      : selectedRepresentativeId;
+  const resolvedSelectedSource = ["assistant", "client_portal", "workspace"].includes(
+    selectedSource,
+  )
+    ? selectedSource
+    : "all";
 
+  const visibleThreads = useMemo(
+    () => {
+      const filteredThreads = messageThreads.filter((note) => {
         if (
-          selectedRepresentativeId !== "all" &&
-          note.representativeId !== selectedRepresentativeId
+          resolvedSelectedClientId !== "all" &&
+          note.clientId !== resolvedSelectedClientId
         ) {
           return false;
         }
 
-        if (selectedSource !== "all" && note.source !== selectedSource) {
+        if (
+          resolvedSelectedRepresentativeId !== "all" &&
+          note.representativeId !== resolvedSelectedRepresentativeId
+        ) {
+          return false;
+        }
+
+        if (resolvedSelectedSource !== "all" && note.source !== resolvedSelectedSource) {
           return false;
         }
 
         return true;
-      }),
-    [messageThreads, selectedClientId, selectedRepresentativeId, selectedSource],
+      });
+
+      return prioritizeMessageThread(filteredThreads, selectedThreadId);
+    },
+    [
+      messageThreads,
+      resolvedSelectedClientId,
+      resolvedSelectedRepresentativeId,
+      resolvedSelectedSource,
+      selectedThreadId,
+    ],
   );
 
   const clientOptions = useMemo(
@@ -126,6 +185,18 @@ export function MessagesPanel() {
         value: client.id,
       })),
     [clients],
+  );
+  const visibleClientOptions = useMemo(
+    () =>
+      clientOptions.filter((option) => scopedClientIds.includes(option.value)),
+    [clientOptions, scopedClientIds],
+  );
+  const visibleRepresentativeOptions = useMemo(
+    () =>
+      representativeOptions.filter((option) =>
+        scopedRepresentativeIds.includes(option.value),
+      ),
+    [representativeOptions, scopedRepresentativeIds],
   );
 
   const unacknowledgedCount = messageThreads.filter(
@@ -315,17 +386,17 @@ export function MessagesPanel() {
             <Select
               className={styles.filterSelect}
               onChange={setSelectedClientId}
-              options={[{ label: "All clients", value: "all" }, ...clientOptions]}
-              value={selectedClientId}
+              options={[{ label: "All clients", value: "all" }, ...visibleClientOptions]}
+              value={resolvedSelectedClientId}
             />
             <Select
               className={styles.filterSelect}
               onChange={setSelectedRepresentativeId}
               options={[
                 { label: "All representatives", value: "all" },
-                ...representativeOptions,
+                ...visibleRepresentativeOptions,
               ]}
-              value={selectedRepresentativeId}
+              value={resolvedSelectedRepresentativeId}
             />
             <Select
               className={styles.filterSelect}
@@ -336,7 +407,7 @@ export function MessagesPanel() {
                 { label: "Workspace", value: "workspace" },
                 { label: "Assistant", value: "assistant" },
               ]}
-              value={selectedSource}
+              value={resolvedSelectedSource}
             />
           </Space>
           <Link href="/dashboard/clients" className="text-[#355c7d] hover:text-[#f28c28]">
@@ -439,5 +510,24 @@ export function MessagesPanel() {
         </Form>
       </Modal>
     </div>
+  );
+}
+
+export function MessagesPanel() {
+  const searchParams = useSearchParams();
+  const selectedThreadId = searchParams.get("threadId");
+  const initialClientId = searchParams.get("clientId") ?? "all";
+  const initialRepresentativeId = searchParams.get("representativeId") ?? "all";
+  const initialSource = searchParams.get("source") ?? "all";
+  const panelKey = searchParams.toString();
+
+  return (
+    <MessagesPanelContent
+      initialClientId={initialClientId}
+      initialRepresentativeId={initialRepresentativeId}
+      initialSource={initialSource}
+      key={panelKey}
+      selectedThreadId={selectedThreadId}
+    />
   );
 }

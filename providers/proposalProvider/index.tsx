@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import {
   type BackendPagedResult,
@@ -14,6 +14,7 @@ import {
   isMockSessionToken,
   mapBackendProposal,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { useAuthState } from "@/providers/authProvider";
 import { initialProposals } from "@/providers/domainSeeds";
 import { ProposalStatus, type ILineItem, type IProposal } from "@/providers/salesTypes";
@@ -101,17 +102,27 @@ const syncLineItems = async (
 export default function ProposalProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  const { isAuthenticated } = useAuthState();
-  const [proposals, setProposals] = useState<IProposal[]>([]);
+  const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("proposals", user?.tenantId, user?.userId),
+    [user?.tenantId, user?.userId],
+  );
+  const [proposals, setProposals] = useState<IProposal[]>(
+    () => readProviderCache<IProposal[]>(cacheKey) ?? [],
+  );
 
   const loadProposals = useCallback(async () => {
     const payload = await backendRequest<BackendPagedResult<BackendProposalDto> | BackendProposalDto[]>(
       "/api/Proposals?pageNumber=1&pageSize=100",
     );
 
-    setProposals(coerceItems(payload).map(mapBackendProposal));
-  }, []);
+    setProposals(writeProviderCache(cacheKey, coerceItems(payload).map(mapBackendProposal)));
+  }, [cacheKey]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, proposals);
+  }, [cacheKey, proposals]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -126,7 +137,7 @@ export default function ProposalProvider({
           console.error(error);
 
           if (isActive) {
-            setProposals(initialProposals());
+            setProposals(writeProviderCache(cacheKey, initialProposals()));
           }
         });
       }, 0);
@@ -163,7 +174,7 @@ export default function ProposalProvider({
     return () => {
       isActive = false;
     };
-  }, [isAuthenticated, isDemoMode, loadProposals]);
+  }, [cacheKey, isAuthenticated, isDemoMode, loadProposals]);
 
   const replaceProposal = (proposal: IProposal) => {
     setProposals((current) => {

@@ -216,7 +216,7 @@ export function TeamMemberDetailView({ memberId }: TeamMemberDetailViewProps) {
 
   return (
     <div className="space-y-6">
-      <Space direction="vertical" size={8}>
+      <Space orientation="vertical" size={8}>
         <Link
           className="inline-flex items-center gap-2 font-medium text-[#355c7d] transition-colors hover:text-[#f28c28]"
           href="/dashboard/team-members"

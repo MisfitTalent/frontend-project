@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import {
   backendRequest,
@@ -8,6 +8,7 @@ import {
   getSessionToken,
   isMockSessionToken,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { useAuthState } from "@/providers/authProvider";
 import { initialNotes, type INoteItem } from "@/providers/domainSeeds";
 import { NoteActionContext, NoteStateContext } from "./context";
@@ -35,14 +36,24 @@ export const useNoteActions = () => {
 export default function NoteProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  const { isAuthenticated } = useAuthState();
-  const [notes, setNotes] = useState<INoteItem[]>([]);
+  const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("notes", user?.tenantId, user?.userId),
+    [user?.tenantId, user?.userId],
+  );
+  const [notes, setNotes] = useState<INoteItem[]>(
+    () => readProviderCache<INoteItem[]>(cacheKey) ?? [],
+  );
 
   const loadNotes = useCallback(async () => {
     const payload = await backendRequest<{ items?: INoteItem[] } | INoteItem[]>("/api/Notes");
-    setNotes(coerceItems(payload));
-  }, []);
+    setNotes(writeProviderCache(cacheKey, coerceItems(payload)));
+  }, [cacheKey]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, notes);
+  }, [cacheKey, notes]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -57,7 +68,7 @@ export default function NoteProvider({
           console.error(error);
 
           if (isActive) {
-            setNotes(initialNotes());
+            setNotes(writeProviderCache(cacheKey, initialNotes()));
           }
         });
       }, 0);
@@ -77,14 +88,17 @@ export default function NoteProvider({
       };
     }
 
-    void loadNotes().catch((error) => {
-      console.error(error);
-    });
+    const timer = window.setTimeout(() => {
+      void loadNotes().catch((error) => {
+        console.error(error);
+      });
+    }, 0);
 
     return () => {
       isActive = false;
+      window.clearTimeout(timer);
     };
-  }, [isAuthenticated, isDemoMode, loadNotes]);
+  }, [cacheKey, isAuthenticated, isDemoMode, loadNotes]);
 
   return (
     <NoteStateContext.Provider value={{ notes: isAuthenticated ? notes : [] }}>
