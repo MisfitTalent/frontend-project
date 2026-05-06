@@ -14,9 +14,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { getSessionToken } from "@/lib/client/backend-api";
-import { backendRequest } from "@/lib/client/backend-api";
+import { listServiceRequests } from "@/lib/client/service-request-api";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
-import type { INoteItem } from "@/providers/domainSeeds";
 import { dashboardNavItems } from "@/constants/dashboard-nav";
 import {
   canAccessDashboardPath,
@@ -110,14 +109,9 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
 
     const loadPendingAdminRequests = async () => {
       try {
-        const payload = await backendRequest<{ items?: INoteItem[] } | INoteItem[]>("/api/Notes");
-        const notes = Array.isArray(payload) ? payload : payload.items ?? [];
-        const pendingRequests = notes
-          .filter(
-            (note) =>
-              note.requestType === "client_request" && note.status === "Pending admin review",
-          )
-          .sort((left, right) => right.createdDate.localeCompare(left.createdDate));
+        const pendingRequests = (await listServiceRequests(["submitted"])).sort((left, right) =>
+          right.createdAt.localeCompare(left.createdAt),
+        );
         const count = pendingRequests.length;
 
         if (isActive) {
@@ -154,7 +148,7 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
       }
       window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
     };
-  }, [activeRole, isAuthenticated, pathname]);
+  }, [activeRole, isAuthenticated]);
 
   const currentAlertSignature = `${latestPendingRequestId ?? "none"}:${pendingAdminRequestCount}`;
   const isAdminAlertDismissed =
@@ -242,7 +236,7 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
       />
 
       <Layout className={`dashboard-main ${collapsed ? "dashboard-main--expanded" : ""}`}>
-        <Header className="dashboard-header sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3">
+        <Header className="dashboard-header sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 !h-auto !leading-normal">
           <Space align="center" className="min-w-0">
             <Button
               className="dashboard-header-toggle !text-white"
@@ -267,39 +261,29 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
               pendingAdminRequestCount > 0 && !isAdminAlertDismissed ? (
                 <div
                   aria-label={`${pendingAdminRequestCount} client requests need admin attention`}
-                  className="dashboard-admin-alert-link"
+                  className="flex max-w-[24rem] items-center gap-2 rounded-full border border-amber-300 bg-amber-50 px-2 py-1 text-amber-950 shadow-sm"
                   role="region"
                 >
-                  <div className="dashboard-admin-alert dashboard-admin-alert--live">
-                    <span className="dashboard-admin-alert__beacon" aria-hidden="true" />
-                    <span className="dashboard-admin-alert__copy">
-                      <span className="dashboard-admin-alert__eyebrow">Action required</span>
-                      <span className="dashboard-admin-alert__title">
-                        {pendingAdminRequestCount} client request
-                        {pendingAdminRequestCount === 1 ? "" : "s"} waiting
-                      </span>
-                      <span className="dashboard-admin-alert__text">
-                        {latestPendingRequestTitle ?? "Open the request queue now."}
-                      </span>
-                    </span>
-                    <Badge count={pendingAdminRequestCount} size="small">
-                      <button
-                        className="dashboard-admin-alert__button"
-                        onClick={openAdminRequestQueue}
-                        type="button"
-                      >
-                        Review now
-                      </button>
-                    </Badge>
+                  <Badge count={pendingAdminRequestCount} size="small">
                     <button
-                      aria-label="Dismiss admin request alert"
-                      className="dashboard-admin-alert__dismiss"
-                      onClick={dismissAdminAlert}
+                      className="flex items-center gap-2 rounded-full bg-transparent px-2 py-1 text-left text-xs font-medium text-amber-950 transition hover:bg-amber-100"
+                      onClick={openAdminRequestQueue}
                       type="button"
                     >
-                      <CloseOutlined />
+                      <BellOutlined />
+                      <span className="max-w-[14rem] truncate">
+                        {latestPendingRequestTitle ?? `${pendingAdminRequestCount} request${pendingAdminRequestCount === 1 ? "" : "s"} waiting`}
+                      </span>
                     </button>
-                  </div>
+                  </Badge>
+                  <button
+                    aria-label="Dismiss admin request alert"
+                    className="flex h-6 w-6 items-center justify-center rounded-full text-amber-700 transition hover:bg-amber-100"
+                    onClick={dismissAdminAlert}
+                    type="button"
+                  >
+                    <CloseOutlined />
+                  </button>
                 </div>
               ) : (
                 <Button
