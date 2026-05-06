@@ -56,8 +56,12 @@ export default function PricingRequestProvider({
     () => createProviderCacheKey("pricing-requests", user?.tenantId, user?.userId, role),
     [role, user?.tenantId, user?.userId],
   );
+  const cachedPricingRequests = useMemo(
+    () => readProviderCache<IPricingRequest[]>(cacheKey),
+    [cacheKey],
+  );
   const [pricingRequests, setPricingRequests] = useState<IPricingRequest[]>(
-    () => readProviderCache<IPricingRequest[]>(cacheKey) ?? [],
+    () => cachedPricingRequests ?? [],
   );
 
   const listPath =
@@ -112,6 +116,12 @@ export default function PricingRequestProvider({
       };
     }
 
+    if (cachedPricingRequests && cachedPricingRequests.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     const timer = window.setTimeout(() => {
       void loadPricingRequests().catch((error) => {
         console.error(error);
@@ -122,7 +132,7 @@ export default function PricingRequestProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [cacheKey, isAuthenticated, isDemoMode, loadPricingRequests]);
+  }, [cacheKey, cachedPricingRequests, isAuthenticated, isDemoMode, loadPricingRequests]);
 
   const replacePricingRequest = (request: IPricingRequest) => {
     setPricingRequests((current) => {

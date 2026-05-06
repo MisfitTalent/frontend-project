@@ -55,8 +55,12 @@ export default function ActivityProvider({
     () => createProviderCacheKey("activities", user?.tenantId, user?.userId, role),
     [role, user?.tenantId, user?.userId],
   );
+  const cachedActivities = useMemo(
+    () => readProviderCache<IActivity[]>(cacheKey),
+    [cacheKey],
+  );
   const [activities, setActivities] = useState<IActivity[]>(
-    () => readProviderCache<IActivity[]>(cacheKey) ?? [],
+    () => cachedActivities ?? [],
   );
 
   const listPath =
@@ -109,6 +113,12 @@ export default function ActivityProvider({
       };
     }
 
+    if (cachedActivities && cachedActivities.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     void backendRequest<BackendPagedResult<BackendActivityDto> | BackendActivityDto[]>(listPath)
       .then((payload) => {
         if (!isActive) {
@@ -124,7 +134,7 @@ export default function ActivityProvider({
     return () => {
       isActive = false;
     };
-  }, [cacheKey, isAuthenticated, isDemoMode, listPath, loadActivities, role]);
+  }, [cacheKey, cachedActivities, isAuthenticated, isDemoMode, listPath, loadActivities, role]);
 
   return (
     <ActivityStateContext.Provider value={{ activities: isAuthenticated ? activities : [] }}>

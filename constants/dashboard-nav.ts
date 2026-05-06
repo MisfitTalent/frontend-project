@@ -74,15 +74,6 @@ export const dashboardNavItems: DashboardNavItem[] = [
     label: "Clients",
   },
   {
-    access: ["Admin", "BusinessDevelopmentManager", "SalesManager"],
-    description: "Keep decision-makers, champions, and key stakeholders attached to the right account.",
-    href: "/dashboard/contacts",
-    headerTitle: "Contacts",
-    icon: ContactsOutlined,
-    key: "/dashboard/contacts",
-    label: "Contacts",
-  },
-  {
     access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
     description: "View team members, availability, workload, and current ownership across the workspace.",
     href: "/dashboard/team-members",
@@ -135,6 +126,15 @@ export const dashboardNavItems: DashboardNavItem[] = [
     icon: NotificationOutlined,
     key: "/dashboard/notes",
     label: "Notes",
+  },
+  {
+    access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],
+    description: "View the client and internal contacts relevant to your current workspace scope.",
+    href: "/dashboard/contacts",
+    headerTitle: "Contacts",
+    icon: ContactsOutlined,
+    key: "/dashboard/contacts",
+    label: "Contacts",
   },
   {
     access: ["Admin", "BusinessDevelopmentManager", "SalesManager", "SalesRep"],

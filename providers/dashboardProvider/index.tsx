@@ -11,7 +11,6 @@ import {
 import { initialAutomationFeed } from "@/providers/domainSeeds";
 import { useActivityActions, useActivityState } from "@/providers/activityProvider";
 import { useClientActions, useClientState } from "@/providers/clientProvider";
-import { useContactActions, useContactState } from "@/providers/contactProvider";
 import { useContractState } from "@/providers/contractProvider";
 import { useOpportunityActions, useOpportunityState } from "@/providers/opportunityProvider";
 import { useProposalActions, useProposalState } from "@/providers/proposalProvider";
@@ -57,14 +56,12 @@ export default function DashboardProvider({
   const { opportunities } = useOpportunityState();
   const { proposals } = useProposalState();
   const { clients } = useClientState();
-  const { contacts } = useContactState();
   const { contracts, renewals } = useContractState();
   const { activities } = useActivityState();
 
   const { addOpportunity } = useOpportunityActions();
   const { addProposal } = useProposalActions();
   const { addClient } = useClientActions();
-  const { addContact } = useContactActions();
   const { addActivity } = useActivityActions();
 
   const salesData = useMemo<ISalesData>(
@@ -72,7 +69,7 @@ export default function DashboardProvider({
       activities,
       automationFeed: localState.automationFeed,
       clients,
-      contacts,
+      contacts: [],
       contracts,
       opportunities,
       proposals,
@@ -82,7 +79,6 @@ export default function DashboardProvider({
     [
       activities,
       clients,
-      contacts,
       contracts,
       localState.automationFeed,
       opportunities,
@@ -113,27 +109,8 @@ export default function DashboardProvider({
         (payload.opportunity.value >= 1_000_000 ? "Enterprise" : "Growth"),
     });
 
-    let contactId: string | undefined;
-
-    if (payload.contact?.firstName && payload.contact?.lastName && payload.contact?.email) {
-      const contact = await addContact({
-        clientId: client.id,
-        createdAt: new Date().toISOString(),
-        email: payload.contact.email,
-        firstName: payload.contact.firstName,
-        id: createId("contact"),
-        isPrimaryContact: true,
-        lastName: payload.contact.lastName,
-        phoneNumber: payload.contact.phoneNumber,
-        position: payload.contact.position ?? "Primary contact",
-      });
-
-      contactId = contact.id;
-    }
-
     const opportunity = await addOpportunity({
       clientId: client.id,
-      contactId,
       createdDate: new Date().toISOString().split("T")[0],
       currency: "ZAR",
       description: payload.opportunity.description,

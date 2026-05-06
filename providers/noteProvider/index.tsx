@@ -42,8 +42,9 @@ export default function NoteProvider({
     () => createProviderCacheKey("notes", user?.tenantId, user?.userId),
     [user?.tenantId, user?.userId],
   );
+  const cachedNotes = useMemo(() => readProviderCache<INoteItem[]>(cacheKey), [cacheKey]);
   const [notes, setNotes] = useState<INoteItem[]>(
-    () => readProviderCache<INoteItem[]>(cacheKey) ?? [],
+    () => cachedNotes ?? [],
   );
 
   const loadNotes = useCallback(async () => {
@@ -88,6 +89,12 @@ export default function NoteProvider({
       };
     }
 
+    if (cachedNotes && cachedNotes.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     const timer = window.setTimeout(() => {
       void loadNotes().catch((error) => {
         console.error(error);
@@ -98,7 +105,7 @@ export default function NoteProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [cacheKey, isAuthenticated, isDemoMode, loadNotes]);
+  }, [cacheKey, cachedNotes, isAuthenticated, isDemoMode, loadNotes]);
 
   return (
     <NoteStateContext.Provider value={{ notes: isAuthenticated ? notes : [] }}>

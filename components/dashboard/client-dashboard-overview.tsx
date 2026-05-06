@@ -2,17 +2,33 @@
 
 import { FileTextOutlined, FolderOpenOutlined, MessageOutlined, ProfileOutlined } from "@ant-design/icons";
 import { Card, Col, Empty, Row, Space, Tag, Typography } from "antd";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useMemo } from "react";
 
 import { useAuthState } from "@/providers/authProvider";
-import { ClientMessageCenter } from "@/components/dashboard/client-message-center";
 import { useClientState } from "@/providers/clientProvider";
 import { useContractState } from "@/providers/contractProvider";
 import { useDocumentState } from "@/providers/documentProvider";
 import type { INoteItem } from "@/providers/domainSeeds";
 import { useNoteState } from "@/providers/noteProvider";
 import { useProposalState } from "@/providers/proposalProvider";
+
+const ClientMessageCenter = dynamic(
+  () => import("@/components/dashboard/client-message-center").then((mod) => mod.ClientMessageCenter),
+  {
+    loading: () => (
+      <Card className="border-slate-200 shadow-sm">
+        <div className="space-y-3">
+          <div className="h-6 w-1/2 rounded bg-slate-200" />
+          <div className="h-4 w-full rounded bg-slate-100" />
+          <div className="h-4 w-5/6 rounded bg-slate-100" />
+          <div className="h-24 rounded-2xl bg-slate-50" />
+        </div>
+      </Card>
+    ),
+  },
+);
 
 const CLIENT_MESSAGE_CATEGORY = "Client Message";
 const LEGACY_CLIENT_MESSAGE_PREFIX = `${CLIENT_MESSAGE_CATEGORY} `;
@@ -74,16 +90,6 @@ export function ClientDashboardOverview() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <Tag color="#4f7cac">Client workspace</Tag>
-        <Typography.Title className="!mb-0 !text-slate-900" level={2}>
-          {client.name}
-        </Typography.Title>
-        <Typography.Paragraph className="!mb-0 max-w-3xl !text-slate-500">
-          Track proposals, shared documents, messages, and active contracts for your account.
-        </Typography.Paragraph>
-      </div>
-
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} xl={6}>
           <Link href="/dashboard/proposals">

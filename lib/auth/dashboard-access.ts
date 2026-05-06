@@ -8,6 +8,7 @@ const CLIENT_SCOPED_ALLOWED_PATHS = [
   "/dashboard",
   "/dashboard/activities",
   "/dashboard/assistant",
+  "/dashboard/contacts",
   "/dashboard/proposals",
   "/dashboard/documents",
   "/dashboard/messages",
