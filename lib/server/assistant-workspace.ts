@@ -15,6 +15,10 @@ import {
   loadAssistantLiveWorkspace,
 } from "@/lib/server/assistant-backend";
 import { getMockWorkspaceSnapshot } from "@/lib/server/mock-workspace-store";
+import {
+  listServiceRequests,
+  type ServiceRequestRecord,
+} from "@/lib/server/service-request-store";
 
 export interface IAssistantWorkspace {
   clientIds?: string[] | null;
@@ -27,6 +31,7 @@ export interface IAssistantWorkspace {
   role: UserRole;
   salesData: ISalesData;
   sessionToken?: string;
+  serviceRequests: ServiceRequestRecord[];
   scopeLabel: string;
   tenantId: string;
   userDisplayName: string;
@@ -189,6 +194,7 @@ export const getAssistantWorkspaceForUser = async (
   const documents = buildScopedDocuments(workspace.documents, salesData, role, user);
   const notes = buildScopedNotes(workspace.notes, salesData, role, user);
   const pricingRequests = buildScopedPricingRequests(workspace.pricingRequests, salesData, role, user);
+  const serviceRequests = listServiceRequests(user);
 
   return {
     clientIds: user.clientIds ?? null,
@@ -198,6 +204,7 @@ export const getAssistantWorkspaceForUser = async (
     role,
     salesData,
     sessionToken: sessionToken ?? undefined,
+    serviceRequests,
     isLiveBackend: Boolean(sessionToken && !isMockAssistantSessionToken(sessionToken)),
     scopeLabel: getScopeLabel(role, user.clientIds),
     tenantId: user.tenantId,
