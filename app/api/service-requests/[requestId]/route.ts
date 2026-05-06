@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getAuthorizedUser } from "@/lib/server/assistant-auth";
+import { getRequestSessionToken, isLiveSessionToken } from "@/lib/server/request-session-token";
+import { getLiveServiceRequestDetail } from "@/lib/server/service-request-backend-store";
 import { getServiceRequestDetail } from "@/lib/server/service-request-store";
 
 export const runtime = "nodejs";
@@ -10,6 +12,7 @@ export async function GET(
   context: { params: Promise<{ requestId: string }> },
 ) {
   const user = getAuthorizedUser(request);
+  const token = getRequestSessionToken(request);
 
   if (!user) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
@@ -17,7 +20,9 @@ export async function GET(
 
   try {
     const { requestId } = await context.params;
-    const detail = getServiceRequestDetail(user, requestId);
+    const detail = isLiveSessionToken(token)
+      ? await getLiveServiceRequestDetail(user, token, requestId)
+      : getServiceRequestDetail(user, requestId);
     return NextResponse.json(detail);
   } catch (error) {
     const message =

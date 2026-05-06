@@ -15,6 +15,7 @@ import {
   isMockAssistantSessionToken,
   loadAssistantLiveWorkspace,
 } from "@/lib/server/assistant-backend";
+import { listLiveServiceRequests } from "@/lib/server/service-request-backend-store";
 import {
   listServiceRequests,
   type ServiceRequestRecord,
@@ -208,7 +209,10 @@ export const getAssistantWorkspaceForUser = async (
     role,
     user,
   );
-  const serviceRequests = listServiceRequests(user);
+  const serviceRequests =
+    sessionToken && !isMockAssistantSessionToken(sessionToken)
+      ? await listLiveServiceRequests(user, sessionToken)
+      : listServiceRequests(user);
 
   return {
     clientIds: user.clientIds ?? null,
