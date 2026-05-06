@@ -9,6 +9,19 @@ Follow ReleaseFlow as the default branching strategy for this repository.
 
 Keep `main` high quality and up to date.
 
+For every fix or feature, create or identify the corresponding GitHub issue first.
+
+Connect each commit to that issue using the repository's commit message convention.
+
+Once the work is complete, open or update the pull request that corresponds to the issue and branch.
+
+Do not treat code changes, commits, and PRs as separate untracked steps. The expected flow is:
+
+1. Issue
+2. Branch
+3. Commit with issue reference
+4. Pull request linked to the same issue
+
 Create a new branch for every bug fix or feature unless the work clearly belongs on an existing matching branch.
 
 Before creating a branch, inspect the current branch list and recent history.
