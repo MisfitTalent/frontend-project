@@ -23,12 +23,12 @@ const users = new Map<string, IMockUser>([
     {
       email: "admin@autosales.com",
       firstName: "Admin",
-      id: "legacy-admin",
+      id: "admin-shared-demo",
       lastName: "User",
       password: "Admin123",
       role: "Admin",
-      tenantId: "mock-tenant-autosales",
-      tenantName: "AutoSales Mock Workspace",
+      tenantId: "11111111-1111-1111-1111-111111111111",
+      tenantName: "Shared Demo Tenant",
     },
   ],
   [

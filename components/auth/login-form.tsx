@@ -24,10 +24,10 @@ export function LoginForm() {
           Welcome back
         </Typography.Title>
         <Typography.Paragraph className="!mb-0 !text-slate-500">
-          Sign in with your organisation account to manage your sales workspace. For local testing, use the mock admin account below.
+          Sign in with your organisation account to manage your sales workspace. For local testing, use the shared demo admin account below.
         </Typography.Paragraph>
         <Typography.Text className="block !text-sm !text-slate-500">
-          Mock admin: <strong>admin@autosales.com</strong> / <strong>Admin123</strong>
+          Shared demo admin: <strong>admin@autosales.com</strong> / <strong>Admin123</strong>
         </Typography.Text>
       </div>
 

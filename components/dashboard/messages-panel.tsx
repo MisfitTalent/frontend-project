@@ -3,6 +3,7 @@
 import { MailOutlined, SendOutlined, TeamOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import {
+  Alert,
   Button,
   Card,
   Empty,
@@ -16,8 +17,8 @@ import {
   message,
 } from "antd";
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 
 import { AnimatedDashboardTable } from "@/components/dashboard/animated-dashboard-table";
 import { ClientMessageCenter } from "@/components/dashboard/client-message-center";
@@ -79,6 +80,7 @@ function MessagesPanelContent({
   initialSource,
   selectedThreadId,
 }: MessagePanelContentProps) {
+  const router = useRouter();
   const { user } = useAuthState();
   const { clients } = useClientState();
   const { teamMembers } = useTeamMembersState();
@@ -207,6 +209,13 @@ function MessagesPanelContent({
   const pendingAdminReviewCount = messageThreads.filter(
     (note) => isClientRequestThread(note) && note.status === "Pending admin review",
   ).length;
+  const pendingAdminRequests = useMemo(
+    () =>
+      messageThreads.filter(
+        (note) => isClientRequestThread(note) && note.status === "Pending admin review",
+      ),
+    [messageThreads],
+  );
   const pendingClientResponseCount = messageThreads.filter(
     (note) => note.requestType === "team_assignment" && note.status === "Pending client response",
   ).length;
@@ -214,6 +223,44 @@ function MessagesPanelContent({
   const uniqueClientCount = new Set(
     messageThreads.map((note) => note.clientId).filter(Boolean),
   ).size;
+  const selectedConversationRoot = useMemo(
+    () => visibleThreads.find((note) => note.id === selectedThreadId) ?? null,
+    [selectedThreadId, visibleThreads],
+  );
+  const selectedConversationMessages = useMemo(() => {
+    if (!selectedConversationRoot?.clientId) {
+      return [];
+    }
+
+    const linkedRootId = selectedConversationRoot.linkedRequestId ?? selectedConversationRoot.id;
+
+    return messageThreads
+      .filter((note) => {
+        if (note.clientId !== selectedConversationRoot.clientId) {
+          return false;
+        }
+
+        return (
+          note.id === selectedConversationRoot.id ||
+          note.id === linkedRootId ||
+          note.linkedRequestId === selectedConversationRoot.id ||
+          note.linkedRequestId === linkedRootId
+        );
+      })
+      .sort((left, right) => left.createdDate.localeCompare(right.createdDate));
+  }, [messageThreads, selectedConversationRoot]);
+
+  const openConversation = (note: INoteItem) => {
+    const params = new URLSearchParams();
+    params.set("source", note.source ?? "client_portal");
+    params.set("threadId", note.id);
+
+    if (note.clientId) {
+      params.set("clientId", note.clientId);
+    }
+
+    router.push(`/dashboard/messages?${params.toString()}`);
+  };
 
   const openReplyComposer = (note?: INoteItem) => {
     const accountLeadId =
@@ -285,19 +332,36 @@ function MessagesPanelContent({
     }
   };
 
-  const openAssignModal = (note: INoteItem) => {
+  const openAssignModal = useCallback((note: INoteItem) => {
     assignmentForm.setFieldsValue({
       assignmentMessage: `We are assigning the right sales reps to support "${note.title}".`,
       representativeIds: [],
     });
     setActiveThread(note);
     setIsAssignModalOpen(true);
-  };
+  }, [assignmentForm]);
 
   const closeAssignModal = () => {
     setIsAssignModalOpen(false);
     setActiveThread(null);
     assignmentForm.resetFields();
+    if (selectedThreadId) {
+      const params = new URLSearchParams();
+
+      if (resolvedSelectedClientId !== "all") {
+        params.set("clientId", resolvedSelectedClientId);
+      }
+      if (resolvedSelectedRepresentativeId !== "all") {
+        params.set("representativeId", resolvedSelectedRepresentativeId);
+      }
+      if (resolvedSelectedSource !== "all") {
+        params.set("source", resolvedSelectedSource);
+      }
+
+      router.replace(
+        params.toString() ? `/dashboard/messages?${params.toString()}` : "/dashboard/messages",
+      );
+    }
   };
 
   const handleAssignSubmit = async (values: AssignmentFormValues) => {
@@ -427,6 +491,27 @@ function MessagesPanelContent({
     },
   ];
 
+  useEffect(() => {
+    if (!selectedThreadId || isScopedClientUser || isAssignModalOpen) {
+      return;
+    }
+
+    const selectedRequest = visibleThreads.find(
+      (note) =>
+        note.id === selectedThreadId &&
+        isClientRequestThread(note) &&
+        note.status === "Pending admin review",
+    );
+
+    if (selectedRequest) {
+      const timer = window.setTimeout(() => {
+        openAssignModal(selectedRequest);
+      }, 0);
+
+      return () => window.clearTimeout(timer);
+    }
+  }, [isAssignModalOpen, isScopedClientUser, openAssignModal, selectedThreadId, visibleThreads]);
+
   if (isScopedClientUser) {
     return <ClientMessageCenter />;
   }
@@ -434,6 +519,172 @@ function MessagesPanelContent({
   return (
     <div className={styles.container}>
       {contextHolder}
+
+      {!isScopedClientUser && pendingAdminRequests.length > 0 ? (
+        <Alert
+          action={
+            <Space size="small" wrap>
+              <Link
+                href={`/dashboard/messages?source=client_portal&threadId=${pendingAdminRequests[0]?.id ?? ""}`}
+              >
+                <Button className="dashboard-admin-alert__button" icon={<TeamOutlined />} type="primary">
+                  Open request
+                </Button>
+              </Link>
+              <Link href="/dashboard/assistant">
+                <Button icon={<MailOutlined />}>Handle with AI</Button>
+              </Link>
+            </Space>
+          }
+          banner
+          className="dashboard-request-queue-banner"
+          description={
+            <div className="space-y-2">
+              <Typography.Text className="!text-slate-700">
+                {pendingAdminRequests.length} client request
+                {pendingAdminRequests.length === 1 ? "" : "s"} need admin action before the workflow can continue.
+              </Typography.Text>
+              <div className="space-y-1">
+                {pendingAdminRequests.slice(0, 3).map((request) => (
+                  <Typography.Text className="block !text-slate-700" key={request.id}>
+                    {request.createdDate} - {clients.find((client) => client.id === request.clientId)?.name ?? "Unlinked client"} - {request.title}
+                  </Typography.Text>
+                ))}
+              </div>
+            </div>
+          }
+          message="Client request queue is waiting for admin review"
+          showIcon
+          type="warning"
+        />
+      ) : null}
+
+      {!isScopedClientUser && pendingAdminRequests.length > 0 ? (
+        <Card className={styles.card} title="Admin review queue">
+          <div className={styles.requestQueue}>
+            <div className={styles.requestQueueHeader}>
+              <Typography.Text className={styles.metricText}>
+                These are the actual client requests waiting for admin action.
+              </Typography.Text>
+              <Link href="/dashboard/assistant">
+                <Button icon={<MailOutlined />} type="default">
+                  Summarize with AI
+                </Button>
+              </Link>
+            </div>
+
+            {pendingAdminRequests.map((request) => (
+              <div className={styles.messageCard} key={request.id}>
+                <div className={styles.messageHeader}>
+                  <div className="space-y-2">
+                    <Typography.Title className="!m-0" level={5}>
+                      {request.title}
+                    </Typography.Title>
+                    <Space size="small" wrap>
+                      <Tag color="orange">Needs admin review</Tag>
+                      <Tag color="geekblue">
+                        {clients.find((client) => client.id === request.clientId)?.name ??
+                          "Unlinked client"}
+                      </Tag>
+                      <Tag color="default">{request.createdDate}</Tag>
+                      {request.submittedBy ? (
+                        <Tag color="default">{request.submittedBy}</Tag>
+                      ) : null}
+                    </Space>
+                  </div>
+                  <Space size="small" wrap>
+                    <Button onClick={() => openConversation(request)} type="default">
+                      Open chat
+                    </Button>
+                    <Button
+                      icon={<TeamOutlined />}
+                      onClick={() => openAssignModal(request)}
+                      type="primary"
+                    >
+                      Assign reps
+                    </Button>
+                    <Button onClick={() => openReplyComposer(request)}>
+                      Reply first
+                    </Button>
+                  </Space>
+                </div>
+                <Typography.Paragraph className={styles.messageText}>
+                  {request.content}
+                </Typography.Paragraph>
+                <Typography.Text className={styles.messageFooter}>
+                  Client request from{" "}
+                  {clients.find((client) => client.id === request.clientId)?.name ??
+                    "the client workspace"}
+                  .
+                </Typography.Text>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
+      {selectedConversationRoot ? (
+        <Card className={styles.card} title="Open conversation">
+          <div className={styles.conversationThread}>
+            <div className={styles.selectedConversationHeader}>
+              <div>
+                <Typography.Title className="!mb-0" level={4}>
+                  {selectedConversationRoot.title}
+                </Typography.Title>
+                <Typography.Text className={styles.metricText}>
+                  {clients.find((client) => client.id === selectedConversationRoot.clientId)?.name ??
+                    "Unlinked client"}
+                </Typography.Text>
+              </div>
+              <Space size="small" wrap>
+                {isClientRequestThread(selectedConversationRoot) &&
+                selectedConversationRoot.status === "Pending admin review" ? (
+                  <Button
+                    icon={<TeamOutlined />}
+                    onClick={() => openAssignModal(selectedConversationRoot)}
+                    type="primary"
+                  >
+                    Assign reps
+                  </Button>
+                ) : null}
+                <Button
+                  icon={<SendOutlined />}
+                  onClick={() => openReplyComposer(selectedConversationRoot)}
+                >
+                  Reply
+                </Button>
+              </Space>
+            </div>
+
+            {selectedConversationMessages.map((note) => {
+              const isWorkspaceMessage = note.source === "workspace" || note.source === "assistant";
+
+              return (
+                <div
+                  className={`${styles.conversationBubble} ${
+                    isWorkspaceMessage
+                      ? styles.conversationBubbleWorkspace
+                      : styles.conversationBubbleClient
+                  }`}
+                  key={note.id}
+                >
+                  <Typography.Text className={styles.conversationMeta}>
+                    {isWorkspaceMessage
+                      ? note.source === "assistant"
+                        ? "Assistant"
+                        : note.representativeName ?? "Workspace"
+                      : note.submittedBy ?? "Client"}{" "}
+                    · {note.createdDate} · {note.status ?? "Sent"}
+                  </Typography.Text>
+                  <Typography.Paragraph className={styles.messageText}>
+                    {note.content}
+                  </Typography.Paragraph>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      ) : null}
 
       <div className={styles.cardGridFour}>
         <Card className={styles.card}>
@@ -566,13 +817,23 @@ function MessagesPanelContent({
                     </Space>
                   </div>
                   {isClientRequestThread(note) && note.status === "Pending admin review" ? (
-                    <Button icon={<TeamOutlined />} onClick={() => openAssignModal(note)} type="primary">
-                      Assign reps
-                    </Button>
+                    <Space size="small" wrap>
+                      <Button onClick={() => openConversation(note)} type="default">
+                        Open chat
+                      </Button>
+                      <Button icon={<TeamOutlined />} onClick={() => openAssignModal(note)} type="primary">
+                        Assign reps
+                      </Button>
+                    </Space>
                   ) : (
-                    <Button icon={<SendOutlined />} onClick={() => openReplyComposer(note)}>
-                      Reply
-                    </Button>
+                    <Space size="small" wrap>
+                      <Button onClick={() => openConversation(note)} type="default">
+                        Open chat
+                      </Button>
+                      <Button icon={<SendOutlined />} onClick={() => openReplyComposer(note)}>
+                        Reply
+                      </Button>
+                    </Space>
                   )}
                 </div>
                 <Typography.Paragraph className={styles.messageText}>
