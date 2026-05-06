@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { toAuthPayload, updateMockUser } from "../mock-users";
 import { AUTH_COOKIE_NAME, AUTH_COOKIE_OPTIONS } from "../session-cookie";
+import { shouldUseUpstreamAuth } from "@/lib/server/auth-mode";
 import { createBackendUrl } from "@/lib/server/backend-url";
 import { getUserFromSessionToken } from "@/lib/auth/session-user";
 import { syncMockUserWorkspaceProfile } from "@/lib/server/mock-workspace-store";
@@ -14,6 +15,10 @@ export async function GET(request: NextRequest) {
 
   if (mockUser && token.startsWith("mock-token::")) {
     return NextResponse.json(toAuthPayload(mockUser), { status: 200 });
+  }
+
+  if (!shouldUseUpstreamAuth()) {
+    return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   }
 
   const headers = new Headers();
@@ -78,6 +83,10 @@ export async function PATCH(request: NextRequest) {
     });
 
     return NextResponse.json(toAuthPayload(updatedUser), { status: 200 });
+  }
+
+  if (!shouldUseUpstreamAuth()) {
+    return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   }
 
   const headers = new Headers();

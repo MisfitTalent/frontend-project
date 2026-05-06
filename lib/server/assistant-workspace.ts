@@ -15,6 +15,7 @@ import {
   loadAssistantLiveWorkspace,
 } from "@/lib/server/assistant-backend";
 import { getMockWorkspaceSnapshot } from "@/lib/server/mock-workspace-store";
+import { listLiveServiceRequests } from "@/lib/server/service-request-backend-store";
 import {
   listServiceRequests,
   type ServiceRequestRecord,
@@ -194,7 +195,10 @@ export const getAssistantWorkspaceForUser = async (
   const documents = buildScopedDocuments(workspace.documents, salesData, role, user);
   const notes = buildScopedNotes(workspace.notes, salesData, role, user);
   const pricingRequests = buildScopedPricingRequests(workspace.pricingRequests, salesData, role, user);
-  const serviceRequests = listServiceRequests(user);
+  const serviceRequests =
+    sessionToken && !isMockAssistantSessionToken(sessionToken)
+      ? await listLiveServiceRequests(user, sessionToken)
+      : listServiceRequests(user);
 
   return {
     clientIds: user.clientIds ?? null,

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getAuthorizedUser } from "@/lib/server/assistant-auth";
+import { getRequestSessionToken, isLiveSessionToken } from "@/lib/server/request-session-token";
+import { applyLiveServiceRequestClientDecision } from "@/lib/server/service-request-backend-store";
 import { applyServiceRequestClientDecision } from "@/lib/server/service-request-store";
 
 export const runtime = "nodejs";
@@ -10,6 +12,7 @@ export async function POST(
   context: { params: Promise<{ requestId: string }> },
 ) {
   const user = getAuthorizedUser(request);
+  const token = getRequestSessionToken(request);
 
   if (!user) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
@@ -34,11 +37,14 @@ export async function POST(
       );
     }
 
-    const updated = applyServiceRequestClientDecision(user, requestId, {
+    const payload = {
       assignmentIds,
-      decision: body.decision,
+      decision: body.decision as "approve" | "reject",
       note: typeof body.note === "string" ? body.note : undefined,
-    });
+    };
+    const updated = isLiveSessionToken(token)
+      ? await applyLiveServiceRequestClientDecision(user, token, requestId, payload)
+      : applyServiceRequestClientDecision(user, requestId, payload);
 
     return NextResponse.json(updated);
   } catch (error) {

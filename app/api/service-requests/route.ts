@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getAuthorizedUser } from "@/lib/server/assistant-auth";
+import { isLiveSessionToken, getRequestSessionToken } from "@/lib/server/request-session-token";
+import {
+  createLiveServiceRequest,
+  listLiveServiceRequests,
+} from "@/lib/server/service-request-backend-store";
 import {
   createServiceRequest,
   listServiceRequests,
@@ -46,20 +51,26 @@ const parseStatuses = (request: NextRequest) => {
 
 export async function GET(request: NextRequest) {
   const user = getAuthorizedUser(request);
+  const token = getRequestSessionToken(request);
 
   if (!user) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   }
 
-  const items = listServiceRequests(user, {
-    statuses: parseStatuses(request),
-  });
+  const items = isLiveSessionToken(token)
+    ? await listLiveServiceRequests(user, token, {
+        statuses: parseStatuses(request),
+      })
+    : listServiceRequests(user, {
+        statuses: parseStatuses(request),
+      });
 
   return NextResponse.json({ items });
 }
 
 export async function POST(request: NextRequest) {
   const user = getAuthorizedUser(request);
+  const token = getRequestSessionToken(request);
 
   if (!user) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
@@ -109,14 +120,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const serviceRequest = createServiceRequest(user, {
-      clientId,
-      description,
-      priority,
-      requestType,
-      source,
-      title,
-    });
+    const serviceRequest = isLiveSessionToken(token)
+      ? await createLiveServiceRequest(user, token, {
+          clientId,
+          description,
+          priority,
+          requestType,
+          source,
+          title,
+        })
+      : createServiceRequest(user, {
+          clientId,
+          description,
+          priority,
+          requestType,
+          source,
+          title,
+        });
 
     return NextResponse.json(serviceRequest, { status: 201 });
   } catch (error) {

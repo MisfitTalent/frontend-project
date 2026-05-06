@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { findUserByEmail, toAuthPayload } from "../mock-users";
 import { AUTH_COOKIE_NAME, AUTH_COOKIE_OPTIONS } from "../session-cookie";
+import { shouldUseUpstreamAuth } from "@/lib/server/auth-mode";
 import { createBackendUrl } from "@/lib/server/backend-url";
 
 const readJsonBody = async (response: Response) => {
@@ -27,6 +28,10 @@ export async function POST(request: NextRequest) {
     response.cookies.set(AUTH_COOKIE_NAME, payload.token, AUTH_COOKIE_OPTIONS);
 
     return response;
+  }
+
+  if (!shouldUseUpstreamAuth()) {
+    return NextResponse.json({ message: "Invalid email or password." }, { status: 401 });
   }
 
   const upstream = await fetch(createBackendUrl("/api/Auth/login"), {

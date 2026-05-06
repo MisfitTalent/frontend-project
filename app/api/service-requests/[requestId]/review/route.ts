@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getAuthorizedUser } from "@/lib/server/assistant-auth";
+import { getRequestSessionToken, isLiveSessionToken } from "@/lib/server/request-session-token";
+import { markLiveServiceRequestUnderReview } from "@/lib/server/service-request-backend-store";
 import { markServiceRequestUnderReview } from "@/lib/server/service-request-store";
 
 export const runtime = "nodejs";
@@ -10,6 +12,7 @@ export async function POST(
   context: { params: Promise<{ requestId: string }> },
 ) {
   const user = getAuthorizedUser(request);
+  const token = getRequestSessionToken(request);
 
   if (!user) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
@@ -17,7 +20,9 @@ export async function POST(
 
   try {
     const { requestId } = await context.params;
-    const updated = markServiceRequestUnderReview(user, requestId);
+    const updated = isLiveSessionToken(token)
+      ? await markLiveServiceRequestUnderReview(user, token, requestId)
+      : markServiceRequestUnderReview(user, requestId);
     return NextResponse.json(updated);
   } catch (error) {
     const message =

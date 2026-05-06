@@ -55,6 +55,13 @@ import {
   getServiceRequestDetail,
   markServiceRequestUnderReview,
 } from "@/lib/server/service-request-store";
+import {
+  applyLiveServiceRequestClientDecision,
+  applyLiveServiceRequestRepDecision,
+  createLiveServiceRequestAssignments,
+  getLiveServiceRequestDetail,
+  markLiveServiceRequestUnderReview,
+} from "@/lib/server/service-request-backend-store";
 
 export type AssistantMessage = {
   content: string;
@@ -394,6 +401,83 @@ const createAssistantActor = (workspace: IAssistantWorkspace): AssistantActor =>
   tenantId: workspace.tenantId,
   tenantName: workspace.scopeLabel,
 });
+
+const getServiceRequestDetailForWorkspace = async (
+  workspace: IAssistantWorkspace,
+  requestId: string,
+) =>
+  workspace.isLiveBackend && workspace.sessionToken
+    ? getLiveServiceRequestDetail(createAssistantActor(workspace), workspace.sessionToken, requestId)
+    : Promise.resolve(getServiceRequestDetail(createAssistantActor(workspace), requestId));
+
+const markServiceRequestUnderReviewForWorkspace = async (
+  workspace: IAssistantWorkspace,
+  requestId: string,
+) =>
+  workspace.isLiveBackend && workspace.sessionToken
+    ? markLiveServiceRequestUnderReview(
+        createAssistantActor(workspace),
+        workspace.sessionToken,
+        requestId,
+      )
+    : Promise.resolve(markServiceRequestUnderReview(createAssistantActor(workspace), requestId));
+
+const createServiceRequestAssignmentsForWorkspace = async (
+  workspace: IAssistantWorkspace,
+  requestId: string,
+  input: {
+    note?: string;
+    representativeUserIds: string[];
+  },
+) =>
+  workspace.isLiveBackend && workspace.sessionToken
+    ? createLiveServiceRequestAssignments(
+        createAssistantActor(workspace),
+        workspace.sessionToken,
+        requestId,
+        input,
+      )
+    : Promise.resolve(
+        createServiceRequestAssignments(createAssistantActor(workspace), requestId, input),
+      );
+
+const applyClientDecisionForWorkspace = async (
+  workspace: IAssistantWorkspace,
+  requestId: string,
+  input: {
+    assignmentIds: string[];
+    decision: "approve" | "reject";
+  },
+) =>
+  workspace.isLiveBackend && workspace.sessionToken
+    ? applyLiveServiceRequestClientDecision(
+        createAssistantActor(workspace),
+        workspace.sessionToken,
+        requestId,
+        input,
+      )
+    : Promise.resolve(
+        applyServiceRequestClientDecision(createAssistantActor(workspace), requestId, input),
+      );
+
+const applyRepresentativeDecisionForWorkspace = async (
+  workspace: IAssistantWorkspace,
+  requestId: string,
+  input: {
+    assignmentId: string;
+    decision: "accept" | "reject";
+  },
+) =>
+  workspace.isLiveBackend && workspace.sessionToken
+    ? applyLiveServiceRequestRepDecision(
+        createAssistantActor(workspace),
+        workspace.sessionToken,
+        requestId,
+        input,
+      )
+    : Promise.resolve(
+        applyServiceRequestRepDecision(createAssistantActor(workspace), requestId, input),
+      );
 
 const toIsoDate = (value: Date) => value.toISOString().split("T")[0];
 
@@ -1363,7 +1447,7 @@ const isRepresentativeDecisionIntent = (message: string) => {
   return null;
 };
 
-const createClientAssignmentDecisionConfirmationReply = (
+const createClientAssignmentDecisionConfirmationReply = async (
   latestUserMessage: string,
   workspace: IAssistantWorkspace,
 ) => {
@@ -1383,7 +1467,7 @@ const createClientAssignmentDecisionConfirmationReply = (
     return null;
   }
 
-  const detail = getServiceRequestDetail(createAssistantActor(workspace), request.id);
+  const detail = await getServiceRequestDetailForWorkspace(workspace, request.id);
   const assignmentIds = detail.assignments.map((assignment) => assignment.id);
 
   if (assignmentIds.length === 0) {
@@ -1441,7 +1525,7 @@ const getRecentPendingClientAssignmentDecisionRequest = (
   };
 };
 
-const createRepresentativeDecisionConfirmationReply = (
+const createRepresentativeDecisionConfirmationReply = async (
   latestUserMessage: string,
   workspace: IAssistantWorkspace,
 ) => {
@@ -1461,7 +1545,7 @@ const createRepresentativeDecisionConfirmationReply = (
     return null;
   }
 
-  const detail = getServiceRequestDetail(createAssistantActor(workspace), request.id);
+  const detail = await getServiceRequestDetailForWorkspace(workspace, request.id);
   const assignment =
     detail.assignments.find(
       (item) =>
@@ -1930,7 +2014,7 @@ const createConfirmationResult = (
   ] satisfies AssistantTraceStep[],
 });
 
-const createMutationConfirmationReply = (
+const createMutationConfirmationReply = async (
   latestUserMessage: string,
   workspace: IAssistantWorkspace,
   messages: AssistantMessage[],
@@ -2057,14 +2141,14 @@ const createMutationConfirmationReply = (
   }
 
   const clientAssignmentDecisionConfirmationResult =
-    createClientAssignmentDecisionConfirmationReply(latestUserMessage, workspace);
+    await createClientAssignmentDecisionConfirmationReply(latestUserMessage, workspace);
 
   if (clientAssignmentDecisionConfirmationResult) {
     return clientAssignmentDecisionConfirmationResult;
   }
 
   const representativeDecisionConfirmationResult =
-    createRepresentativeDecisionConfirmationReply(latestUserMessage, workspace);
+    await createRepresentativeDecisionConfirmationReply(latestUserMessage, workspace);
 
   if (representativeDecisionConfirmationResult) {
     return representativeDecisionConfirmationResult;
@@ -2214,7 +2298,7 @@ const shouldRunClientRequestAssignmentWorkflow = (
   isConfirmationMessage(latestUserMessage) &&
   Boolean(getRecentClientRequestAssignmentPlan(messages, workspace));
 
-const createClientRequestAssignmentResult = (
+const createClientRequestAssignmentResult = async (
   workspace: IAssistantWorkspace,
   messages: AssistantMessage[],
 ) => {
@@ -2224,15 +2308,21 @@ const createClientRequestAssignmentResult = (
     return null;
   }
 
-  const actor = createAssistantActor(workspace);
-  const reviewedRequest = markServiceRequestUnderReview(actor, plan.request.id);
-  const createdAssignments = createServiceRequestAssignments(actor, plan.request.id, {
+  const reviewedRequest = await markServiceRequestUnderReviewForWorkspace(
+    workspace,
+    plan.request.id,
+  );
+  const createdAssignments = await createServiceRequestAssignmentsForWorkspace(
+    workspace,
+    plan.request.id,
+    {
     note:
       plan.opportunity
         ? `Linked to ${plan.opportunity.title}.`
         : "Follow up on the requested support.",
     representativeUserIds: plan.representatives.map((member) => member.id),
-  });
+    },
+  );
   workspace.serviceRequests = workspace.serviceRequests.map((request) =>
     request.id === reviewedRequest.id ? reviewedRequest : request,
   );
@@ -2565,7 +2655,7 @@ const shouldRunConfirmedClientAssignmentDecisionWorkflow = (
   isConfirmationMessage(latestUserMessage) &&
   Boolean(getRecentPendingClientAssignmentDecisionRequest(messages));
 
-const createConfirmedClientAssignmentDecisionResult = (
+const createConfirmedClientAssignmentDecisionResult = async (
   workspace: IAssistantWorkspace,
   messages: AssistantMessage[],
 ) => {
@@ -2575,14 +2665,10 @@ const createConfirmedClientAssignmentDecisionResult = (
     return null;
   }
 
-  const updated = applyServiceRequestClientDecision(
-    createAssistantActor(workspace),
-    request.requestId,
-    {
-      assignmentIds: request.assignmentIds,
-      decision: request.decision,
-    },
-  );
+  const updated = await applyClientDecisionForWorkspace(workspace, request.requestId, {
+    assignmentIds: request.assignmentIds,
+    decision: request.decision,
+  });
 
   workspace.serviceRequests = workspace.serviceRequests.map((item) =>
     item.id === updated.id ? updated : item,
@@ -2632,7 +2718,7 @@ const shouldRunConfirmedRepresentativeDecisionWorkflow = (
   isConfirmationMessage(latestUserMessage) &&
   Boolean(getRecentPendingRepresentativeDecisionRequest(messages));
 
-const createConfirmedRepresentativeDecisionResult = (
+const createConfirmedRepresentativeDecisionResult = async (
   workspace: IAssistantWorkspace,
   messages: AssistantMessage[],
 ) => {
@@ -2642,8 +2728,8 @@ const createConfirmedRepresentativeDecisionResult = (
     return null;
   }
 
-  const updated = applyServiceRequestRepDecision(
-    createAssistantActor(workspace),
+  const updated = await applyRepresentativeDecisionForWorkspace(
+    workspace,
     request.requestId,
     {
       assignmentId: request.assignmentId,
@@ -7359,7 +7445,7 @@ export const runSecureAssistant = async ({
         })()
       : null);
 
-  const mutationConfirmationResult = createMutationConfirmationReply(
+  const mutationConfirmationResult = await createMutationConfirmationReply(
     latestUserMessage,
     workspace,
     messages,
@@ -7422,7 +7508,7 @@ export const runSecureAssistant = async ({
     messages,
     workspace,
   )
-    ? createClientRequestAssignmentResult(workspace, messages)
+    ? await createClientRequestAssignmentResult(workspace, messages)
     : null;
 
   if (confirmedClientRequestAssignmentResult) {
@@ -7431,7 +7517,7 @@ export const runSecureAssistant = async ({
 
   const confirmedClientAssignmentDecisionResult =
     shouldRunConfirmedClientAssignmentDecisionWorkflow(latestUserMessage, messages)
-      ? createConfirmedClientAssignmentDecisionResult(workspace, messages)
+      ? await createConfirmedClientAssignmentDecisionResult(workspace, messages)
       : null;
 
   if (confirmedClientAssignmentDecisionResult) {
@@ -7440,7 +7526,7 @@ export const runSecureAssistant = async ({
 
   const confirmedRepresentativeDecisionResult =
     shouldRunConfirmedRepresentativeDecisionWorkflow(latestUserMessage, messages)
-      ? createConfirmedRepresentativeDecisionResult(workspace, messages)
+      ? await createConfirmedRepresentativeDecisionResult(workspace, messages)
       : null;
 
   if (confirmedRepresentativeDecisionResult) {

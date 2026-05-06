@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getAuthorizedUser } from "@/lib/server/assistant-auth";
+import { getRequestSessionToken, isLiveSessionToken } from "@/lib/server/request-session-token";
+import { createLiveServiceRequestAssignments } from "@/lib/server/service-request-backend-store";
 import { createServiceRequestAssignments } from "@/lib/server/service-request-store";
 
 export const runtime = "nodejs";
@@ -10,6 +12,7 @@ export async function POST(
   context: { params: Promise<{ requestId: string }> },
 ) {
   const user = getAuthorizedUser(request);
+  const token = getRequestSessionToken(request);
 
   if (!user) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
@@ -29,10 +32,13 @@ export async function POST(
           .filter(Boolean)
       : [];
 
-    const result = createServiceRequestAssignments(user, requestId, {
+    const payload = {
       note: typeof body.note === "string" ? body.note : undefined,
       representativeUserIds,
-    });
+    };
+    const result = isLiveSessionToken(token)
+      ? await createLiveServiceRequestAssignments(user, token, requestId, payload)
+      : createServiceRequestAssignments(user, requestId, payload);
 
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
