@@ -1,6 +1,8 @@
 "use client";
 
+import { getPrimaryUserRole } from "@/lib/auth/roles";
 import { DASHBOARD_HOME_PATH } from "@/lib/auth/dashboard-access";
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { useAuthState } from "@/providers/authProvider";
 import { usePathname } from "next/navigation";
 
@@ -40,6 +42,8 @@ export function DashboardRouteProviders({
 }: DashboardRouteProvidersProps) {
   const pathname = usePathname();
   const { user } = useAuthState();
+  const role = getPrimaryUserRole(user?.roles);
+  const isScopedClientUser = isClientScopedUser(user?.clientIds);
   const scopeKey =
     [user?.tenantId, user?.userId, ...(user?.roles ?? [])].filter(Boolean).join("::") ||
     "anonymous";
@@ -59,34 +63,52 @@ export function DashboardRouteProviders({
   const isReportsRoute = matchesPath(pathname, "/dashboard/reports");
   const isTeamMembersRoute = matchesPath(pathname, "/dashboard/team-members");
 
-  const needsDashboard =
-    isDashboardHome ||
+  const needsManagementDashboard =
+    (isDashboardHome && !isScopedClientUser && role !== "SalesRep") ||
     isClientsRoute ||
     isOpportunitiesRoute ||
     isReportsRoute ||
     isTeamMembersRoute;
+  const needsSalesRepDashboard = isDashboardHome && !isScopedClientUser && role === "SalesRep";
+  const needsClientDashboard = isDashboardHome && isScopedClientUser;
+  const needsDashboardProvider = needsManagementDashboard || needsSalesRepDashboard;
   const needsTeamMembersProvider =
-    needsDashboard || isActivitiesRoute || isMessagesRoute || isPricingRequestsRoute;
+    needsDashboardProvider ||
+    needsClientDashboard ||
+    isActivitiesRoute ||
+    isMessagesRoute ||
+    isPricingRequestsRoute ||
+    isContactsRoute;
   const needsClientProvider =
-    needsDashboard ||
+    needsDashboardProvider ||
+    needsClientDashboard ||
     isMessagesRoute ||
     isContactsRoute ||
     isOpportunitiesRoute ||
     isProposalsRoute;
-  const needsContactProvider = needsDashboard || isContactsRoute;
+  const needsContactProvider = isContactsRoute;
   const needsOpportunityProvider =
-    needsDashboard ||
+    needsDashboardProvider ||
+    needsClientDashboard ||
     isActivitiesRoute ||
     isMessagesRoute ||
+    isContactsRoute ||
     isOpportunitiesRoute ||
     isPricingRequestsRoute ||
     isProposalsRoute;
-  const needsProposalProvider = needsDashboard || isActivitiesRoute || isProposalsRoute;
-  const needsContractProvider = needsDashboard || isContractsRoute;
-  const needsActivityProvider = needsDashboard || isActivitiesRoute;
-  const needsDocumentProvider = isDashboardHome || isClientsRoute || isDocumentsRoute;
+  const needsProposalProvider =
+    needsDashboardProvider || needsClientDashboard || isActivitiesRoute || isProposalsRoute;
+  const needsContractProvider =
+    needsDashboardProvider || needsClientDashboard || isContractsRoute;
+  const needsActivityProvider = needsDashboardProvider || isActivitiesRoute || isContactsRoute;
+  const needsDocumentProvider = needsClientDashboard || isClientsRoute || isDocumentsRoute;
   const needsNoteProvider =
-    isDashboardHome || isClientsRoute || isMessagesRoute || isNotesRoute || isTeamMembersRoute;
+    needsSalesRepDashboard ||
+    needsClientDashboard ||
+    isClientsRoute ||
+    isMessagesRoute ||
+    isNotesRoute ||
+    isTeamMembersRoute;
   const needsPricingRequestProvider = isPricingRequestsRoute || isTeamMembersRoute;
   const needsProfileProvider = isProfileRoute;
   const needsReportProvider = isReportsRoute;
@@ -110,7 +132,13 @@ export function DashboardRouteProviders({
     needsPricingRequestProvider,
     PricingRequestProvider,
   );
-  content = composeProvider(content, "dashboard", scopeKey, needsDashboard, DashboardProvider);
+  content = composeProvider(
+    content,
+    "dashboard",
+    scopeKey,
+    needsDashboardProvider,
+    DashboardProvider,
+  );
   content = composeProvider(
     content,
     "team-members",

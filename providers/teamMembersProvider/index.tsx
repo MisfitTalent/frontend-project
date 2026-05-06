@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useReducer } from "react";
 
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import {
@@ -16,12 +16,13 @@ import { createProviderCacheKey, writeProviderCache, readProviderCache } from "@
 import { useAuthState } from "@/providers/authProvider";
 import { initialTeamMembers } from "@/providers/domainSeeds";
 import type { ITeamMember } from "@/providers/salesTypes";
-
-interface ITeamMembersStateContext {
-  teamMembers: ITeamMember[];
-}
-
-const TeamMembersStateContext = createContext<ITeamMembersStateContext | undefined>(undefined);
+import { syncTeamMembersAction } from "./actions";
+import {
+  INITIAL_STATE,
+  TeamMembersActionContext,
+  TeamMembersStateContext,
+} from "./context";
+import { TeamMembersReducer } from "./reducers";
 
 export const useTeamMembersState = () => {
   const context = useContext(TeamMembersStateContext);
@@ -32,6 +33,21 @@ export const useTeamMembersState = () => {
 
   return context;
 };
+
+export const useTeamMembersActions = () => {
+  const context = useContext(TeamMembersActionContext);
+
+  if (context === undefined) {
+    throw new Error("useTeamMembersActions must be used within TeamMembersProvider.");
+  }
+
+  return context;
+};
+
+const createInitialState = (teamMembers: ITeamMember[]) => ({
+  ...INITIAL_STATE,
+  teamMembers,
+});
 
 export default function TeamMembersProvider({
   children,
@@ -44,8 +60,14 @@ export default function TeamMembersProvider({
     () => createProviderCacheKey("team-members", user?.tenantId, user?.userId, role),
     [role, user?.tenantId, user?.userId],
   );
-  const [teamMembers, setTeamMembers] = useState<ITeamMember[]>(
-    () => readProviderCache<ITeamMember[]>(cacheKey) ?? fallbackTeamMembers,
+  const cachedTeamMembers = useMemo(
+    () => readProviderCache<ITeamMember[]>(cacheKey),
+    [cacheKey],
+  );
+  const [state, dispatch] = useReducer(
+    TeamMembersReducer,
+    cachedTeamMembers ?? fallbackTeamMembers,
+    createInitialState,
   );
   const listPath = `/api/Users?pageNumber=1&pageSize=100&isActive=true${
     role === "SalesRep" ? "&role=SalesRep" : ""
@@ -57,17 +79,19 @@ export default function TeamMembersProvider({
     );
     const users = coerceItems(payload).map(mapBackendUser);
 
-    setTeamMembers(
-      writeProviderCache(
-        cacheKey,
-        users.length > 0 ? users : fallbackTeamMembers,
+    dispatch(
+      syncTeamMembersAction(
+        writeProviderCache(
+          cacheKey,
+          users.length > 0 ? users : fallbackTeamMembers,
+        ),
       ),
     );
   }, [cacheKey, fallbackTeamMembers, listPath]);
 
   useEffect(() => {
-    writeProviderCache(cacheKey, teamMembers);
-  }, [cacheKey, teamMembers]);
+    writeProviderCache(cacheKey, state.teamMembers);
+  }, [cacheKey, state.teamMembers]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -81,7 +105,9 @@ export default function TeamMembersProvider({
         console.error(error);
 
         if (isActive) {
-          setTeamMembers(writeProviderCache(cacheKey, fallbackTeamMembers));
+          dispatch(
+            syncTeamMembersAction(writeProviderCache(cacheKey, fallbackTeamMembers)),
+          );
         }
       });
     };
@@ -102,17 +128,32 @@ export default function TeamMembersProvider({
       };
     }
 
+    if (cachedTeamMembers && cachedTeamMembers.length > 0) {
+      return () => {
+        isActive = false;
+        window.clearTimeout(timer);
+      };
+    }
+
     return () => {
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [cacheKey, fallbackTeamMembers, isAuthenticated, isDemoMode, loadTeamMembers]);
+  }, [cacheKey, cachedTeamMembers, fallbackTeamMembers, isAuthenticated, isDemoMode, loadTeamMembers]);
 
   return (
     <TeamMembersStateContext.Provider
-      value={{ teamMembers: isAuthenticated ? teamMembers : fallbackTeamMembers }}
+      value={{
+        teamMembers: isAuthenticated ? state.teamMembers : fallbackTeamMembers,
+      }}
     >
-      {children}
+      <TeamMembersActionContext.Provider
+        value={{
+          syncTeamMembers: (payload) => dispatch(syncTeamMembersAction(payload)),
+        }}
+      >
+        {children}
+      </TeamMembersActionContext.Provider>
     </TeamMembersStateContext.Provider>
   );
 }

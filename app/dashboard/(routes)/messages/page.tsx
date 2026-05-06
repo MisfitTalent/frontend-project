@@ -1,8 +1,6 @@
 "use client";
 
 import { MessagesPanel } from "@/components/dashboard/messages-panel";
-import { PageIntro } from "@/components/dashboard/page-intro";
-import { MessageProviderPage } from "@/providers/pageProviders";
 import { Suspense } from "react";
 import { useStyles } from "./style";
 
@@ -11,7 +9,6 @@ function MessagesPageContent() {
 
   return (
     <div className={styles.container}>
-      <PageIntro />
       <Suspense fallback={null}>
         <MessagesPanel />
       </Suspense>
@@ -20,9 +17,5 @@ function MessagesPageContent() {
 }
 
 export default function MessagesPage() {
-  return (
-    <MessageProviderPage>
-      <MessagesPageContent />
-    </MessageProviderPage>
-  );
+  return <MessagesPageContent />;
 }

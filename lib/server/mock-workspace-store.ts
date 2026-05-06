@@ -40,7 +40,6 @@ type MockWorkspaceState = {
 
 declare global {
   // Keep one in-memory store across Next route bundles in the same Node process.
-  // eslint-disable-next-line no-var
   var __mockWorkspaceStore__: Map<string, MockWorkspaceState> | undefined;
 }
 

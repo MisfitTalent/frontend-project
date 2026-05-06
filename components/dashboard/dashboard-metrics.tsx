@@ -1,13 +1,52 @@
 "use client";
 
 import { Card, Col, Row, Statistic, Tag, Typography } from "antd";
+import dynamic from "next/dynamic";
 
 import { getOpenPipelineValue, getOpportunityInsights } from "@/providers/salesSelectors";
 import { useDashboardState } from "@/providers/dashboardProvider";
-import { OpportunityPriorityQueue } from "./opportunity-priority-queue";
-import { PriorityAdvisor } from "./priority-advisor";
-import { ReassignmentSimulator } from "./reassignment-simulator";
-import { TeamCapacityPanel } from "./team-capacity-panel";
+
+const OpportunityPriorityQueue = dynamic(
+  () =>
+    import("./opportunity-priority-queue").then((mod) => mod.OpportunityPriorityQueue),
+  {
+    loading: () => <DashboardPanelLoading title="Priority queue" />,
+  },
+);
+
+const PriorityAdvisor = dynamic(
+  () => import("./priority-advisor").then((mod) => mod.PriorityAdvisor),
+  {
+    loading: () => <DashboardPanelLoading title="Sales advisor" />,
+  },
+);
+
+const ReassignmentSimulator = dynamic(
+  () => import("./reassignment-simulator").then((mod) => mod.ReassignmentSimulator),
+  {
+    loading: () => <DashboardPanelLoading title="Reassignment simulator" />,
+  },
+);
+
+const TeamCapacityPanel = dynamic(
+  () => import("./team-capacity-panel").then((mod) => mod.TeamCapacityPanel),
+  {
+    loading: () => <DashboardPanelLoading title="Available team capacity" />,
+  },
+);
+
+function DashboardPanelLoading({ title }: Readonly<{ title: string }>) {
+  return (
+    <Card className="h-full border-slate-200" title={title}>
+      <div className="space-y-3">
+        <div className="h-4 w-1/3 rounded bg-slate-200" />
+        <div className="h-4 w-full rounded bg-slate-100" />
+        <div className="h-4 w-5/6 rounded bg-slate-100" />
+        <div className="h-4 w-2/3 rounded bg-slate-100" />
+      </div>
+    </Card>
+  );
+}
 
 export const DashboardMetrics = () => {
   const { salesData, automationFeed } = useDashboardState();

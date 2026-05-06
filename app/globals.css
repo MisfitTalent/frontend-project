@@ -5,6 +5,7 @@
   --dashboard-accent: #f28c28;
   --dashboard-accent-strong: #ff9f43;
   --dashboard-header-height: 92px;
+  --dashboard-shell-surface: #132744;
   --foreground: #1f2937;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -31,7 +32,7 @@ body {
 }
 
 .dashboard-sidebar {
-  background: #132744;
+  background: var(--dashboard-shell-surface);
   border-right: 0;
   inset: 0 auto 0 0;
   overflow: hidden;
@@ -88,6 +89,7 @@ body {
 
 .dashboard-sidebar-brand {
   align-items: center;
+  background: var(--dashboard-shell-surface);
   display: flex;
   min-height: var(--dashboard-header-height);
   padding: 1.2rem 1.25rem 1.1rem;
@@ -112,29 +114,35 @@ body {
 .dashboard-sidebar-scroll {
   overflow-x: hidden !important;
   overflow-y: auto !important;
-  mask-image: linear-gradient(180deg, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+  overscroll-behavior: contain;
   padding-right: 0.85rem !important;
-  scrollbar-color: rgba(242, 140, 40, 0.48) rgba(255, 255, 255, 0.04);
+  scrollbar-color: rgba(231, 237, 244, 0.72) rgba(255, 255, 255, 0.02);
   scrollbar-width: thin;
 }
 
 .dashboard-sidebar-scroll::-webkit-scrollbar {
-  width: 8px;
+  width: 10px;
 }
 
 .dashboard-sidebar-scroll::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.04);
+  background: transparent;
   border-radius: 9999px;
-  margin-block: 0.45rem;
+  margin-block: 0.7rem;
 }
 
 .dashboard-sidebar-scroll::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(242, 140, 40, 0.62), rgba(242, 140, 40, 0.38));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(231, 237, 244, 0.82)),
+    #e7edf4;
+  border: 2px solid rgba(19, 39, 68, 0.92);
   border-radius: 9999px;
+  min-height: 3rem;
 }
 
 .dashboard-sidebar-scroll::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(255, 179, 102, 0.76), rgba(242, 140, 40, 0.52));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 1), rgba(236, 241, 247, 0.9)),
+    #eef3f8;
 }
 
 .dashboard-sidebar .ant-menu-item,
@@ -181,7 +189,7 @@ body {
 }
 
 .dashboard-sidebar-footer {
-  border-top: 1px solid rgba(242, 140, 40, 0.18);
+  background: var(--dashboard-shell-surface);
   margin-top: auto;
   padding: 1rem 1.25rem 1.25rem;
   position: relative;
@@ -189,11 +197,12 @@ body {
 }
 
 .dashboard-header {
-  background: #132744;
+  background: var(--dashboard-shell-surface);
   min-height: var(--dashboard-header-height);
   padding-inline: 1rem 1.5rem;
-  position: relative;
-  z-index: 0;
+  position: sticky;
+  top: 0;
+  z-index: 30;
 }
 
 .dashboard-header-toggle {

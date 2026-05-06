@@ -52,8 +52,12 @@ export default function OpportunityProvider({
     () => createProviderCacheKey("opportunities", user?.tenantId, user?.userId, role),
     [role, user?.tenantId, user?.userId],
   );
+  const cachedOpportunities = useMemo(
+    () => readProviderCache<IOpportunity[]>(cacheKey),
+    [cacheKey],
+  );
   const [opportunities, setOpportunities] = useState<IOpportunity[]>(
-    () => readProviderCache<IOpportunity[]>(cacheKey) ?? [],
+    () => cachedOpportunities ?? [],
   );
 
   const loadOpportunities = useCallback(async () => {
@@ -105,6 +109,12 @@ export default function OpportunityProvider({
       };
     }
 
+    if (cachedOpportunities && cachedOpportunities.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     void backendRequest<BackendPagedResult<BackendOpportunityDto> | BackendOpportunityDto[]>(
       role === "SalesRep"
         ? "/api/opportunities/my-opportunities?pageNumber=1&pageSize=100"
@@ -124,7 +134,7 @@ export default function OpportunityProvider({
     return () => {
       isActive = false;
     };
-  }, [cacheKey, isAuthenticated, isDemoMode, loadOpportunities, role]);
+  }, [cacheKey, cachedOpportunities, isAuthenticated, isDemoMode, loadOpportunities, role]);
 
   const assignIfNeeded = async (opportunity: IOpportunity, ownerId?: string) => {
     if (!ownerId) {

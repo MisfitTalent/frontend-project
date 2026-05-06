@@ -5,7 +5,6 @@ import { Card, Col, Descriptions, Empty, Row, Skeleton, Space, Tag, Typography }
 import Link from "next/link";
 
 import { useClientState } from "@/providers/clientProvider";
-import { useContactState } from "@/providers/contactProvider";
 import { useContractState } from "@/providers/contractProvider";
 import { useDashboardState } from "@/providers/dashboardProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
@@ -29,16 +28,12 @@ type ClientDetailViewProps = Readonly<{
 
 export function ClientDetailView({ clientId }: ClientDetailViewProps) {
   const { clients } = useClientState();
-  const { contacts } = useContactState();
   const { proposals } = useProposalState();
   const { opportunities } = useOpportunityState();
   const { contracts } = useContractState();
   const { salesData, teamMembers } = useDashboardState();
 
   const client = clients.find((item) => item.id === clientId);
-  const clientContacts = contacts.filter((contact) => contact.clientId === clientId);
-  const primaryContact =
-    clientContacts.find((contact) => contact.isPrimaryContact) ?? clientContacts[0];
   const clientOpportunities = opportunities.filter((opportunity) => opportunity.clientId === clientId);
   const clientProposals = proposals.filter((proposal) => proposal.clientId === clientId);
   const clientContracts = contracts.filter((contract) => contract.clientId === clientId);
@@ -227,7 +222,7 @@ export function ClientDetailView({ clientId }: ClientDetailViewProps) {
       </Row>
 
       <Row gutter={[16, 16]}>
-        <Col xs={24} xl={12}>
+        <Col xs={24}>
           <Card className="h-full border-slate-200 shadow-sm" title="Client details">
             <Descriptions column={1} size="small">
               <Descriptions.Item label="Industry">{client.industry}</Descriptions.Item>
@@ -243,33 +238,6 @@ export function ClientDetailView({ clientId }: ClientDetailViewProps) {
               </Descriptions.Item>
               <Descriptions.Item label="Tax number">{client.taxNumber ?? "Not set"}</Descriptions.Item>
             </Descriptions>
-          </Card>
-        </Col>
-        <Col xs={24} xl={12}>
-          <Card className="h-full border-slate-200 shadow-sm" title="Primary contact">
-            {primaryContact ? (
-              <Descriptions column={1} size="small">
-                <Descriptions.Item label="Name">
-                  {`${primaryContact.firstName} ${primaryContact.lastName}`.trim()}
-                </Descriptions.Item>
-                <Descriptions.Item label="Role">{primaryContact.position}</Descriptions.Item>
-                <Descriptions.Item label="Email">
-                  <a href={`mailto:${primaryContact.email}`}>{primaryContact.email}</a>
-                </Descriptions.Item>
-                <Descriptions.Item label="Phone">
-                  {primaryContact.phoneNumber ? (
-                    <a href={`tel:${primaryContact.phoneNumber}`}>{primaryContact.phoneNumber}</a>
-                  ) : (
-                    "Not set"
-                  )}
-                </Descriptions.Item>
-              </Descriptions>
-            ) : (
-              <Empty
-                description="No contact has been linked to this client yet."
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-              />
-            )}
           </Card>
         </Col>
       </Row>
