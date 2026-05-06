@@ -117,6 +117,11 @@ export function AssistantPanel() {
   const [statusLabel, setStatusLabel] = useState("Awaiting your question");
   const storageIdentity = `${draftStorageKey}::${messageStorageKey}`;
   const modeTag = getModeTag(assistantMode);
+  const scopeTagLabel = isScopedClientUser
+    ? "Client scope"
+    : isManagerRole(role)
+      ? "Manager scope"
+      : `${getUserRoleLabel(role)} scope`;
 
   const resetConversation = () => {
     setDraft("");
@@ -362,9 +367,7 @@ export function AssistantPanel() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Tag color={modeTag.color}>{modeTag.label}</Tag>
-              <Tag color={isManagerRole(role) ? "#f28c28" : "#4f7cac"}>
-                {isManagerRole(role) ? "Manager scope" : `${getUserRoleLabel(role)} scope`}
-              </Tag>
+              <Tag color={isManagerRole(role) ? "#f28c28" : "#4f7cac"}>{scopeTagLabel}</Tag>
             </div>
           </div>
 

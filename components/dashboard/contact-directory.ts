@@ -1,3 +1,5 @@
+import { isTeamAssignmentThread } from "@/lib/dashboard/message-threads";
+import type { INoteItem } from "@/providers/domainSeeds";
 import type { IContact, ITeamMember } from "@/providers/salesTypes";
 
 type BuildContactDirectoryInput = {
@@ -15,6 +17,7 @@ type BuildContactDirectoryInput = {
   contacts: IContact[];
   isClientUser: boolean;
   isPrivileged: boolean;
+  notes: INoteItem[];
   opportunities: Array<{
     clientId: string;
     id: string;
@@ -26,6 +29,8 @@ type BuildContactDirectoryInput = {
 };
 
 export type ContactRow = {
+  assignmentNoteId?: string;
+  assignmentStatus?: "Accepted" | "Pending client response" | "Rejected";
   category: "client" | "internal" | "admin";
   clientLabel: string;
   clientNames: string[];
@@ -69,6 +74,7 @@ export const buildContactDirectory = ({
   contacts,
   isClientUser,
   isPrivileged,
+  notes,
   opportunities,
   teamMembers,
   userClientIds,
@@ -133,7 +139,48 @@ export const buildContactDirectory = ({
         }
       });
 
-      return teamMembers
+      const workflowRows = notes
+        .filter(
+          (note) =>
+            isTeamAssignmentThread(note) &&
+            note.representativeId &&
+            note.representativeName &&
+            note.clientId &&
+            involvedClientIds.has(note.clientId) &&
+            note.status !== "Rejected",
+        )
+        .map((note) => {
+          const representativeName = note.representativeName ?? "Assigned sales rep";
+          const assignmentStatus: ContactRow["assignmentStatus"] =
+            note.status === "Accepted"
+              ? "Accepted"
+              : note.status === "Pending client response"
+                ? "Pending client response"
+                : note.status === "Rejected"
+                  ? "Rejected"
+                  : undefined;
+          const clientNames = clients
+            .filter((client) => note.clientId === client.id)
+            .map((client) => client.name);
+
+          return {
+            assignmentNoteId: note.id,
+            assignmentStatus,
+            category: "internal" as const,
+            clientLabel: clientNames.join(", ") || "Assigned account team",
+            clientNames,
+            email: `${representativeName.toLowerCase().replace(/\s+/g, ".")}@autosales.com`,
+            id: `assignment-${note.id}`,
+            isEditable: false,
+            name: representativeName,
+            phoneNumber: undefined,
+            position:
+              teamMembers.find((member) => member.id === note.representativeId)?.role ??
+              "Assigned sales rep",
+          };
+        });
+      const workflowRowIds = new Set(workflowRows.map((row) => row.name));
+      const involvedRows = teamMembers
         .filter((member) => involvedMemberIds.has(member.id))
         .map((member) =>
           buildInternalRow(
@@ -142,7 +189,10 @@ export const buildContactDirectory = ({
               .filter((client) => involvedClientIds.has(client.id))
               .map((client) => client.name),
           ),
-        );
+        )
+        .filter((row) => !workflowRowIds.has(row.name));
+
+      return [...workflowRows, ...involvedRows];
     }
 
     return teamMembers.map((member) => buildInternalRow(member, []));

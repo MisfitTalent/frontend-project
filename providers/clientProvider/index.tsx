@@ -2,6 +2,7 @@
 
 import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { useAuthState } from "@/providers/authProvider";
 import {
   type BackendClientDto,
@@ -48,6 +49,8 @@ export default function ClientProvider({
 }: ClientProviderProps) {
   const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
+  const isScopedClient = isClientScopedUser(user?.clientIds);
   const cacheKey = useMemo(
     () => createProviderCacheKey("clients", user?.tenantId, user?.userId),
     [user?.tenantId, user?.userId],
@@ -57,13 +60,19 @@ export default function ClientProvider({
     () => cachedClients ?? [],
   );
 
+  const scopeClients = useCallback(
+    (items: IClient[]) =>
+      isScopedClient ? items.filter((client) => scopedClientIds.has(client.id)) : items,
+    [isScopedClient, scopedClientIds],
+  );
+
   const loadClients = useCallback(async () => {
     const payload = await backendRequest<BackendPagedResult<BackendClientDto> | BackendClientDto[]>(
       "/api/Clients?pageNumber=1&pageSize=100",
     );
 
-    setClients(writeProviderCache(cacheKey, coerceItems(payload).map(mapBackendClient)));
-  }, [cacheKey]);
+    setClients(writeProviderCache(cacheKey, scopeClients(coerceItems(payload).map(mapBackendClient))));
+  }, [cacheKey, scopeClients]);
 
   useEffect(() => {
     writeProviderCache(cacheKey, clients);
@@ -82,7 +91,7 @@ export default function ClientProvider({
           console.error(error);
 
           if (isActive) {
-            setClients(writeProviderCache(cacheKey, initialClients()));
+            setClients(writeProviderCache(cacheKey, scopeClients(initialClients())));
           }
         });
       }, 0);
@@ -118,7 +127,7 @@ export default function ClientProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [cacheKey, cachedClients, isAuthenticated, isDemoMode, loadClients]);
+  }, [cacheKey, cachedClients, isAuthenticated, isDemoMode, loadClients, scopeClients]);
 
   return (
     <ClientStateContext.Provider value={{ clients: isAuthenticated ? clients : [] }}>

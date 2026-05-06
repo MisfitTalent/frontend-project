@@ -4,6 +4,8 @@ import { Button, Empty, Form, Input, Modal, Space, Table, Tag, Typography } from
 import { DeleteOutlined, DownloadOutlined, PlusOutlined } from "@ant-design/icons";
 import { useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import { useAuthState } from "@/providers/authProvider";
 import { type IDocumentItem } from "@/providers/domainSeeds";
 import { useDocumentActions, useDocumentState } from "@/providers/documentProvider";
 
@@ -13,10 +15,12 @@ type DocumentFormValues = {
 };
 
 export function DocumentsPanel() {
+  const { user } = useAuthState();
   const { documents } = useDocumentState();
   const { addDocument, deleteDocument } = useDocumentActions();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [form] = Form.useForm<DocumentFormValues>();
+  const isScopedClient = isClientScopedUser(user?.clientIds);
 
   const handleUpload = (values: DocumentFormValues) => {
     addDocument({
@@ -36,9 +40,11 @@ export function DocumentsPanel() {
         <Typography.Title className="!m-0" level={4}>
           Documents ({documents.length})
         </Typography.Title>
-        <Button icon={<PlusOutlined />} onClick={() => setIsModalOpen(true)} type="primary">
-          Upload document
-        </Button>
+        {!isScopedClient ? (
+          <Button icon={<PlusOutlined />} onClick={() => setIsModalOpen(true)} type="primary">
+            Upload document
+          </Button>
+        ) : null}
       </div>
       {documents.length === 0 ? (
         <Empty description="No documents yet" />
@@ -59,13 +65,15 @@ export function DocumentsPanel() {
               render: (_: unknown, record: IDocumentItem) => (
                 <Space>
                   <Button icon={<DownloadOutlined />} size="small" type="text" />
-                  <Button
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={() => deleteDocument(record.id)}
-                    size="small"
-                    type="text"
-                  />
+                  {!isScopedClient ? (
+                    <Button
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={() => deleteDocument(record.id)}
+                      size="small"
+                      type="text"
+                    />
+                  ) : null}
                 </Space>
               ),
               title: "Actions",
@@ -76,22 +84,24 @@ export function DocumentsPanel() {
           rowKey="id"
         />
       )}
-      <Modal
-        forceRender
-        onCancel={() => setIsModalOpen(false)}
-        onOk={() => form.submit()}
-        open={isModalOpen}
-        title="Upload document"
-      >
-        <Form className="pt-4" form={form} layout="vertical" onFinish={handleUpload}>
-          <Form.Item label="File name" name="fileName" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item label="File type" name="fileType" rules={[{ required: true }]}>
-            <Input placeholder="e.g., PDF, DOCX, XLSX" />
-          </Form.Item>
-        </Form>
-      </Modal>
+      {!isScopedClient ? (
+        <Modal
+          forceRender
+          onCancel={() => setIsModalOpen(false)}
+          onOk={() => form.submit()}
+          open={isModalOpen}
+          title="Upload document"
+        >
+          <Form className="pt-4" form={form} layout="vertical" onFinish={handleUpload}>
+            <Form.Item label="File name" name="fileName" rules={[{ required: true }]}>
+              <Input />
+            </Form.Item>
+            <Form.Item label="File type" name="fileType" rules={[{ required: true }]}>
+              <Input placeholder="e.g., PDF, DOCX, XLSX" />
+            </Form.Item>
+          </Form>
+        </Modal>
+      ) : null}
     </div>
   );
 }

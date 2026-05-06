@@ -1,7 +1,9 @@
 "use client";
 
-import { useContext, useReducer } from "react";
+import { useContext, useMemo, useReducer } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import { useAuthState } from "@/providers/authProvider";
 import { initialDocuments, type IDocumentItem } from "@/providers/domainSeeds";
 import { addDocumentAction, deleteDocumentAction } from "./actions";
 import { DocumentActionContext, DocumentStateContext } from "./context";
@@ -30,12 +32,24 @@ export const useDocumentActions = () => {
 export default function DocumentProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const { user } = useAuthState();
+  const isScopedClient = isClientScopedUser(user?.clientIds);
+  const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
   const [state, dispatch] = useReducer(DocumentReducer, {
     documents: initialDocuments(),
   });
+  const documents = useMemo(
+    () =>
+      isScopedClient
+        ? state.documents.filter(
+            (document) => Boolean(document.clientId) && scopedClientIds.has(document.clientId as string),
+          )
+        : state.documents,
+    [isScopedClient, scopedClientIds, state.documents],
+  );
 
   return (
-    <DocumentStateContext.Provider value={state}>
+    <DocumentStateContext.Provider value={{ documents }}>
       <DocumentActionContext.Provider
         value={{
           addDocument: (payload: IDocumentItem) => dispatch(addDocumentAction(payload)),

@@ -11,6 +11,7 @@ import { useActivityState } from "@/providers/activityProvider";
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
 import { useContactActions, useContactState } from "@/providers/contactProvider";
+import { useNoteActions, useNoteState } from "@/providers/noteProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
 import { type IContact } from "@/providers/salesTypes";
 import { useTeamMembersState } from "@/providers/teamMembersProvider";
@@ -25,6 +26,8 @@ export function ContactsPanel() {
   const { clients } = useClientState();
   const { contacts } = useContactState();
   const { deleteContact, addContact, updateContact } = useContactActions();
+  const { notes } = useNoteState();
+  const { updateNote } = useNoteActions();
   const { opportunities } = useOpportunityState();
   const { teamMembers } = useTeamMembersState();
   const [editingContact, setEditingContact] = useState<IContact | null>(null);
@@ -43,6 +46,7 @@ export function ContactsPanel() {
       contacts,
       isClientUser,
       isPrivileged,
+      notes,
       opportunities,
       teamMembers,
       userClientIds: user?.clientIds,
@@ -55,11 +59,29 @@ export function ContactsPanel() {
     contacts,
     isClientUser,
     isPrivileged,
+    notes,
     opportunities,
     teamMembers,
     user?.clientIds,
     user?.userId,
   ]);
+
+  const updateAssignmentStatus = async (
+    record: ContactRow,
+    status: "Accepted" | "Rejected",
+  ) => {
+    if (!record.assignmentNoteId) {
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      await updateNote(record.assignmentNoteId, { status });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const columns = [
     {
@@ -81,6 +103,11 @@ export function ContactsPanel() {
                   ? "Admin"
                   : "Internal team"}
             </Tag>
+            {record.assignmentStatus ? (
+              <Tag color={record.assignmentStatus === "Accepted" ? "green" : "orange"}>
+                {record.assignmentStatus}
+              </Tag>
+            ) : null}
           </div>
         </div>
       ),
@@ -112,7 +139,18 @@ export function ContactsPanel() {
       key: "actions",
       title: "Actions",
       render: (_: unknown, record: ContactRow) =>
-        record.isEditable && record.sourceContact ? (
+        isClientUser &&
+        record.assignmentStatus === "Pending client response" &&
+        record.assignmentNoteId ? (
+          <div className="space-x-2">
+            <Button onClick={() => void updateAssignmentStatus(record, "Accepted")} size="small" type="primary">
+              Accept
+            </Button>
+            <Button danger onClick={() => void updateAssignmentStatus(record, "Rejected")} size="small">
+              Reject
+            </Button>
+          </div>
+        ) : record.isEditable && record.sourceContact ? (
           <div className="space-x-2">
             <Button
               icon={<EditOutlined />}
