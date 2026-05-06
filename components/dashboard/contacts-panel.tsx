@@ -3,10 +3,16 @@
 import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { Button, Tag, Typography } from "antd";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getPrimaryUserRole, isAdminRole, isManagerRole } from "@/lib/auth/roles";
+import {
+  applyServiceRequestClientDecision,
+  getServiceRequestDetail,
+  listServiceRequests,
+  type ServiceRequestDetail,
+} from "@/lib/client/service-request-api";
 import { useActivityState } from "@/providers/activityProvider";
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
@@ -30,6 +36,7 @@ export function ContactsPanel() {
   const { updateNote } = useNoteActions();
   const { opportunities } = useOpportunityState();
   const { teamMembers } = useTeamMembersState();
+  const [serviceRequestDetails, setServiceRequestDetails] = useState<ServiceRequestDetail[]>([]);
   const [editingContact, setEditingContact] = useState<IContact | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -37,6 +44,28 @@ export function ContactsPanel() {
   const isClientUser = isClientScopedUser(user?.clientIds);
   const canManageContacts = !isClientUser;
   const isPrivileged = isAdminRole(role) || isManagerRole(role);
+
+  useEffect(() => {
+    let isActive = true;
+
+    if (!isClientUser) {
+      return () => {
+        isActive = false;
+      };
+    }
+
+    void listServiceRequests().then(async (requests) => {
+      const details = await Promise.all(requests.map((request) => getServiceRequestDetail(request.id)));
+
+      if (isActive) {
+        setServiceRequestDetails(details);
+      }
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, [isClientUser]);
 
   const rows = useMemo(() => {
     return buildContactDirectory({
@@ -48,6 +77,7 @@ export function ContactsPanel() {
       isPrivileged,
       notes,
       opportunities,
+      serviceRequestDetails,
       teamMembers,
       userClientIds: user?.clientIds,
       userId: user?.userId,
@@ -61,6 +91,7 @@ export function ContactsPanel() {
     isPrivileged,
     notes,
     opportunities,
+    serviceRequestDetails,
     teamMembers,
     user?.clientIds,
     user?.userId,
@@ -70,14 +101,33 @@ export function ContactsPanel() {
     record: ContactRow,
     status: "Accepted" | "Rejected",
   ) => {
-    if (!record.assignmentNoteId) {
+    if (!record.assignmentRequestId || !record.assignmentId) {
+      if (!record.assignmentNoteId) {
+        return;
+      }
+
+      setIsSubmitting(true);
+
+      try {
+        await updateNote(record.assignmentNoteId, { status });
+      } finally {
+        setIsSubmitting(false);
+      }
+
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      await updateNote(record.assignmentNoteId, { status });
+      await applyServiceRequestClientDecision(record.assignmentRequestId, {
+        assignmentIds: [record.assignmentId],
+        decision: status === "Accepted" ? "approve" : "reject",
+      });
+      const requests = await listServiceRequests();
+      setServiceRequestDetails(
+        await Promise.all(requests.map((request) => getServiceRequestDetail(request.id))),
+      );
     } finally {
       setIsSubmitting(false);
     }
