@@ -435,7 +435,15 @@ export function AssistantPanel() {
             ) : null}
           </div>
 
-          <div className="mt-5 space-y-3">
+          <div className="mt-5 space-y-4">
+            <div className="flex flex-wrap gap-2">
+              {suggestedPrompts.map((prompt) => (
+                <Button key={prompt} onClick={() => void sendMessage(prompt)}>
+                  {prompt}
+                </Button>
+              ))}
+            </div>
+
             <Input.TextArea
               onChange={(event) => setDraft(event.target.value)}
               onPressEnter={(event) => {
@@ -450,13 +458,6 @@ export function AssistantPanel() {
             />
 
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2">
-                {suggestedPrompts.map((prompt) => (
-                  <Button key={prompt} onClick={() => void sendMessage(prompt)}>
-                    {prompt}
-                  </Button>
-                ))}
-              </div>
               <div className="flex flex-wrap gap-2">
                 <Button
                   disabled={messages.length === 0 && !draft}

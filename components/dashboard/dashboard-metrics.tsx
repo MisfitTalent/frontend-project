@@ -2,6 +2,7 @@
 
 import { Card, Col, Row, Statistic, Tag, Typography } from "antd";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 
 import { getOpenPipelineValue, getOpportunityInsights } from "@/providers/salesSelectors";
 import { useDashboardState } from "@/providers/dashboardProvider";
@@ -67,42 +68,50 @@ export const DashboardMetrics = () => {
     <div className="space-y-6">
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} xl={6}>
-          <Card className="h-full border-slate-200">
-            <Statistic
-              prefix="R "
-              precision={0}
-              title="Pipeline value"
-              value={pipelineValue}
-            />
-            <Typography.Text className="!text-slate-500">
-              All live opportunities in one total.
-            </Typography.Text>
-          </Card>
+          <Link href="/dashboard/opportunities">
+            <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
+              <Statistic
+                prefix="R "
+                precision={0}
+                title="Pipeline value"
+                value={pipelineValue}
+              />
+              <Typography.Text className="!text-slate-500">
+                All live opportunities in one total.
+              </Typography.Text>
+            </Card>
+          </Link>
         </Col>
         <Col xs={24} sm={12} xl={6}>
-          <Card className="h-full border-slate-200">
-            <Statistic title="Open opportunities" value={insights.length} />
-            <Typography.Text className="!text-slate-500">
-              Plain-language pipeline from New to Won.
-            </Typography.Text>
-          </Card>
+          <Link href="/dashboard/opportunities">
+            <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
+              <Statistic title="Open opportunities" value={insights.length} />
+              <Typography.Text className="!text-slate-500">
+                Plain-language pipeline from New to Won.
+              </Typography.Text>
+            </Card>
+          </Link>
         </Col>
         <Col xs={24} sm={12} xl={6}>
-          <Card className="h-full border-slate-200">
-            <Statistic title="Proposal workload" value={submittedProposals} />
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Tag color="#eab308">{draftProposals} draft</Tag>
-              <Tag color="#2563eb">{submittedProposals} submitted</Tag>
-            </div>
-          </Card>
+          <Link href="/dashboard/proposals">
+            <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
+              <Statistic title="Proposal workload" value={submittedProposals} />
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Tag color="#eab308">{draftProposals} draft</Tag>
+                <Tag color="#2563eb">{submittedProposals} submitted</Tag>
+              </div>
+            </Card>
+          </Link>
         </Col>
         <Col xs={24} sm={12} xl={6}>
-          <Card className="h-full border-slate-200">
-            <Statistic title="Follow-ups due" value={activeFollowUps} />
-            <Typography.Text className="!text-slate-500">
-              Generated and tracked against each deal.
-            </Typography.Text>
-          </Card>
+          <Link href="/dashboard/activities">
+            <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
+              <Statistic title="Follow-ups due" value={activeFollowUps} />
+              <Typography.Text className="!text-slate-500">
+                Generated and tracked against each deal.
+              </Typography.Text>
+            </Card>
+          </Link>
         </Col>
       </Row>
 
