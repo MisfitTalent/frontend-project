@@ -10,17 +10,23 @@ import type {
 } from "@/providers/salesTypes";
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getUserRoleLabel, normalizeUserRole } from "@/lib/auth/roles";
+import {
+  isMockAssistantSessionToken,
+  loadAssistantLiveWorkspace,
+} from "@/lib/server/assistant-backend";
 import { getMockWorkspaceSnapshot } from "@/lib/server/mock-workspace-store";
 
 export interface IAssistantWorkspace {
   clientIds?: string[] | null;
   documents: IDocumentItem[];
+  isLiveBackend?: boolean;
   userEmail?: string;
   userId?: string;
   notes: INoteItem[];
   pricingRequests: IPricingRequest[];
   role: UserRole;
   salesData: ISalesData;
+  sessionToken?: string;
   scopeLabel: string;
   tenantId: string;
   userDisplayName: string;
@@ -170,11 +176,15 @@ const buildScopedDocuments = (
   return documents.filter((document) => (document.clientId ? scopedClientIds.has(document.clientId) : false));
 };
 
-export const getAssistantWorkspaceForUser = (
+export const getAssistantWorkspaceForUser = async (
   user: IMockUser,
-): IAssistantWorkspace => {
+  sessionToken?: string | null,
+): Promise<IAssistantWorkspace> => {
   const role: UserRole = normalizeUserRole(user.role);
-  const workspace = getMockWorkspaceSnapshot(user.tenantId);
+  const workspace =
+    sessionToken && !isMockAssistantSessionToken(sessionToken)
+      ? await loadAssistantLiveWorkspace(user, sessionToken)
+      : getMockWorkspaceSnapshot(user.tenantId);
   const salesData = buildScopedSalesData(workspace.salesData, role, user);
   const documents = buildScopedDocuments(workspace.documents, salesData, role, user);
   const notes = buildScopedNotes(workspace.notes, salesData, role, user);
@@ -187,6 +197,8 @@ export const getAssistantWorkspaceForUser = (
     pricingRequests,
     role,
     salesData,
+    sessionToken: sessionToken ?? undefined,
+    isLiveBackend: Boolean(sessionToken && !isMockAssistantSessionToken(sessionToken)),
     scopeLabel: getScopeLabel(role, user.clientIds),
     tenantId: user.tenantId,
     userDisplayName: `${user.firstName} ${user.lastName}`.trim(),

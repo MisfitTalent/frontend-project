@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { AUTH_COOKIE_NAME } from "@/app/api/Auth/session-cookie";
 import { getAuthorizedUser } from "@/lib/server/assistant-auth";
 import {
   type AssistantMutation,
@@ -128,6 +129,22 @@ const sanitizeTrace = (trace: AssistantTraceStep[] | undefined) =>
 const sanitizeMutations = (mutations: AssistantMutation[] | undefined) =>
   Array.isArray(mutations) ? mutations.slice(0, 8) : [];
 
+const getSessionToken = (request: NextRequest) => {
+  const cookieToken = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+
+  if (cookieToken) {
+    return cookieToken;
+  }
+
+  const authHeader = request.headers.get("authorization");
+
+  if (!authHeader?.startsWith("Bearer ")) {
+    return "";
+  }
+
+  return authHeader.slice("Bearer ".length).trim();
+};
+
 export async function POST(request: NextRequest) {
   const user = getAuthorizedUser(request);
 
@@ -147,7 +164,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const workspace = getAssistantWorkspaceForUser(user);
+    const workspace = await getAssistantWorkspaceForUser(user, getSessionToken(request));
     const result = await runSecureAssistant({ messages, workspace });
 
     return NextResponse.json({
