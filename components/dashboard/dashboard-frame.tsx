@@ -1,13 +1,22 @@
 "use client";
 
-import { HomeOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from "@ant-design/icons";
-import { Button, Layout, Menu, Space, Tag, Typography } from "antd";
+import {
+  BellOutlined,
+  CloseOutlined,
+  HomeOutlined,
+  LogoutOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+} from "@ant-design/icons";
+import { Badge, Button, Layout, Menu, Space, Tag, Typography } from "antd";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { getSessionToken } from "@/lib/client/backend-api";
+import { backendRequest } from "@/lib/client/backend-api";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
+import type { INoteItem } from "@/providers/domainSeeds";
 import { dashboardNavItems } from "@/constants/dashboard-nav";
 import {
   canAccessDashboardPath,
@@ -25,7 +34,14 @@ type DashboardFrameProps = Readonly<{
 }>;
 
 export function DashboardFrame({ children }: DashboardFrameProps) {
+  const alertDismissKey = "dashboard-admin-alert-dismissed";
   const [collapsed, setCollapsed] = useState(false);
+  const [dismissedAlertSignature, setDismissedAlertSignature] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : window.sessionStorage.getItem(alertDismissKey),
+  );
+  const [pendingAdminRequestCount, setPendingAdminRequestCount] = useState(0);
+  const [latestPendingRequestId, setLatestPendingRequestId] = useState<string | null>(null);
+  const [latestPendingRequestTitle, setLatestPendingRequestTitle] = useState<string | null>(null);
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useAuthActions();
@@ -84,6 +100,87 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
     }
   }, [pathname]);
 
+  useEffect(() => {
+    if (!isAuthenticated || activeRole !== "Admin") {
+      return;
+    }
+
+    let isActive = true;
+    let pollTimer: number | null = null;
+
+    const loadPendingAdminRequests = async () => {
+      try {
+        const payload = await backendRequest<{ items?: INoteItem[] } | INoteItem[]>("/api/Notes");
+        const notes = Array.isArray(payload) ? payload : payload.items ?? [];
+        const pendingRequests = notes
+          .filter(
+            (note) =>
+              note.requestType === "client_request" && note.status === "Pending admin review",
+          )
+          .sort((left, right) => right.createdDate.localeCompare(left.createdDate));
+        const count = pendingRequests.length;
+
+        if (isActive) {
+          setPendingAdminRequestCount(count);
+          setLatestPendingRequestId(pendingRequests[0]?.id ?? null);
+          setLatestPendingRequestTitle(pendingRequests[0]?.title ?? null);
+        }
+      } catch (error) {
+        console.error(error);
+
+        if (isActive) {
+          setPendingAdminRequestCount(0);
+          setLatestPendingRequestId(null);
+          setLatestPendingRequestTitle(null);
+        }
+      }
+    };
+
+    void loadPendingAdminRequests();
+    pollTimer = window.setInterval(() => {
+      void loadPendingAdminRequests();
+    }, 5000);
+
+    const handleWorkspaceUpdate = () => {
+      void loadPendingAdminRequests();
+    };
+
+    window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+
+    return () => {
+      isActive = false;
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+      }
+      window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+    };
+  }, [activeRole, isAuthenticated, pathname]);
+
+  const currentAlertSignature = `${latestPendingRequestId ?? "none"}:${pendingAdminRequestCount}`;
+  const isAdminAlertDismissed =
+    pendingAdminRequestCount > 0 && dismissedAlertSignature === currentAlertSignature;
+
+  const dismissAdminAlert = () => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(alertDismissKey, currentAlertSignature);
+    }
+
+    setDismissedAlertSignature(currentAlertSignature);
+  };
+
+  const openAdminRequestQueue = () => {
+    dismissAdminAlert();
+
+    const params = new URLSearchParams();
+    params.set("source", "client_portal");
+
+    if (latestPendingRequestId) {
+      params.set("threadId", latestPendingRequestId);
+    }
+
+    router.push(`/dashboard/messages?${params.toString()}`);
+  };
+
   return (
     <div className="dashboard-shell">
       <div
@@ -91,9 +188,10 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
         className={`dashboard-sidebar ${collapsed ? "dashboard-sidebar--collapsed" : ""}`}
       >
         <div className="dashboard-sidebar-shell">
-          <Link
+          <button
             className="dashboard-sidebar-brand flex items-center gap-3 transition-colors"
-            href={homePath}
+            onClick={() => router.push(homePath)}
+            type="button"
           >
             <BoxfusionLogo size={38} />
             <div className="min-w-0">
@@ -104,7 +202,7 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
                 Sales workflow hub
               </Typography.Text>
             </div>
-          </Link>
+          </button>
 
           <div className="dashboard-sidebar-menu-shell min-h-0 flex-1">
             <Menu
@@ -165,12 +263,64 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
             </div>
           </Space>
           <Space size="middle">
-            {!isHomeRoute ? (
-              <Link href={homePath}>
-                <Button className="dashboard-header-home-button" icon={<HomeOutlined />} type="default">
-                  Home
+            {activeRole === "Admin" ? (
+              pendingAdminRequestCount > 0 && !isAdminAlertDismissed ? (
+                <div
+                  aria-label={`${pendingAdminRequestCount} client requests need admin attention`}
+                  className="dashboard-admin-alert-link"
+                  role="region"
+                >
+                  <div className="dashboard-admin-alert dashboard-admin-alert--live">
+                    <span className="dashboard-admin-alert__beacon" aria-hidden="true" />
+                    <span className="dashboard-admin-alert__copy">
+                      <span className="dashboard-admin-alert__eyebrow">Action required</span>
+                      <span className="dashboard-admin-alert__title">
+                        {pendingAdminRequestCount} client request
+                        {pendingAdminRequestCount === 1 ? "" : "s"} waiting
+                      </span>
+                      <span className="dashboard-admin-alert__text">
+                        {latestPendingRequestTitle ?? "Open the request queue now."}
+                      </span>
+                    </span>
+                    <Badge count={pendingAdminRequestCount} size="small">
+                      <button
+                        className="dashboard-admin-alert__button"
+                        onClick={openAdminRequestQueue}
+                        type="button"
+                      >
+                        Review now
+                      </button>
+                    </Badge>
+                    <button
+                      aria-label="Dismiss admin request alert"
+                      className="dashboard-admin-alert__dismiss"
+                      onClick={dismissAdminAlert}
+                      type="button"
+                    >
+                      <CloseOutlined />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  className="dashboard-header-home-button"
+                  icon={<BellOutlined />}
+                  onClick={openAdminRequestQueue}
+                  type="default"
+                >
+                  Requests
                 </Button>
-              </Link>
+              )
+            ) : null}
+            {!isHomeRoute ? (
+              <Button
+                className="dashboard-header-home-button"
+                icon={<HomeOutlined />}
+                onClick={() => router.push(homePath)}
+                type="default"
+              >
+                Home
+              </Button>
             ) : null}
             <Tag className="dashboard-header-page-tag" color="#f28c28">
               {activeNavItem?.label ?? "Overview"}

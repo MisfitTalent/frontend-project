@@ -73,6 +73,19 @@ export default function NoteProvider({
     }
 
     let isActive = true;
+    let pollTimer: number | null = null;
+
+    const schedulePolling = () => {
+      if (!isDemoMode) {
+        return;
+      }
+
+      pollTimer = window.setInterval(() => {
+        void loadNotes().catch((error) => {
+          console.error(error);
+        });
+      }, 5000);
+    };
 
     if (isDemoMode) {
       const timer = window.setTimeout(() => {
@@ -91,18 +104,16 @@ export default function NoteProvider({
         });
       };
 
+      schedulePolling();
       window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
 
       return () => {
         isActive = false;
         window.clearTimeout(timer);
+        if (pollTimer !== null) {
+          window.clearInterval(pollTimer);
+        }
         window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-      };
-    }
-
-    if (cachedNotes && cachedNotes.length > 0) {
-      return () => {
-        isActive = false;
       };
     }
 
@@ -116,7 +127,7 @@ export default function NoteProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [cacheKey, cachedNotes, isAuthenticated, isDemoMode, loadNotes, scopeNotes]);
+  }, [cacheKey, isAuthenticated, isDemoMode, loadNotes, scopeNotes]);
 
   return (
     <NoteStateContext.Provider value={{ notes: isAuthenticated ? notes : [] }}>
