@@ -7,7 +7,7 @@ import {
   SafetyCertificateOutlined,
   SendOutlined,
 } from "@ant-design/icons";
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
@@ -116,6 +116,28 @@ export function AssistantPanel() {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [loadedStorageIdentity, setLoadedStorageIdentity] = useState<string | null>(null);
   const [statusLabel, setStatusLabel] = useState("Awaiting your question");
+  const [autoPrompt] = useState(() => {
+    if (typeof window === "undefined") {
+      return "";
+    }
+
+    return new URLSearchParams(window.location.search).get("prompt")?.trim() ?? "";
+  });
+  const [shouldAutoRun] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    return new URLSearchParams(window.location.search).get("autorun") === "1";
+  });
+  const [shouldStartFresh] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    return new URLSearchParams(window.location.search).get("fresh") === "1";
+  });
+  const autoRunKeyRef = useRef<string | null>(null);
   const storageIdentity = `${draftStorageKey}::${messageStorageKey}`;
   const modeTag = getModeTag(assistantMode);
   const scopeTagLabel = isScopedClientUser
@@ -255,15 +277,16 @@ export function AssistantPanel() {
     };
   }, []);
 
-  const sendMessage = async (content: string) => {
+  const sendMessage = async (content: string, options?: { baseMessages?: AssistantMessage[] }) => {
     const trimmed = content.trim();
 
     if (!trimmed || isSubmitting) {
       return;
     }
 
+    const baseMessages = options?.baseMessages ?? messages;
     const nextMessages = [
-      ...messages,
+      ...baseMessages,
       {
         content: trimmed,
         role: "user" as const,
@@ -351,6 +374,75 @@ export function AssistantPanel() {
       setIsSubmitting(false);
     }
   };
+
+  const runAutoPrompt = useEffectEvent(
+    (prompt: string, fresh: boolean, clearAutorunFlag: () => void) => {
+      const baseMessages = fresh ? [] : messages;
+
+      if (fresh) {
+        setMessages([]);
+        setDraft("");
+        clearSessionDraft(draftStorageKey);
+        clearSessionDraft(messageStorageKey);
+      }
+
+      void sendMessage(prompt, { baseMessages }).finally(() => {
+        clearAutorunFlag();
+      });
+    },
+  );
+
+  useEffect(() => {
+    if (!autoPrompt || !shouldAutoRun || loadedStorageIdentity !== storageIdentity || isSubmitting) {
+      return;
+    }
+
+    const autoRunKey = `${storageIdentity}::${autoPrompt}`;
+
+    if (autoRunKeyRef.current === autoRunKey) {
+      return;
+    }
+
+    const clearAutorunFlag = () => {
+      if (typeof window === "undefined") {
+        return;
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      params.delete("autorun");
+      params.delete("fresh");
+      const nextUrl = params.toString()
+        ? `/dashboard/assistant?${params.toString()}`
+        : "/dashboard/assistant";
+      window.history.replaceState(null, "", nextUrl);
+    };
+
+    if (!shouldStartFresh && messages.length > 0) {
+      autoRunKeyRef.current = autoRunKey;
+      clearAutorunFlag();
+      return;
+    }
+
+    autoRunKeyRef.current = autoRunKey;
+    const timer = window.setTimeout(() => {
+      runAutoPrompt(autoPrompt, shouldStartFresh, clearAutorunFlag);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    autoPrompt,
+    draftStorageKey,
+    isSubmitting,
+    loadedStorageIdentity,
+    messages,
+    messages.length,
+    messageStorageKey,
+    shouldAutoRun,
+    shouldStartFresh,
+    storageIdentity,
+  ]);
 
   return (
     <div className="space-y-6">

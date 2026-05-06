@@ -868,6 +868,31 @@ const findRecentNonConfirmationUserMessage = (messages: AssistantMessage[]) =>
     .reverse()
     .find((message) => !isConfirmationMessage(message.content)) ?? null;
 
+const getLatestActiveConfirmationTraceStep = (
+  messages: AssistantMessage[],
+  pendingTool: string,
+  completedTools: string[] = [],
+) => {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") {
+      continue;
+    }
+
+    const trace = message.trace ?? [];
+
+    if (completedTools.some((tool) => trace.some((step) => step.tool === tool))) {
+      return null;
+    }
+
+    const pendingStep = trace.find((step) => step.tool === pendingTool);
+    if (pendingStep) {
+      return pendingStep;
+    }
+  }
+
+  return null;
+};
+
 const MESSAGE_SEND_CONFIRMATION_TOOL = "confirmation_required_message_send";
 const PENDING_MESSAGE_SEND_TOOLS = new Set([
   MESSAGE_SEND_CONFIRMATION_TOOL,
@@ -1702,11 +1727,9 @@ const getRecentPendingProposalDraftRequest = (
   messages: AssistantMessage[],
   workspace: IAssistantWorkspace,
 ) => {
-  const traceStep = [...messages]
-    .reverse()
-    .filter((message) => message.role === "assistant")
-    .flatMap((message) => message.trace ?? [])
-    .find((step) => step.tool === PROPOSAL_DRAFT_CONFIRMATION_TOOL);
+  const traceStep = getLatestActiveConfirmationTraceStep(messages, PROPOSAL_DRAFT_CONFIRMATION_TOOL, [
+    "confirmed_proposal_draft_workflow",
+  ]);
 
   if (!traceStep) {
     return inferPendingProposalDraftRequest(messages, workspace);
@@ -1731,11 +1754,9 @@ const getRecentPendingProposalEditRequest = (
   messages: AssistantMessage[],
   workspace: IAssistantWorkspace,
 ) => {
-  const traceStep = [...messages]
-    .reverse()
-    .filter((message) => message.role === "assistant")
-    .flatMap((message) => message.trace ?? [])
-    .find((step) => step.tool === PROPOSAL_EDIT_CONFIRMATION_TOOL);
+  const traceStep = getLatestActiveConfirmationTraceStep(messages, PROPOSAL_EDIT_CONFIRMATION_TOOL, [
+    "confirmed_proposal_edit_workflow",
+  ]);
 
   if (!traceStep) {
     return inferPendingProposalEditRequest(messages, workspace);
@@ -1827,11 +1848,11 @@ const getRecentPendingOpportunityEditRequest = (
   messages: AssistantMessage[],
   workspace: IAssistantWorkspace,
 ) => {
-  const traceStep = [...messages]
-    .reverse()
-    .filter((message) => message.role === "assistant")
-    .flatMap((message) => message.trace ?? [])
-    .find((step) => step.tool === "confirmation_required_opportunity_edit");
+  const traceStep = getLatestActiveConfirmationTraceStep(
+    messages,
+    "confirmation_required_opportunity_edit",
+    ["confirmed_opportunity_edit_workflow"],
+  );
 
   if (!traceStep) {
     return inferPendingOpportunityEditRequest(messages, workspace);
@@ -1982,6 +2003,40 @@ const createOpportunityMissingFieldsMessage = (
   return `I can create the opportunity, but I still need ${missing.slice(0, -1).join(", ")} and ${missing.at(-1)}.`;
 };
 
+const getRecentPendingOpportunityCreateRequest = (
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  const traceStep = getLatestActiveConfirmationTraceStep(
+    messages,
+    "confirmation_required_opportunity_create",
+    ["confirmed_opportunity_create_workflow"],
+  );
+
+  if (!traceStep) {
+    return inferPendingOpportunityCreateRequest(messages, workspace);
+  }
+
+  return {
+    clientId: typeof traceStep.arguments.clientId === "string" ? traceStep.arguments.clientId : null,
+    clientName:
+      typeof traceStep.arguments.clientName === "string" ? traceStep.arguments.clientName : null,
+    estimatedValue:
+      typeof traceStep.arguments.estimatedValue === "number"
+        ? traceStep.arguments.estimatedValue
+        : null,
+    expectedCloseDate:
+      typeof traceStep.arguments.expectedCloseDate === "string"
+        ? traceStep.arguments.expectedCloseDate
+        : null,
+    ownerId: typeof traceStep.arguments.ownerId === "string" ? traceStep.arguments.ownerId : null,
+    ownerName:
+      typeof traceStep.arguments.ownerName === "string" ? traceStep.arguments.ownerName : null,
+    stage: typeof traceStep.arguments.stage === "string" ? traceStep.arguments.stage : null,
+    title: typeof traceStep.arguments.title === "string" ? traceStep.arguments.title : null,
+  } satisfies PendingOpportunityCreateRequest;
+};
+
 const inferPendingServiceRequestCreateRequest = (
   messages: AssistantMessage[],
   workspace: IAssistantWorkspace,
@@ -2043,11 +2098,11 @@ const getRecentPendingServiceRequestCreateRequest = (
   messages: AssistantMessage[],
   workspace: IAssistantWorkspace,
 ) => {
-  const traceStep = [...messages]
-    .reverse()
-    .filter((message) => message.role === "assistant")
-    .flatMap((message) => message.trace ?? [])
-    .find((step) => step.tool === "confirmation_required_service_request_create");
+  const traceStep = getLatestActiveConfirmationTraceStep(
+    messages,
+    "confirmation_required_service_request_create",
+    ["confirmed_service_request_create_workflow"],
+  );
 
   if (!traceStep) {
     return inferPendingServiceRequestCreateRequest(messages, workspace);
@@ -2208,11 +2263,11 @@ const getRecentPendingAdminRequestHandlingRequest = (
   messages: AssistantMessage[],
   workspace: IAssistantWorkspace,
 ) => {
-  const traceStep = [...messages]
-    .reverse()
-    .filter((message) => message.role === "assistant")
-    .flatMap((message) => message.trace ?? [])
-    .find((step) => step.tool === "confirmation_required_admin_request_workflow");
+  const traceStep = getLatestActiveConfirmationTraceStep(
+    messages,
+    "confirmation_required_admin_request_workflow",
+    ["confirmed_admin_request_workflow"],
+  );
 
   if (!traceStep) {
     return inferPendingAdminRequestHandlingRequest(messages, workspace);
@@ -2677,10 +2732,11 @@ const getRecentPendingMessageSendRequest = (
   messages: AssistantMessage[],
   workspace: IAssistantWorkspace,
 ): PendingMessageSendRequest | null => {
-  const traceStep = [...messages]
-    .reverse()
-    .find((message) => message.role === "assistant")
-    ?.trace?.find((step) => PENDING_MESSAGE_SEND_TOOLS.has(step.tool));
+  const traceStep = [...PENDING_MESSAGE_SEND_TOOLS]
+    .map((tool) =>
+      getLatestActiveConfirmationTraceStep(messages, tool, ["confirmed_message_send_workflow"]),
+    )
+    .find((step) => Boolean(step));
 
   if (!traceStep) {
     return null;
@@ -3682,7 +3738,7 @@ const shouldRunConfirmedOpportunityCreateWorkflow = (
     return false;
   }
 
-  const request = inferPendingOpportunityCreateRequest(messages, workspace);
+  const request = getRecentPendingOpportunityCreateRequest(messages, workspace);
 
   if (!request?.clientId || !request.title || !request.estimatedValue || !request.expectedCloseDate) {
     return false;
@@ -3699,7 +3755,7 @@ const createConfirmedOpportunityCreateResult = async (
   workspace: IAssistantWorkspace,
   messages: AssistantMessage[],
 ) => {
-  const request = inferPendingOpportunityCreateRequest(messages, workspace);
+  const request = getRecentPendingOpportunityCreateRequest(messages, workspace);
 
   if (
     !request?.clientId ||
@@ -4353,11 +4409,21 @@ const getRecentDraftFollowUpProposal = (messages: AssistantMessage[]) => {
 };
 
 const getRecentConfirmedGenericMutationRequest = (messages: AssistantMessage[]) => {
-  const confirmationStep = [...messages]
-    .reverse()
-    .filter((message) => message.role === "assistant")
-    .flatMap((message) => message.trace ?? [])
-    .find((step) => step.tool === "confirmation_required_generic_mutation");
+  const confirmationStep = getLatestActiveConfirmationTraceStep(
+    messages,
+    "confirmation_required_generic_mutation",
+    [
+      "confirmed_create_note_workflow",
+      "confirmed_update_note_workflow",
+      "confirmed_delete_note_workflow",
+      "confirmed_create_pricing_request_workflow",
+      "confirmed_update_pricing_request_workflow",
+      "confirmed_delete_pricing_request_workflow",
+      "confirmed_create_activity_workflow",
+      "confirmed_update_activity_workflow",
+      "confirmed_delete_activity_workflow",
+    ],
+  );
 
   if (!confirmationStep) {
     return null;

@@ -740,7 +740,11 @@ function MessagesPanelContent({
                   Open request
                 </Button>
               </Link>
-              <Link href="/dashboard/assistant">
+              <Link
+                href={`/dashboard/assistant?prompt=${encodeURIComponent(
+                  "Review the latest client request, create the right opportunity and proposal if needed, and assign the best reps.",
+                )}&autorun=1&fresh=1`}
+              >
                 <Button icon={<MailOutlined />}>Handle with AI</Button>
               </Link>
             </Space>
@@ -775,7 +779,11 @@ function MessagesPanelContent({
               <Typography.Text className={styles.metricText}>
                 These are the actual client requests waiting for admin action.
               </Typography.Text>
-              <Link href="/dashboard/assistant">
+              <Link
+                href={`/dashboard/assistant?prompt=${encodeURIComponent(
+                  "What client requests are waiting for admin review?",
+                )}&autorun=1&fresh=1`}
+              >
                 <Button icon={<MailOutlined />} type="default">
                   Summarize with AI
                 </Button>
