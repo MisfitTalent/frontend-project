@@ -39,7 +39,6 @@ export default function ActivityForm({
     if (!mounted) {
       return;
     }
-
     if (editingId) {
       const activity = activities.find((item) => item.id === editingId);
       if (activity) {
