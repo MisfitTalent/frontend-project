@@ -11,7 +11,6 @@ import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/
 import { dashboardNavItems } from "@/constants/dashboard-nav";
 import {
   canAccessDashboardPath,
-  DASHBOARD_HOME_PATH,
   getDashboardHomePath,
   getDashboardNavItemForPath,
 } from "@/lib/auth/dashboard-access";
@@ -91,9 +90,9 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
         aria-hidden={collapsed}
         className={`dashboard-sidebar ${collapsed ? "dashboard-sidebar--collapsed" : ""}`}
       >
-        <div className="flex h-screen flex-col overflow-hidden bg-[#1f365c]">
+        <div className="dashboard-sidebar-shell">
           <Link
-            className="flex items-center gap-3 border-b border-white/10 px-6 py-5 transition-colors hover:bg-white/5"
+            className="dashboard-sidebar-brand flex items-center gap-3 transition-colors"
             href={homePath}
           >
             <BoxfusionLogo size={38} />
@@ -107,15 +106,17 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
             </div>
           </Link>
 
-          <Menu
-            className="min-h-0 flex-1 overflow-y-auto border-0 bg-transparent px-3 py-4"
-            items={menuItems}
-            mode="inline"
-            selectedKeys={[activeNavItem?.key ?? pathname]}
-            theme="dark"
-          />
+          <div className="dashboard-sidebar-menu-shell min-h-0 flex-1">
+            <Menu
+              className="dashboard-sidebar-menu dashboard-sidebar-scroll h-full border-0 bg-transparent px-3 py-4"
+              items={menuItems}
+              mode="inline"
+              selectedKeys={[activeNavItem?.key ?? pathname]}
+              theme="dark"
+            />
+          </div>
 
-          <div className="shrink-0 space-y-3 border-t border-white/10 px-5 py-5">
+          <div className="dashboard-sidebar-footer shrink-0 space-y-3">
             <div className="space-y-1">
               <Typography.Text className="block font-medium !text-white">
                 {user?.firstName ?? "Team member"} {user?.lastName ?? ""}
@@ -143,10 +144,10 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
       />
 
       <Layout className={`dashboard-main ${collapsed ? "dashboard-main--expanded" : ""}`}>
-        <Header className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-[#1f365c] px-4 py-3 md:px-6">
+        <Header className="dashboard-header sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3">
           <Space align="center" className="min-w-0">
             <Button
-              className="!text-white hover:!text-[#f7b267]"
+              className="dashboard-header-toggle !text-white"
               icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               onClick={() => setCollapsed((value) => !value)}
               type="text"
@@ -166,16 +167,18 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
           <Space size="middle">
             {!isHomeRoute ? (
               <Link href={homePath}>
-                <Button icon={<HomeOutlined />} type="default">
+                <Button className="dashboard-header-home-button" icon={<HomeOutlined />} type="default">
                   Home
                 </Button>
               </Link>
             ) : null}
-            <Tag color="#f28c28">{activeNavItem?.label ?? "Overview"}</Tag>
+            <Tag className="dashboard-header-page-tag" color="#f28c28">
+              {activeNavItem?.label ?? "Overview"}
+            </Tag>
           </Space>
         </Header>
 
-        <Content className="p-4 md:p-6">{children}</Content>
+        <Content className="dashboard-content p-4 md:p-6">{children}</Content>
       </Layout>
     </div>
   );
