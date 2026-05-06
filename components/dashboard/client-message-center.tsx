@@ -13,17 +13,26 @@ import {
   Typography,
   message,
 } from "antd";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
-  CLIENT_MESSAGE_CATEGORY,
   isClientRequestThread,
   isTeamAssignmentThread,
 } from "@/lib/dashboard/message-threads";
+import {
+  createServiceRequest,
+  applyServiceRequestClientDecision,
+  getServiceRequestDetail,
+  listServiceRequests,
+  type ServiceRequestAssignmentRecord,
+  type ServiceRequestDetail,
+  type ServiceRequestRecord,
+} from "@/lib/client/service-request-api";
+import { useMounted } from "@/lib/client/use-mounted";
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
 import type { INoteItem } from "@/providers/domainSeeds";
-import { useNoteActions, useNoteState } from "@/providers/noteProvider";
+import { useNoteState } from "@/providers/noteProvider";
 import { useStyles } from "./client-message-center.styles";
 
 type ClientMessageCenterProps = Readonly<{
@@ -34,9 +43,6 @@ type MessageFormValues = {
   content: string;
   subject: string;
 };
-
-const createMessageId = () =>
-  `client-message-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
 const getMessageStatusColor = (status?: INoteItem["status"]) => {
   switch (status) {
@@ -74,11 +80,15 @@ export const ClientMessageCenter = ({
   const { user } = useAuthState();
   const { clients } = useClientState();
   const { notes } = useNoteState();
-  const { addNote, updateNote } = useNoteActions();
   const { styles } = useStyles();
   const [messageApi, contextHolder] = message.useMessage();
+  const mounted = useMounted();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [serviceRequests, setServiceRequests] = useState<ServiceRequestRecord[]>([]);
+  const [serviceRequestDetails, setServiceRequestDetails] = useState<
+    Record<string, ServiceRequestDetail>
+  >({});
   const [form] = Form.useForm<MessageFormValues>();
 
   const primaryClientId = user?.clientIds?.[0];
@@ -94,13 +104,42 @@ export const ClientMessageCenter = ({
       .sort((left, right) => right.createdDate.localeCompare(left.createdDate));
   }, [client, notes]);
 
+  const clientServiceRequests = useMemo(
+    () =>
+      client
+        ? serviceRequests
+            .filter((request) => request.clientId === client.id)
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        : [],
+    [client, serviceRequests],
+  );
+
   const assignmentProposals = useMemo(
     () =>
-      clientMessages.filter(
-        (note) =>
-          isTeamAssignmentThread(note) && note.status === "Pending client response",
-      ),
-    [clientMessages],
+      clientServiceRequests.flatMap((request) => {
+        const detail = serviceRequestDetails[request.id];
+
+        if (!detail) {
+          return [];
+        }
+
+        const pendingAssignments = detail.assignments.filter(
+          (assignment) => assignment.status === "pending_client_approval",
+        );
+
+        if (pendingAssignments.length === 0) {
+          return [];
+        }
+
+        return [
+          {
+            assignments: pendingAssignments,
+            createdAt: pendingAssignments[0]?.createdAt ?? request.updatedAt,
+            request,
+          },
+        ];
+      }),
+    [clientServiceRequests, serviceRequestDetails],
   );
 
   const visibleHistory = useMemo(
@@ -111,6 +150,56 @@ export const ClientMessageCenter = ({
       ),
     [clientMessages],
   );
+
+  const loadServiceRequests = async () => {
+    try {
+      return await listServiceRequests();
+    } catch (error) {
+      console.error(error);
+      return [];
+    }
+  };
+
+  useEffect(() => {
+    let isActive = true;
+
+    void loadServiceRequests().then((items) => {
+      if (isActive) {
+        setServiceRequests(items);
+      }
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isActive = true;
+
+    if (clientServiceRequests.length === 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
+    void Promise.all(
+      clientServiceRequests.map(async (request) => [
+        request.id,
+        await getServiceRequestDetail(request.id),
+      ] as const),
+    ).then((entries) => {
+      if (!isActive) {
+        return;
+      }
+
+      setServiceRequestDetails(Object.fromEntries(entries));
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, [clientServiceRequests]);
 
   const openComposer = () => {
     form.setFieldsValue({
@@ -134,19 +223,15 @@ export const ClientMessageCenter = ({
     setIsSubmitting(true);
 
     try {
-      await addNote({
-        category: CLIENT_MESSAGE_CATEGORY,
+      await createServiceRequest({
         clientId: client.id,
-        content: values.content.trim(),
-        createdDate: new Date().toISOString().split("T")[0],
-        id: createMessageId(),
-        kind: "client_message",
-        requestType: "client_request",
+        description: values.content.trim(),
+        priority: "high",
+        requestType: "service_request",
         source: "client_portal",
-        status: "Pending admin review",
-        submittedBy: user?.email ?? undefined,
         title: values.subject.trim(),
       });
+      setServiceRequests(await loadServiceRequests());
       messageApi.success("Request sent to the workspace admin for assignment.");
       closeComposer();
     } catch (error) {
@@ -157,18 +242,33 @@ export const ClientMessageCenter = ({
     }
   };
 
+  const refreshServiceRequests = async () => {
+    const nextRequests = await loadServiceRequests();
+    setServiceRequests(nextRequests);
+
+    const detailEntries = await Promise.all(
+      nextRequests.map(async (request) => [request.id, await getServiceRequestDetail(request.id)] as const),
+    );
+    setServiceRequestDetails(Object.fromEntries(detailEntries));
+  };
+
   const respondToAssignment = async (
-    note: INoteItem,
-    status: "Accepted" | "Rejected",
+    request: ServiceRequestRecord,
+    assignments: ServiceRequestAssignmentRecord[],
+    decision: "approve" | "reject",
   ) => {
     setIsSubmitting(true);
 
     try {
-      await updateNote(note.id, { status });
+      await applyServiceRequestClientDecision(request.id, {
+        assignmentIds: assignments.map((assignment) => assignment.id),
+        decision,
+      });
+      await refreshServiceRequests();
       messageApi.success(
-        status === "Accepted"
-          ? `${note.representativeName ?? "The sales rep"} was accepted.`
-          : `${note.representativeName ?? "The sales rep"} was rejected.`,
+        decision === "approve"
+          ? "The assigned sales reps were approved."
+          : "The assigned sales reps were rejected.",
       );
     } catch (error) {
       console.error(error);
@@ -180,7 +280,7 @@ export const ClientMessageCenter = ({
 
   return (
     <Card className={styles.card}>
-      {contextHolder}
+      {mounted ? contextHolder : null}
 
       <div className={styles.container}>
         <div className={styles.header}>
@@ -200,23 +300,24 @@ export const ClientMessageCenter = ({
 
         {assignmentProposals.length > 0 ? (
           <div className={styles.list}>
-            {assignmentProposals.map((note) => (
-              <div className={styles.messageCard} key={note.id}>
+            {assignmentProposals.map(({ assignments, createdAt, request }) => (
+              <div className={styles.messageCard} key={request.id}>
                 <div className={styles.messageHeader}>
                   <div className={styles.metaGroup}>
                     <Typography.Title className={styles.messageTitle} level={5}>
-                      {note.representativeName ?? "Assigned sales rep"}
+                      {assignments.map((assignment) => assignment.representativeName).join(", ")}
                     </Typography.Title>
                     <Space size="small" wrap>
                       <Tag color="gold">Pending your decision</Tag>
-                      <Tag color="geekblue">{note.createdDate}</Tag>
+                      <Tag color="default">{request.title}</Tag>
+                      <Tag color="geekblue">{createdAt.split("T")[0]}</Tag>
                     </Space>
                   </div>
                   <Space size="small" wrap>
                     <Button
                       icon={<CheckOutlined />}
                       loading={isSubmitting}
-                      onClick={() => void respondToAssignment(note, "Accepted")}
+                      onClick={() => void respondToAssignment(request, assignments, "approve")}
                       type="primary"
                     >
                       Accept
@@ -225,17 +326,18 @@ export const ClientMessageCenter = ({
                       danger
                       icon={<StopOutlined />}
                       loading={isSubmitting}
-                      onClick={() => void respondToAssignment(note, "Rejected")}
+                      onClick={() => void respondToAssignment(request, assignments, "reject")}
                     >
                       Reject
                     </Button>
                   </Space>
                 </div>
                 <Typography.Paragraph className={styles.messageText}>
-                  {note.content}
+                  {request.description}
                 </Typography.Paragraph>
                 <Typography.Text className={styles.messageFooter}>
-                  Assigned by {note.assignedByUserName ?? "workspace admin"}.
+                  Assigned by workspace admin. Waiting for your approval before the reps are asked
+                  to accept.
                 </Typography.Text>
               </div>
             ))}
@@ -289,40 +391,70 @@ export const ClientMessageCenter = ({
                 </Typography.Text>
               </div>
             ))}
+            {clientServiceRequests.map((request) => (
+              <div className={styles.messageCard} key={request.id}>
+                <div className={styles.messageHeader}>
+                  <div className={styles.metaGroup}>
+                    <Typography.Title className={styles.messageTitle} level={5}>
+                      {request.title}
+                    </Typography.Title>
+                    <Space size="small" wrap>
+                      <Tag color="default">You</Tag>
+                      <Tag color="orange">
+                        {request.status === "submitted"
+                          ? "Pending admin review"
+                          : request.status.replace(/_/g, " ")}
+                      </Tag>
+                      <Tag color="default">{request.createdAt.split("T")[0]}</Tag>
+                    </Space>
+                  </div>
+                  <Button icon={<MailOutlined />} onClick={() => openComposer()}>
+                    New request
+                  </Button>
+                </div>
+                <Typography.Paragraph className={styles.messageText}>
+                  {request.description}
+                </Typography.Paragraph>
+                <Typography.Text className={styles.messageFooter}>
+                  Submitted through the owned workflow API.
+                </Typography.Text>
+              </div>
+            ))}
           </div>
         )}
       </div>
 
-      <Modal
-        forceRender
-        onCancel={closeComposer}
-        onOk={() => form.submit()}
-        okButtonProps={{ loading: isSubmitting }}
-        okText="Send request"
-        open={isModalOpen}
-        title="Submit account team request"
-      >
-        <Form className={styles.modalForm} form={form} layout="vertical" onFinish={handleSubmit}>
-          <Form.Item
-            label="Subject"
-            name="subject"
-            rules={[{ message: "Please add a subject", required: true }]}
-          >
-            <Input placeholder="e.g. Proposal clarification" />
-          </Form.Item>
+      {mounted ? (
+        <Modal
+          onCancel={closeComposer}
+          onOk={() => form.submit()}
+          okButtonProps={{ loading: isSubmitting }}
+          okText="Send request"
+          open={isModalOpen}
+          title="Submit account team request"
+        >
+          <Form className={styles.modalForm} form={form} layout="vertical" onFinish={handleSubmit}>
+            <Form.Item
+              label="Subject"
+              name="subject"
+              rules={[{ message: "Please add a subject", required: true }]}
+            >
+              <Input placeholder="e.g. Proposal clarification" />
+            </Form.Item>
 
-          <Form.Item
-            label="Message"
-            name="content"
-            rules={[{ message: "Please enter your message", required: true }]}
-          >
-            <Input.TextArea
-              placeholder="Share what you need, the context, and any deadlines"
-              rows={5}
-            />
-          </Form.Item>
-        </Form>
-      </Modal>
+            <Form.Item
+              label="Message"
+              name="content"
+              rules={[{ message: "Please enter your message", required: true }]}
+            >
+              <Input.TextArea
+                placeholder="Share what you need, the context, and any deadlines"
+                rows={5}
+              />
+            </Form.Item>
+          </Form>
+        </Modal>
+      ) : null}
     </Card>
   );
 };

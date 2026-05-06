@@ -3,6 +3,7 @@
 import { Form, Input, Modal, Select } from "antd";
 import { useEffect } from "react";
 
+import { useMounted } from "@/lib/client/use-mounted";
 import { ActivityStatus, ActivityType, type IActivity } from "@/providers/salesTypes";
 import { useActivityActions, useActivityState } from "@/providers/activityProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
@@ -27,6 +28,7 @@ export default function ActivityForm({
   onSubmitEnd,
 }: ActivityFormProps) {
   const [form] = Form.useForm();
+  const mounted = useMounted();
   const { activities } = useActivityState();
   const { opportunities } = useOpportunityState();
   const { proposals } = useProposalState();
@@ -34,6 +36,10 @@ export default function ActivityForm({
   const { addActivity, updateActivity } = useActivityActions();
 
   useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+
     if (editingId) {
       const activity = activities.find((item) => item.id === editingId);
       if (activity) {
@@ -45,7 +51,7 @@ export default function ActivityForm({
     } else {
       form.resetFields();
     }
-  }, [activities, editingId, form, isOpen]);
+  }, [activities, editingId, form, isOpen, mounted]);
 
   const handleSubmit = async (values: {
     assignedToId?: string;
@@ -88,9 +94,8 @@ export default function ActivityForm({
     }
   };
 
-  return (
+  return mounted ? (
     <Modal
-      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}
@@ -160,5 +165,5 @@ export default function ActivityForm({
         </Form.Item>
       </Form>
     </Modal>
-  );
+  ) : null;
 }

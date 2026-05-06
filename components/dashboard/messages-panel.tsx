@@ -23,6 +23,16 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { AnimatedDashboardTable } from "@/components/dashboard/animated-dashboard-table";
 import { ClientMessageCenter } from "@/components/dashboard/client-message-center";
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import {
+  applyServiceRequestRepresentativeDecision,
+  createServiceRequestAssignments,
+  getServiceRequestDetail,
+  listServiceRequests,
+  type ServiceRequestAssignmentRecord,
+  type ServiceRequestDetail,
+  type ServiceRequestRecord,
+} from "@/lib/client/service-request-api";
+import { useMounted } from "@/lib/client/use-mounted";
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import {
   CLIENT_MESSAGE_CATEGORY,
@@ -90,6 +100,7 @@ function MessagesPanelContent({
   const { styles } = useStyles();
   const role = getPrimaryUserRole(user?.roles);
   const [messageApi, contextHolder] = message.useMessage();
+  const mounted = useMounted();
   const [selectedClientId, setSelectedClientId] = useState<string>(initialClientId);
   const [selectedRepresentativeId, setSelectedRepresentativeId] = useState<string>(
     initialRepresentativeId,
@@ -98,11 +109,59 @@ function MessagesPanelContent({
   const [isReplyModalOpen, setIsReplyModalOpen] = useState(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
   const [activeThread, setActiveThread] = useState<INoteItem | null>(null);
+  const [activeServiceRequest, setActiveServiceRequest] = useState<ServiceRequestRecord | null>(
+    null,
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [serviceRequests, setServiceRequests] = useState<ServiceRequestRecord[]>([]);
+  const [serviceRequestDetailsById, setServiceRequestDetailsById] = useState<
+    Record<string, ServiceRequestDetail>
+  >({});
   const [replyForm] = Form.useForm<MessageFormValues>();
   const [assignmentForm] = Form.useForm<AssignmentFormValues>();
 
   const isScopedClientUser = isClientScopedUser(user?.clientIds);
+
+  const loadServiceRequests = useCallback(async () => {
+    try {
+      const requests = await listServiceRequests();
+      setServiceRequests(requests);
+      const details = await Promise.all(
+        requests.map(async (request) => [request.id, await getServiceRequestDetail(request.id)] as const),
+      );
+      setServiceRequestDetailsById(Object.fromEntries(details));
+    } catch (error) {
+      console.error(error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isScopedClientUser) {
+      return;
+    }
+
+    let isActive = true;
+
+    void listServiceRequests()
+      .then(async (items) => {
+        if (isActive) {
+          setServiceRequests(items);
+          const details = await Promise.all(
+            items.map(async (request) => [request.id, await getServiceRequestDetail(request.id)] as const),
+          );
+          if (isActive) {
+            setServiceRequestDetailsById(Object.fromEntries(details));
+          }
+        }
+      })
+      .catch((error) => {
+        console.error(error);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [isScopedClientUser]);
 
   const messageThreads = useMemo(
     () =>
@@ -206,19 +265,45 @@ function MessagesPanelContent({
     [representativeOptions, scopedRepresentativeIds],
   );
 
-  const pendingAdminReviewCount = messageThreads.filter(
-    (note) => isClientRequestThread(note) && note.status === "Pending admin review",
-  ).length;
-  const pendingAdminRequests = useMemo(
+  const pendingWorkflowRequests = useMemo(
     () =>
-      messageThreads.filter(
-        (note) => isClientRequestThread(note) && note.status === "Pending admin review",
-      ),
-    [messageThreads],
+      serviceRequests
+        .filter((request) => request.status === "submitted")
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+    [serviceRequests],
   );
-  const pendingClientResponseCount = messageThreads.filter(
-    (note) => note.requestType === "team_assignment" && note.status === "Pending client response",
-  ).length;
+  const pendingAdminReviewCount = pendingWorkflowRequests.length;
+  const pendingAdminRequests = useMemo(
+    () => pendingWorkflowRequests,
+    [pendingWorkflowRequests],
+  );
+  const pendingRepresentativeAssignments = useMemo(
+    () =>
+      Object.values(serviceRequestDetailsById).flatMap((detail) =>
+        detail.assignments
+          .filter(
+            (assignment) =>
+              assignment.representativeUserId === user?.userId &&
+              assignment.status === "pending_rep_response",
+          )
+          .map((assignment) => ({
+            assignment,
+            request: detail.request,
+          })),
+      ),
+    [serviceRequestDetailsById, user?.userId],
+  );
+  const pendingClientResponseCount = useMemo(
+    () =>
+      Object.values(serviceRequestDetailsById).reduce(
+        (total, detail) =>
+          total +
+          detail.assignments.filter((assignment) => assignment.status === "pending_client_approval")
+            .length,
+        0,
+      ),
+    [serviceRequestDetailsById],
+  );
   const outboundCount = messageThreads.filter((note) => note.source === "workspace").length;
   const uniqueClientCount = new Set(
     messageThreads.map((note) => note.clientId).filter(Boolean),
@@ -227,6 +312,30 @@ function MessagesPanelContent({
     () => visibleThreads.find((note) => note.id === selectedThreadId) ?? null,
     [selectedThreadId, visibleThreads],
   );
+  const selectedServiceRequest = useMemo(
+    () => serviceRequests.find((request) => request.id === selectedThreadId) ?? null,
+    [selectedThreadId, serviceRequests],
+  );
+  const selectedServiceRequestDetail = useMemo(
+    () =>
+      selectedServiceRequest
+        ? serviceRequestDetailsById[selectedServiceRequest.id] ?? null
+        : null,
+    [selectedServiceRequest, serviceRequestDetailsById],
+  );
+  const selectedRepresentativeAssignment = useMemo(() => {
+    if (!selectedServiceRequestDetail || !user) {
+      return null;
+    }
+
+    return (
+      selectedServiceRequestDetail.assignments.find(
+        (assignment) =>
+          assignment.representativeUserId === user.userId &&
+          assignment.status === "pending_rep_response",
+      ) ?? null
+    );
+  }, [selectedServiceRequestDetail, user]);
   const selectedConversationMessages = useMemo(() => {
     if (!selectedConversationRoot?.clientId) {
       return [];
@@ -260,6 +369,40 @@ function MessagesPanelContent({
     }
 
     router.push(`/dashboard/messages?${params.toString()}`);
+  };
+
+  const openServiceRequestConversation = (request: ServiceRequestRecord) => {
+    const params = new URLSearchParams();
+    params.set("source", request.source);
+    params.set("threadId", request.id);
+    params.set("clientId", request.clientId);
+    router.push(`/dashboard/messages?${params.toString()}`);
+  };
+
+  const applyRepresentativeDecision = async (
+    request: ServiceRequestRecord,
+    assignment: ServiceRequestAssignmentRecord,
+    decision: "accept" | "reject",
+  ) => {
+    setIsSubmitting(true);
+
+    try {
+      await applyServiceRequestRepresentativeDecision(request.id, {
+        assignmentId: assignment.id,
+        decision,
+      });
+      await loadServiceRequests();
+      messageApi.success(
+        decision === "accept"
+          ? "Assignment accepted."
+          : "Assignment rejected and returned for reassignment.",
+      );
+    } catch (error) {
+      console.error(error);
+      messageApi.error("Could not update the representative decision.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const openReplyComposer = (note?: INoteItem) => {
@@ -338,12 +481,27 @@ function MessagesPanelContent({
       representativeIds: [],
     });
     setActiveThread(note);
+    setActiveServiceRequest(null);
     setIsAssignModalOpen(true);
   }, [assignmentForm]);
+
+  const openServiceRequestAssignModal = useCallback(
+    async (request: ServiceRequestRecord) => {
+      assignmentForm.setFieldsValue({
+        assignmentMessage: `We are assigning the right sales reps to support "${request.title}".`,
+        representativeIds: [],
+      });
+      setActiveThread(null);
+      setActiveServiceRequest(request);
+      setIsAssignModalOpen(true);
+    },
+    [assignmentForm],
+  );
 
   const closeAssignModal = () => {
     setIsAssignModalOpen(false);
     setActiveThread(null);
+    setActiveServiceRequest(null);
     assignmentForm.resetFields();
     if (selectedThreadId) {
       const params = new URLSearchParams();
@@ -365,6 +523,36 @@ function MessagesPanelContent({
   };
 
   const handleAssignSubmit = async (values: AssignmentFormValues) => {
+    if (activeServiceRequest) {
+      const selectedRepresentatives = teamMembers.filter((member) =>
+        values.representativeIds.includes(member.id),
+      );
+
+      if (selectedRepresentatives.length === 0) {
+        messageApi.error("Select at least one representative.");
+        return;
+      }
+
+      setIsSubmitting(true);
+
+      try {
+        await createServiceRequestAssignments(activeServiceRequest.id, {
+          note: values.assignmentMessage.trim(),
+          representativeUserIds: selectedRepresentatives.map((member) => member.id),
+        });
+        await loadServiceRequests();
+        messageApi.success("Assignment shared with the client for review.");
+        closeAssignModal();
+      } catch (error) {
+        console.error(error);
+        messageApi.error("Could not save the assignment.");
+      } finally {
+        setIsSubmitting(false);
+      }
+
+      return;
+    }
+
     if (!activeThread?.clientId) {
       messageApi.error("Choose a client request before assigning a representative.");
       return;
@@ -512,13 +700,34 @@ function MessagesPanelContent({
     }
   }, [isAssignModalOpen, isScopedClientUser, openAssignModal, selectedThreadId, visibleThreads]);
 
+  useEffect(() => {
+    if (!selectedServiceRequest || isScopedClientUser || isAssignModalOpen) {
+      return;
+    }
+
+    if (selectedServiceRequest.status !== "submitted") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void openServiceRequestAssignModal(selectedServiceRequest);
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    isAssignModalOpen,
+    isScopedClientUser,
+    openServiceRequestAssignModal,
+    selectedServiceRequest,
+  ]);
+
   if (isScopedClientUser) {
     return <ClientMessageCenter />;
   }
 
   return (
     <div className={styles.container}>
-      {contextHolder}
+      {mounted ? contextHolder : null}
 
       {!isScopedClientUser && pendingAdminRequests.length > 0 ? (
         <Alert
@@ -547,7 +756,7 @@ function MessagesPanelContent({
               <div className="space-y-1">
                 {pendingAdminRequests.slice(0, 3).map((request) => (
                   <Typography.Text className="block !text-slate-700" key={request.id}>
-                    {request.createdDate} - {clients.find((client) => client.id === request.clientId)?.name ?? "Unlinked client"} - {request.title}
+                    {request.createdAt.split("T")[0]} - {clients.find((client) => client.id === request.clientId)?.name ?? "Unlinked client"} - {request.title}
                   </Typography.Text>
                 ))}
               </div>
@@ -586,30 +795,39 @@ function MessagesPanelContent({
                         {clients.find((client) => client.id === request.clientId)?.name ??
                           "Unlinked client"}
                       </Tag>
-                      <Tag color="default">{request.createdDate}</Tag>
-                      {request.submittedBy ? (
-                        <Tag color="default">{request.submittedBy}</Tag>
-                      ) : null}
+                      <Tag color="default">{request.createdAt.split("T")[0]}</Tag>
                     </Space>
                   </div>
                   <Space size="small" wrap>
-                    <Button onClick={() => openConversation(request)} type="default">
+                    <Button onClick={() => openServiceRequestConversation(request)} type="default">
                       Open chat
                     </Button>
                     <Button
                       icon={<TeamOutlined />}
-                      onClick={() => openAssignModal(request)}
+                      onClick={() => void openServiceRequestAssignModal(request)}
                       type="primary"
                     >
                       Assign reps
                     </Button>
-                    <Button onClick={() => openReplyComposer(request)}>
+                    <Button
+                      onClick={() =>
+                        openReplyComposer({
+                          category: CLIENT_MESSAGE_CATEGORY,
+                          clientId: request.clientId,
+                          content: request.description,
+                          createdDate: request.createdAt.split("T")[0],
+                          id: request.id,
+                          source: request.source,
+                          title: request.title,
+                        } as INoteItem)
+                      }
+                    >
                       Reply first
                     </Button>
                   </Space>
                 </div>
                 <Typography.Paragraph className={styles.messageText}>
-                  {request.content}
+                  {request.description}
                 </Typography.Paragraph>
                 <Typography.Text className={styles.messageFooter}>
                   Client request from{" "}
@@ -623,7 +841,163 @@ function MessagesPanelContent({
         </Card>
       ) : null}
 
-      {selectedConversationRoot ? (
+      {role === "SalesRep" && pendingRepresentativeAssignments.length > 0 ? (
+        <Card className={styles.card} title="Representative action queue">
+          <div className={styles.requestQueue}>
+            {pendingRepresentativeAssignments.map(({ assignment, request }) => (
+              <div className={styles.messageCard} key={assignment.id}>
+                <div className={styles.messageHeader}>
+                  <div className="space-y-2">
+                    <Typography.Title className="!m-0" level={5}>
+                      {request.title}
+                    </Typography.Title>
+                    <Space size="small" wrap>
+                      <Tag color="purple">Waiting for your acceptance</Tag>
+                      <Tag color="geekblue">
+                        {clients.find((client) => client.id === request.clientId)?.name ??
+                          "Unlinked client"}
+                      </Tag>
+                      <Tag color="default">{assignment.createdAt.split("T")[0]}</Tag>
+                    </Space>
+                  </div>
+                  <Space size="small" wrap>
+                    <Button onClick={() => openServiceRequestConversation(request)} type="default">
+                      Open chat
+                    </Button>
+                    <Button
+                      loading={isSubmitting}
+                      onClick={() => void applyRepresentativeDecision(request, assignment, "accept")}
+                      type="primary"
+                    >
+                      Accept
+                    </Button>
+                    <Button
+                      danger
+                      loading={isSubmitting}
+                      onClick={() => void applyRepresentativeDecision(request, assignment, "reject")}
+                    >
+                      Reject
+                    </Button>
+                  </Space>
+                </div>
+                <Typography.Paragraph className={styles.messageText}>
+                  {request.description}
+                </Typography.Paragraph>
+                <Typography.Text className={styles.messageFooter}>
+                  You were assigned as {assignment.representativeName}. Confirm to activate the
+                  workflow for your side.
+                </Typography.Text>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
+      {selectedServiceRequest ? (
+        <Card className={styles.card} title="Open conversation">
+          <div className={styles.conversationThread}>
+            <div className={styles.selectedConversationHeader}>
+              <div>
+                <Typography.Title className="!mb-0" level={4}>
+                  {selectedServiceRequest.title}
+                </Typography.Title>
+                <Typography.Text className={styles.metricText}>
+                  {clients.find((client) => client.id === selectedServiceRequest.clientId)?.name ??
+                    "Unlinked client"}
+                </Typography.Text>
+              </div>
+              <Space size="small" wrap>
+                {selectedServiceRequest.status === "submitted" ? (
+                  <Button
+                    icon={<TeamOutlined />}
+                    onClick={() => void openServiceRequestAssignModal(selectedServiceRequest)}
+                    type="primary"
+                  >
+                    Assign reps
+                  </Button>
+                ) : null}
+                {selectedRepresentativeAssignment ? (
+                  <>
+                    <Button
+                      loading={isSubmitting}
+                      onClick={() =>
+                        void applyRepresentativeDecision(
+                          selectedServiceRequest,
+                          selectedRepresentativeAssignment,
+                          "accept",
+                        )
+                      }
+                      type="primary"
+                    >
+                      Accept assignment
+                    </Button>
+                    <Button
+                      danger
+                      loading={isSubmitting}
+                      onClick={() =>
+                        void applyRepresentativeDecision(
+                          selectedServiceRequest,
+                          selectedRepresentativeAssignment,
+                          "reject",
+                        )
+                      }
+                    >
+                      Reject assignment
+                    </Button>
+                  </>
+                ) : null}
+                <Button
+                  icon={<SendOutlined />}
+                  onClick={() =>
+                    openReplyComposer({
+                      category: CLIENT_MESSAGE_CATEGORY,
+                      clientId: selectedServiceRequest.clientId,
+                      content: selectedServiceRequest.description,
+                      createdDate: selectedServiceRequest.createdAt.split("T")[0],
+                      id: selectedServiceRequest.id,
+                      source: selectedServiceRequest.source,
+                      title: selectedServiceRequest.title,
+                    } as INoteItem)
+                  }
+                >
+                  Reply
+                </Button>
+              </Space>
+            </div>
+
+            <div className={`${styles.conversationBubble} ${styles.conversationBubbleClient}`}>
+              <Typography.Text className={styles.conversationMeta}>
+                Client · {selectedServiceRequest.createdAt.split("T")[0]} · {selectedServiceRequest.status}
+              </Typography.Text>
+              <Typography.Paragraph className={styles.messageText}>
+                {selectedServiceRequest.description}
+              </Typography.Paragraph>
+            </div>
+
+            {selectedServiceRequestDetail?.events.map((event) => (
+              <div
+                className={`${styles.conversationBubble} ${styles.conversationBubbleWorkspace}`}
+                key={event.id}
+              >
+                <Typography.Text className={styles.conversationMeta}>
+                  {event.actorType} · {event.createdAt.split("T")[0]} · {event.eventType}
+                </Typography.Text>
+                <Typography.Paragraph className={styles.messageText}>
+                  {event.eventType === "service_request_assignments_created"
+                    ? "Assignments were prepared and sent for client review."
+                    : event.eventType === "service_request_review_started"
+                      ? "Admin review started."
+                      : event.eventType === "service_request_client_decision"
+                        ? "The client responded to the proposed assignment."
+                        : event.eventType === "service_request_representative_decision"
+                          ? "A representative responded to the assignment."
+                          : "Workflow event recorded."}
+                </Typography.Paragraph>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : selectedConversationRoot ? (
         <Card className={styles.card} title="Open conversation">
           <div className={styles.conversationThread}>
             <div className={styles.selectedConversationHeader}>
@@ -853,80 +1227,82 @@ function MessagesPanelContent({
         )}
       </Card>
 
-      <Modal
-        forceRender
-        onCancel={closeReplyComposer}
-        onOk={() => replyForm.submit()}
-        okButtonProps={{ loading: isSubmitting }}
-        okText="Send reply"
-        open={isReplyModalOpen}
-        title="Reply from workspace"
-      >
-        <Form className={styles.modalForm} form={replyForm} layout="vertical" onFinish={handleReplySubmit}>
-          <Form.Item
-            label="Client"
-            name="clientId"
-            rules={[{ message: "Choose a client", required: true }]}
+      {mounted ? (
+        <>
+          <Modal
+            onCancel={closeReplyComposer}
+            onOk={() => replyForm.submit()}
+            okButtonProps={{ loading: isSubmitting }}
+            okText="Send reply"
+            open={isReplyModalOpen}
+            title="Reply from workspace"
           >
-            <Select options={clientOptions} placeholder="Select client" />
-          </Form.Item>
-          <Form.Item
-            label="Representative"
-            name="representativeId"
-            rules={[{ message: "Choose a representative", required: true }]}
-          >
-            <Select options={representativeOptions} placeholder="Select representative" />
-          </Form.Item>
-          <Form.Item
-            label="Subject"
-            name="subject"
-            rules={[{ message: "Add a subject", required: true }]}
-          >
-            <Input placeholder="Message subject" />
-          </Form.Item>
-          <Form.Item
-            label="Message"
-            name="content"
-            rules={[{ message: "Enter the message", required: true }]}
-          >
-            <Input.TextArea placeholder="Write the reply" rows={5} />
-          </Form.Item>
-        </Form>
-      </Modal>
+            <Form className={styles.modalForm} form={replyForm} layout="vertical" onFinish={handleReplySubmit}>
+              <Form.Item
+                label="Client"
+                name="clientId"
+                rules={[{ message: "Choose a client", required: true }]}
+              >
+                <Select options={clientOptions} placeholder="Select client" />
+              </Form.Item>
+              <Form.Item
+                label="Representative"
+                name="representativeId"
+                rules={[{ message: "Choose a representative", required: true }]}
+              >
+                <Select options={representativeOptions} placeholder="Select representative" />
+              </Form.Item>
+              <Form.Item
+                label="Subject"
+                name="subject"
+                rules={[{ message: "Add a subject", required: true }]}
+              >
+                <Input placeholder="Message subject" />
+              </Form.Item>
+              <Form.Item
+                label="Message"
+                name="content"
+                rules={[{ message: "Enter the message", required: true }]}
+              >
+                <Input.TextArea placeholder="Write the reply" rows={5} />
+              </Form.Item>
+            </Form>
+          </Modal>
 
-      <Modal
-        forceRender
-        onCancel={closeAssignModal}
-        onOk={() => assignmentForm.submit()}
-        okButtonProps={{ loading: isSubmitting }}
-        okText="Assign reps"
-        open={isAssignModalOpen}
-        title="Assign the right sales reps"
-      >
-        <Form className={styles.modalForm} form={assignmentForm} layout="vertical" onFinish={handleAssignSubmit}>
-          <Form.Item
-            label="Representatives"
-            name="representativeIds"
-            rules={[{ message: "Choose at least one representative", required: true }]}
+          <Modal
+            onCancel={closeAssignModal}
+            onOk={() => assignmentForm.submit()}
+            okButtonProps={{ loading: isSubmitting }}
+            okText="Assign reps"
+            open={isAssignModalOpen}
+            title="Assign the right sales reps"
           >
-            <Select
-              mode="multiple"
-              options={representativeOptions}
-              placeholder="Select one or more representatives"
-            />
-          </Form.Item>
-          <Form.Item
-            label="Client-facing assignment message"
-            name="assignmentMessage"
-            rules={[{ message: "Add the assignment message", required: true }]}
-          >
-            <Input.TextArea
-              placeholder="Explain who is being assigned and why"
-              rows={5}
-            />
-          </Form.Item>
-        </Form>
-      </Modal>
+            <Form className={styles.modalForm} form={assignmentForm} layout="vertical" onFinish={handleAssignSubmit}>
+              <Form.Item
+                label="Representatives"
+                name="representativeIds"
+                rules={[{ message: "Choose at least one representative", required: true }]}
+              >
+                <Select
+                  mode="multiple"
+                  options={representativeOptions}
+                  placeholder="Select one or more representatives"
+                />
+              </Form.Item>
+              <Form.Item
+                label="Client-facing assignment message"
+                name="assignmentMessage"
+                rules={[{ message: "Add the assignment message", required: true }]}
+              >
+                <Input.TextArea
+                  placeholder="Explain who is being assigned and why"
+                  rows={5}
+                />
+              </Form.Item>
+            </Form>
+          </Modal>
+        </>
+      ) : null}
     </div>
   );
 }
