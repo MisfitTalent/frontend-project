@@ -3,6 +3,7 @@
 import { Form, Input, Modal, Select } from "antd";
 import { useEffect } from "react";
 
+import { useMounted } from "@/lib/client/use-mounted";
 import { useClientState } from "@/providers/clientProvider";
 import type { IContact } from "@/providers/salesTypes";
 
@@ -32,9 +33,14 @@ export function ContactForm({
   onSave,
 }: ContactFormProps) {
   const [form] = Form.useForm<ContactFormValues>();
+  const mounted = useMounted();
   const { clients } = useClientState();
 
   useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+
     if (!isOpen) {
       return;
     }
@@ -49,7 +55,7 @@ export function ContactForm({
       clientId: clients[0]?.id,
       isPrimaryContact: false,
     });
-  }, [clients, editingContact, form, isOpen]);
+  }, [clients, editingContact, form, isOpen, mounted]);
 
   const handleFinish = async (values: ContactFormValues) => {
     await onSave({
@@ -63,9 +69,8 @@ export function ContactForm({
     });
   };
 
-  return (
+  return mounted ? (
     <Modal
-      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}
@@ -138,5 +143,5 @@ export function ContactForm({
         </div>
       </Form>
     </Modal>
-  );
+  ) : null;
 }

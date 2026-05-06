@@ -5,6 +5,7 @@ import { DeleteOutlined, DownloadOutlined, PlusOutlined } from "@ant-design/icon
 import { useState } from "react";
 
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import { useMounted } from "@/lib/client/use-mounted";
 import { useAuthState } from "@/providers/authProvider";
 import { type IDocumentItem } from "@/providers/domainSeeds";
 import { useDocumentActions, useDocumentState } from "@/providers/documentProvider";
@@ -18,6 +19,7 @@ export function DocumentsPanel() {
   const { user } = useAuthState();
   const { documents } = useDocumentState();
   const { addDocument, deleteDocument } = useDocumentActions();
+  const mounted = useMounted();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [form] = Form.useForm<DocumentFormValues>();
   const isScopedClient = isClientScopedUser(user?.clientIds);
@@ -84,9 +86,8 @@ export function DocumentsPanel() {
           rowKey="id"
         />
       )}
-      {!isScopedClient ? (
+      {!isScopedClient && mounted ? (
         <Modal
-          forceRender
           onCancel={() => setIsModalOpen(false)}
           onOk={() => form.submit()}
           open={isModalOpen}

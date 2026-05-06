@@ -2,6 +2,7 @@
 
 import { Form, Input, Modal, InputNumber } from "antd";
 import { useEffect } from "react";
+import { useMounted } from "@/lib/client/use-mounted";
 import { useContractActions, useContractState } from "@/providers/contractProvider";
 import { type IRenewal } from "@/providers/salesTypes";
 
@@ -20,10 +21,15 @@ interface RenewalFormValues {
 
 export function RenewalForm({ isOpen, editingId, onClose }: RenewalFormProps) {
   const [form] = Form.useForm();
+  const mounted = useMounted();
   const { renewals } = useContractState();
   const { addRenewal, updateRenewal } = useContractActions();
 
   useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+
     if (editingId) {
       const renewal = renewals.find((r) => r.id === editingId);
       if (renewal) {
@@ -32,7 +38,7 @@ export function RenewalForm({ isOpen, editingId, onClose }: RenewalFormProps) {
     } else {
       form.resetFields();
     }
-  }, [editingId, form, isOpen, renewals]);
+  }, [editingId, form, isOpen, mounted, renewals]);
 
   const calculateDaysUntil = (renewalDate: string) => {
     const today = new Date();
@@ -62,9 +68,8 @@ export function RenewalForm({ isOpen, editingId, onClose }: RenewalFormProps) {
     form.resetFields();
   };
 
-  return (
+  return mounted ? (
     <Modal
-      forceRender
       title={editingId ? "Edit Renewal" : "Add Renewal"}
       open={isOpen}
       onCancel={onClose}
@@ -104,5 +109,5 @@ export function RenewalForm({ isOpen, editingId, onClose }: RenewalFormProps) {
         </Form.Item>
       </Form>
     </Modal>
-  );
+  ) : null;
 }

@@ -14,6 +14,7 @@ import {
   usePricingRequestState,
 } from "@/providers/pricingRequestProvider";
 import { useTeamMembersState } from "@/providers/teamMembersProvider";
+import { useMounted } from "@/lib/client/use-mounted";
 import { AnimatedDashboardTable } from "./animated-dashboard-table";
 
 type PricingRequestFormValues = {
@@ -45,6 +46,7 @@ export function PricingRequestsPanel() {
     updatePricingRequest,
   } = usePricingRequestActions();
   const [messageApi, contextHolder] = message.useMessage();
+  const mounted = useMounted();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -139,7 +141,7 @@ export function PricingRequestsPanel() {
 
   return (
     <div className="space-y-4">
-      {contextHolder}
+      {mounted ? contextHolder : null}
 
       <div className="flex items-center justify-between">
         <div className="space-y-1">
@@ -239,76 +241,77 @@ export function PricingRequestsPanel() {
         rowKey="id"
       />
 
-      <Modal
-        forceRender
-        onCancel={() => {
-          setFormError(null);
-          setIsModalOpen(false);
-          setEditingId(null);
-        }}
-        onOk={() => form.submit()}
-        okButtonProps={{ loading: isSaving }}
-        open={isModalOpen}
-        title={editingId ? "Edit pricing request" : "New pricing request"}
-      >
-        <Form className="pt-4" form={form} layout="vertical" onFinish={handleSave}>
-          <Form.Item
-            label="Opportunity"
-            name="opportunityId"
-            rules={[{ message: "Please select an opportunity", required: true }]}
-          >
-            <Select
-              options={opportunities.map((opportunity) => ({
-                label: opportunity.name || opportunity.title,
-                value: opportunity.id,
-              }))}
-              placeholder="Select the related opportunity"
-            />
-          </Form.Item>
-
-          <Form.Item
-            label="Request title"
-            name="title"
-            rules={[{ message: "Please enter a title", required: true }]}
-          >
-            <Input placeholder="e.g., Discount approval for enterprise scope" />
-          </Form.Item>
-
-          <Form.Item label="Commercial context" name="description">
-            <Input.TextArea
-              placeholder="What pricing review or exception is needed?"
-              rows={4}
-            />
-          </Form.Item>
-
-          <div className="grid gap-4 md:grid-cols-2">
+      {mounted ? (
+        <Modal
+          onCancel={() => {
+            setFormError(null);
+            setIsModalOpen(false);
+            setEditingId(null);
+          }}
+          onOk={() => form.submit()}
+          okButtonProps={{ loading: isSaving }}
+          open={isModalOpen}
+          title={editingId ? "Edit pricing request" : "New pricing request"}
+        >
+          <Form className="pt-4" form={form} layout="vertical" onFinish={handleSave}>
             <Form.Item
-              label="Priority"
-              name="priority"
-              rules={[{ message: "Please select a priority", required: true }]}
+              label="Opportunity"
+              name="opportunityId"
+              rules={[{ message: "Please select an opportunity", required: true }]}
             >
-              <Select options={PRIORITY_OPTIONS} />
-            </Form.Item>
-
-            <Form.Item label="Required by" name="requiredByDate">
-              <Input type="date" />
-            </Form.Item>
-
-            <Form.Item label="Assign to" name="assignedToId">
               <Select
-                allowClear
-                options={teamMembers.map((member) => ({
-                  label: member.name,
-                  value: member.id,
+                options={opportunities.map((opportunity) => ({
+                  label: opportunity.name || opportunity.title,
+                  value: opportunity.id,
                 }))}
-                placeholder="Choose a deal-desk owner"
+                placeholder="Select the related opportunity"
               />
             </Form.Item>
-          </div>
 
-          {formError ? <Alert message={formError} type="error" /> : null}
-        </Form>
-      </Modal>
+            <Form.Item
+              label="Request title"
+              name="title"
+              rules={[{ message: "Please enter a title", required: true }]}
+            >
+              <Input placeholder="e.g., Discount approval for enterprise scope" />
+            </Form.Item>
+
+            <Form.Item label="Commercial context" name="description">
+              <Input.TextArea
+                placeholder="What pricing review or exception is needed?"
+                rows={4}
+              />
+            </Form.Item>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <Form.Item
+                label="Priority"
+                name="priority"
+                rules={[{ message: "Please select a priority", required: true }]}
+              >
+                <Select options={PRIORITY_OPTIONS} />
+              </Form.Item>
+
+              <Form.Item label="Required by" name="requiredByDate">
+                <Input type="date" />
+              </Form.Item>
+
+              <Form.Item label="Assign to" name="assignedToId">
+                <Select
+                  allowClear
+                  options={teamMembers.map((member) => ({
+                    label: member.name,
+                    value: member.id,
+                  }))}
+                  placeholder="Choose a deal-desk owner"
+                />
+              </Form.Item>
+            </div>
+
+            {formError ? <Alert message={formError} type="error" /> : null}
+          </Form>
+        </Modal>
+      ) : null}
     </div>
   );
 }

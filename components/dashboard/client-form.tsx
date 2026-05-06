@@ -3,6 +3,7 @@
 import { Form, Input, InputNumber, Modal, Select } from "antd";
 import { useEffect } from "react";
 
+import { useMounted } from "@/lib/client/use-mounted";
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { OpportunityStage, type IClient } from "@/providers/salesTypes";
 import { getClientFormDraftKey } from "./draft-storage";
@@ -34,9 +35,14 @@ export function ClientForm({
   onSave,
 }: ClientFormProps) {
   const [form] = Form.useForm<ClientFormValues>();
+  const mounted = useMounted();
   const draftKey = getClientFormDraftKey(editingClient?.id);
 
   useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+
     const savedDraft = readSessionDraft<Partial<ClientFormValues>>(draftKey);
 
     if (editingClient) {
@@ -55,16 +61,15 @@ export function ClientForm({
     if (savedDraft) {
       form.setFieldsValue(savedDraft);
     }
-  }, [draftKey, editingClient, form, isOpen]);
+  }, [draftKey, editingClient, form, isOpen, mounted]);
 
   const handleFinish = async (values: ClientFormValues) => {
     await onSave(values);
     clearSessionDraft(draftKey);
   };
 
-  return (
+  return mounted ? (
     <Modal
-      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}
@@ -163,5 +168,5 @@ export function ClientForm({
         ) : null}
       </Form>
     </Modal>
-  );
+  ) : null;
 }

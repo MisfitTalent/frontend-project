@@ -5,6 +5,7 @@ import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { useMemo, useState } from "react";
 
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import { useMounted } from "@/lib/client/use-mounted";
 import { useAuthState } from "@/providers/authProvider";
 import { OpportunityStage, PROPOSAL_STATUS_COLORS, ProposalStatus, type IProposal } from "@/providers/salesTypes";
 import { formatCurrency } from "@/providers/salesSelectors";
@@ -42,6 +43,7 @@ export function ProposalsPanel() {
   const { updateOpportunity } = useOpportunityActions();
   const { deleteProposal, transitionProposal } = useProposalActions();
   const [messageApi, contextHolder] = message.useMessage();
+  const mounted = useMounted();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [rejectingProposalId, setRejectingProposalId] = useState<string | null>(null);
@@ -208,7 +210,7 @@ export function ProposalsPanel() {
 
   return (
     <div className="space-y-6">
-      {contextHolder}
+      {mounted ? contextHolder : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">
@@ -292,40 +294,42 @@ export function ProposalsPanel() {
         />
       ) : null}
 
-      <Modal
-        onCancel={() => {
-          setRejectReason("");
-          setRejectingProposalId(null);
-        }}
-        onOk={() => {
-          if (!rejectingProposalId) {
-            return;
-          }
+      {mounted ? (
+        <Modal
+          onCancel={() => {
+            setRejectReason("");
+            setRejectingProposalId(null);
+          }}
+          onOk={() => {
+            if (!rejectingProposalId) {
+              return;
+            }
 
-          void handleTransition(rejectingProposalId, ProposalStatus.Rejected, rejectReason).finally(
-            () => {
-              setRejectReason("");
-              setRejectingProposalId(null);
-            },
-          );
-        }}
-        okButtonProps={{ danger: true }}
-        okText="Reject proposal"
-        open={!isScopedClient && Boolean(rejectingProposalId)}
-        title="Reject proposal"
-      >
-        <div className="space-y-3 pt-2">
-          <Typography.Text className="!text-slate-500">
-            Capture a reason so the rejection is visible in the proposal history.
-          </Typography.Text>
-          <Input.TextArea
-            onChange={(event) => setRejectReason(event.target.value)}
-            placeholder="Why was this proposal rejected?"
-            rows={4}
-            value={rejectReason}
-          />
-        </div>
-      </Modal>
+            void handleTransition(rejectingProposalId, ProposalStatus.Rejected, rejectReason).finally(
+              () => {
+                setRejectReason("");
+                setRejectingProposalId(null);
+              },
+            );
+          }}
+          okButtonProps={{ danger: true }}
+          okText="Reject proposal"
+          open={!isScopedClient && Boolean(rejectingProposalId)}
+          title="Reject proposal"
+        >
+          <div className="space-y-3 pt-2">
+            <Typography.Text className="!text-slate-500">
+              Capture a reason so the rejection is visible in the proposal history.
+            </Typography.Text>
+            <Input.TextArea
+              onChange={(event) => setRejectReason(event.target.value)}
+              placeholder="Why was this proposal rejected?"
+              rows={4}
+              value={rejectReason}
+            />
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }
