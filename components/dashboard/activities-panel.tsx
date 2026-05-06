@@ -129,7 +129,7 @@ export function ActivitiesPanel() {
         rowKey="id"
       />
 
-      {!isScopedClient ? (
+      {!isScopedClient && (isModalOpen || editingId !== null) ? (
         <ActivityForm
           editingId={editingId}
           isOpen={isModalOpen || editingId !== null}
