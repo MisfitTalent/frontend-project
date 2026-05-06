@@ -16,7 +16,7 @@ const nextCli = path.join(
 );
 
 async function main() {
-  if (command === "dev" || command === "build") {
+  if (command === "build") {
     await rm(absoluteDistDir, { force: true, recursive: true });
   }
 

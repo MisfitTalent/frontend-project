@@ -52,8 +52,9 @@ export default function ClientProvider({
     () => createProviderCacheKey("clients", user?.tenantId, user?.userId),
     [user?.tenantId, user?.userId],
   );
+  const cachedClients = useMemo(() => readProviderCache<IClient[]>(cacheKey), [cacheKey]);
   const [clients, setClients] = useState<IClient[]>(
-    () => readProviderCache<IClient[]>(cacheKey) ?? [],
+    () => cachedClients ?? [],
   );
 
   const loadClients = useCallback(async () => {
@@ -101,6 +102,12 @@ export default function ClientProvider({
       };
     }
 
+    if (cachedClients && cachedClients.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     const timer = window.setTimeout(() => {
       void loadClients().catch((error) => {
         console.error(error);
@@ -111,7 +118,7 @@ export default function ClientProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [cacheKey, isAuthenticated, isDemoMode, loadClients]);
+  }, [cacheKey, cachedClients, isAuthenticated, isDemoMode, loadClients]);
 
   return (
     <ClientStateContext.Provider value={{ clients: isAuthenticated ? clients : [] }}>

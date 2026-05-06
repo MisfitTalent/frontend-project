@@ -77,6 +77,7 @@ export function DocumentsPanel() {
         />
       )}
       <Modal
+        forceRender
         onCancel={() => setIsModalOpen(false)}
         onOk={() => form.submit()}
         open={isModalOpen}

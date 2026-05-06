@@ -182,6 +182,7 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
 
   return (
     <Modal
+      forceRender
       onCancel={() => {
         setFormError(null);
         onClose();

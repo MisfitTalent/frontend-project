@@ -2,6 +2,10 @@
 
 :root {
   --background: #eef3f8;
+  --dashboard-accent: #f28c28;
+  --dashboard-accent-strong: #ff9f43;
+  --dashboard-header-height: 92px;
+  --dashboard-shell-surface: #132744;
   --foreground: #1f2937;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -28,7 +32,10 @@ body {
 }
 
 .dashboard-sidebar {
+  background: var(--dashboard-shell-surface);
+  border-right: 0;
   inset: 0 auto 0 0;
+  overflow: hidden;
   position: fixed;
   transform: translateX(0);
   transition:
@@ -59,21 +66,83 @@ body {
 }
 
 .dashboard-main {
+  background: #edf2f8;
+  margin-left: 300px;
   min-height: 100vh;
-  padding-left: 300px;
-  transition: padding-left 280ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: margin-left 280ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .dashboard-main--expanded {
-  padding-left: 0;
+  margin-left: 0;
 }
 
 .dashboard-sidebar .ant-menu {
   color: rgba(226, 232, 240, 0.88);
 }
 
+.dashboard-sidebar-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+}
+
+.dashboard-sidebar-brand {
+  align-items: center;
+  background: var(--dashboard-shell-surface);
+  display: flex;
+  min-height: var(--dashboard-header-height);
+  padding: 1.2rem 1.25rem 1.1rem;
+  position: relative;
+  z-index: 1;
+}
+
+.dashboard-sidebar-brand:hover {
+  background: rgba(242, 140, 40, 0.04);
+}
+
 .dashboard-sidebar .ant-menu-inline {
   border-inline-end: 0 !important;
+}
+
+.dashboard-sidebar-menu-shell {
+  overflow: hidden;
+  padding-right: 0.2rem;
+  position: relative;
+}
+
+.dashboard-sidebar-scroll {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  padding-right: 0.85rem !important;
+  scrollbar-color: rgba(231, 237, 244, 0.72) rgba(255, 255, 255, 0.02);
+  scrollbar-width: thin;
+}
+
+.dashboard-sidebar-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.dashboard-sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 9999px;
+  margin-block: 0.7rem;
+}
+
+.dashboard-sidebar-scroll::-webkit-scrollbar-thumb {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(231, 237, 244, 0.82)),
+    #e7edf4;
+  border: 2px solid rgba(19, 39, 68, 0.92);
+  border-radius: 9999px;
+  min-height: 3rem;
+}
+
+.dashboard-sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 1), rgba(236, 241, 247, 0.9)),
+    #eef3f8;
 }
 
 .dashboard-sidebar .ant-menu-item,
@@ -91,8 +160,8 @@ body {
 }
 
 .dashboard-sidebar .ant-menu-item-selected {
-  background: linear-gradient(135deg, rgba(242, 140, 40, 0.95), rgba(247, 178, 103, 0.92)) !important;
-  box-shadow: 0 10px 24px rgba(242, 140, 40, 0.28);
+  background: linear-gradient(135deg, rgba(242, 140, 40, 0.95), rgba(255, 179, 102, 0.94)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 244, 234, 0.18);
   color: #fff !important;
   font-weight: 600;
 }
@@ -106,8 +175,8 @@ body {
 .dashboard-sidebar .ant-menu-item-active,
 .dashboard-sidebar .ant-menu-item:hover,
 .dashboard-sidebar .ant-menu-submenu-title:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
-  color: #fff !important;
+  background: linear-gradient(135deg, rgba(242, 140, 40, 0.2), rgba(255, 159, 67, 0.12)) !important;
+  color: #fff4ea !important;
 }
 
 .dashboard-sidebar .ant-menu-item-active .ant-menu-item-icon,
@@ -116,7 +185,100 @@ body {
 .dashboard-sidebar .ant-menu-item:hover .ant-menu-title-content a,
 .dashboard-sidebar .ant-menu-submenu-title:hover .ant-menu-item-icon,
 .dashboard-sidebar .ant-menu-submenu-title:hover .ant-menu-title-content {
-  color: #fff !important;
+  color: #ffd4ad !important;
+}
+
+.dashboard-sidebar-footer {
+  background: var(--dashboard-shell-surface);
+  margin-top: auto;
+  padding: 1rem 1.25rem 1.25rem;
+  position: relative;
+  z-index: 1;
+}
+
+.dashboard-header {
+  background: var(--dashboard-shell-surface);
+  min-height: var(--dashboard-header-height);
+  padding-inline: 1rem 1.5rem;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.dashboard-header-toggle {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 9999px !important;
+  display: inline-flex !important;
+  height: 2.75rem !important;
+  justify-content: center;
+  margin-left: -0.2rem;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+  width: 2.75rem !important;
+}
+
+.dashboard-header-toggle:hover {
+  background: rgba(242, 140, 40, 0.18) !important;
+  border-color: rgba(255, 179, 102, 0.35) !important;
+  color: #fff7ed !important;
+  transform: translateY(-1px);
+}
+
+.dashboard-header-home-button.ant-btn,
+.dashboard-header-home-button.ant-btn-default {
+  align-items: center;
+  background: linear-gradient(135deg, rgba(255, 244, 234, 0.18), rgba(242, 140, 40, 0.16));
+  border: 1px solid rgba(255, 179, 102, 0.38);
+  border-radius: 9999px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: #fff4ea;
+  display: inline-flex;
+  font-weight: 600;
+  font-size: 0.75rem;
+  height: 1.55rem;
+  padding-inline: 0.7rem;
+}
+
+.dashboard-header-home-button.ant-btn:hover,
+.dashboard-header-home-button.ant-btn-default:hover {
+  background: linear-gradient(135deg, rgba(255, 179, 102, 0.26), rgba(242, 140, 40, 0.28));
+  border-color: rgba(255, 179, 102, 0.55);
+  color: #ffffff;
+}
+
+.dashboard-header-page-tag {
+  border-radius: 9999px;
+  font-weight: 600;
+  padding-inline: 0.7rem;
+}
+
+.dashboard-priority-queue-row {
+  margin-top: 0.85rem;
+}
+
+.dashboard-content {
+  background: linear-gradient(180deg, #edf2f8 0%, #f4f7fb 100%);
+}
+
+.dashboard-content .ant-card {
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.85) inset,
+    0 14px 28px rgba(15, 23, 42, 0.06);
+}
+
+.dashboard-content .ant-card .ant-card-head {
+  border-bottom-color: rgba(226, 232, 240, 0.9);
+}
+
+.dashboard-content .ant-card .ant-card-body {
+  position: relative;
 }
 
 .dashboard-table-card {
@@ -475,12 +637,17 @@ body {
 @media (max-width: 1023px) {
   .dashboard-main,
   .dashboard-main--expanded {
-    padding-left: 0;
+    margin-left: 0;
   }
 
   .dashboard-sidebar {
     box-shadow: 0 28px 80px rgba(15, 23, 42, 0.28);
   }
+
+  .dashboard-header {
+    padding-inline: 0.85rem 1rem;
+  }
+
   .dashboard-kanban-lane-body {
     height: 26rem;
   }

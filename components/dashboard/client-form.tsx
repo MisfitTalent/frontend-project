@@ -5,15 +5,9 @@ import { useEffect } from "react";
 
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { OpportunityStage, type IClient } from "@/providers/salesTypes";
-import { useContactState } from "@/providers/contactProvider";
 import { getClientFormDraftKey } from "./draft-storage";
 
 type ClientFormValues = {
-  contactEmail?: string;
-  contactFirstName?: string;
-  contactLastName?: string;
-  contactPhoneNumber?: string;
-  contactPosition?: string;
   expectedCloseDate?: string;
   industry: string;
   name: string;
@@ -40,24 +34,13 @@ export function ClientForm({
   onSave,
 }: ClientFormProps) {
   const [form] = Form.useForm<ClientFormValues>();
-  const { contacts } = useContactState();
   const draftKey = getClientFormDraftKey(editingClient?.id);
 
   useEffect(() => {
     const savedDraft = readSessionDraft<Partial<ClientFormValues>>(draftKey);
 
     if (editingClient) {
-      const primaryContact = contacts.find(
-        (contact) =>
-          contact.clientId === editingClient.id && contact.isPrimaryContact,
-      );
-
       form.setFieldsValue({
-        contactEmail: primaryContact?.email,
-        contactFirstName: primaryContact?.firstName,
-        contactLastName: primaryContact?.lastName,
-        contactPhoneNumber: primaryContact?.phoneNumber,
-        contactPosition: primaryContact?.position,
         industry: editingClient.industry,
         name: editingClient.name,
         segment: editingClient.segment,
@@ -72,7 +55,7 @@ export function ClientForm({
     if (savedDraft) {
       form.setFieldsValue(savedDraft);
     }
-  }, [contacts, draftKey, editingClient, form, isOpen]);
+  }, [draftKey, editingClient, form, isOpen]);
 
   const handleFinish = async (values: ClientFormValues) => {
     await onSave(values);
@@ -81,6 +64,7 @@ export function ClientForm({
 
   return (
     <Modal
+      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}
@@ -123,30 +107,6 @@ export function ClientForm({
               ]}
               placeholder="Choose segment"
             />
-          </Form.Item>
-
-          <Form.Item label="Primary contact role" name="contactPosition">
-            <Input placeholder="e.g., Operations Director" />
-          </Form.Item>
-
-          <Form.Item label="Primary contact first name" name="contactFirstName">
-            <Input placeholder="First name" />
-          </Form.Item>
-
-          <Form.Item label="Primary contact last name" name="contactLastName">
-            <Input placeholder="Last name" />
-          </Form.Item>
-
-          <Form.Item
-            label="Primary contact email"
-            name="contactEmail"
-            rules={[{ type: "email" }]}
-          >
-            <Input placeholder="contact@company.com" />
-          </Form.Item>
-
-          <Form.Item label="Primary contact phone" name="contactPhoneNumber">
-            <Input placeholder="+27 11 000 0000" />
           </Form.Item>
         </div>
 

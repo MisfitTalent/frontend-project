@@ -1,3 +1,5 @@
+"use client";
+
 import { createContext } from "react";
 
 import type { IProposal, ProposalStatus } from "@/providers/salesTypes";

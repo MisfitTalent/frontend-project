@@ -1,13 +1,53 @@
 "use client";
 
 import { Card, Col, Row, Statistic, Tag, Typography } from "antd";
+import dynamic from "next/dynamic";
+import Link from "next/link";
 
 import { getOpenPipelineValue, getOpportunityInsights } from "@/providers/salesSelectors";
 import { useDashboardState } from "@/providers/dashboardProvider";
-import { OpportunityPriorityQueue } from "./opportunity-priority-queue";
-import { PriorityAdvisor } from "./priority-advisor";
-import { ReassignmentSimulator } from "./reassignment-simulator";
-import { TeamCapacityPanel } from "./team-capacity-panel";
+
+const OpportunityPriorityQueue = dynamic(
+  () =>
+    import("./opportunity-priority-queue").then((mod) => mod.OpportunityPriorityQueue),
+  {
+    loading: () => <DashboardPanelLoading title="Priority queue" />,
+  },
+);
+
+const PriorityAdvisor = dynamic(
+  () => import("./priority-advisor").then((mod) => mod.PriorityAdvisor),
+  {
+    loading: () => <DashboardPanelLoading title="Sales advisor" />,
+  },
+);
+
+const ReassignmentSimulator = dynamic(
+  () => import("./reassignment-simulator").then((mod) => mod.ReassignmentSimulator),
+  {
+    loading: () => <DashboardPanelLoading title="Reassignment simulator" />,
+  },
+);
+
+const TeamCapacityPanel = dynamic(
+  () => import("./team-capacity-panel").then((mod) => mod.TeamCapacityPanel),
+  {
+    loading: () => <DashboardPanelLoading title="Available team capacity" />,
+  },
+);
+
+function DashboardPanelLoading({ title }: Readonly<{ title: string }>) {
+  return (
+    <Card className="h-full border-slate-200" title={title}>
+      <div className="space-y-3">
+        <div className="h-4 w-1/3 rounded bg-slate-200" />
+        <div className="h-4 w-full rounded bg-slate-100" />
+        <div className="h-4 w-5/6 rounded bg-slate-100" />
+        <div className="h-4 w-2/3 rounded bg-slate-100" />
+      </div>
+    </Card>
+  );
+}
 
 export const DashboardMetrics = () => {
   const { salesData, automationFeed } = useDashboardState();
@@ -28,42 +68,50 @@ export const DashboardMetrics = () => {
     <div className="space-y-6">
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} xl={6}>
-          <Card className="h-full border-slate-200">
-            <Statistic
-              prefix="R "
-              precision={0}
-              title="Pipeline value"
-              value={pipelineValue}
-            />
-            <Typography.Text className="!text-slate-500">
-              All live opportunities in one total.
-            </Typography.Text>
-          </Card>
+          <Link href="/dashboard/opportunities">
+            <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
+              <Statistic
+                prefix="R "
+                precision={0}
+                title="Pipeline value"
+                value={pipelineValue}
+              />
+              <Typography.Text className="!text-slate-500">
+                All live opportunities in one total.
+              </Typography.Text>
+            </Card>
+          </Link>
         </Col>
         <Col xs={24} sm={12} xl={6}>
-          <Card className="h-full border-slate-200">
-            <Statistic title="Open opportunities" value={insights.length} />
-            <Typography.Text className="!text-slate-500">
-              Plain-language pipeline from New to Won.
-            </Typography.Text>
-          </Card>
+          <Link href="/dashboard/opportunities">
+            <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
+              <Statistic title="Open opportunities" value={insights.length} />
+              <Typography.Text className="!text-slate-500">
+                Plain-language pipeline from New to Won.
+              </Typography.Text>
+            </Card>
+          </Link>
         </Col>
         <Col xs={24} sm={12} xl={6}>
-          <Card className="h-full border-slate-200">
-            <Statistic title="Proposal workload" value={submittedProposals} />
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Tag color="#eab308">{draftProposals} draft</Tag>
-              <Tag color="#2563eb">{submittedProposals} submitted</Tag>
-            </div>
-          </Card>
+          <Link href="/dashboard/proposals">
+            <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
+              <Statistic title="Proposal workload" value={submittedProposals} />
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Tag color="#eab308">{draftProposals} draft</Tag>
+                <Tag color="#2563eb">{submittedProposals} submitted</Tag>
+              </div>
+            </Card>
+          </Link>
         </Col>
         <Col xs={24} sm={12} xl={6}>
-          <Card className="h-full border-slate-200">
-            <Statistic title="Follow-ups due" value={activeFollowUps} />
-            <Typography.Text className="!text-slate-500">
-              Generated and tracked against each deal.
-            </Typography.Text>
-          </Card>
+          <Link href="/dashboard/activities">
+            <Card className="h-full border-slate-200 shadow-sm transition-transform hover:-translate-y-0.5">
+              <Statistic title="Follow-ups due" value={activeFollowUps} />
+              <Typography.Text className="!text-slate-500">
+                Generated and tracked against each deal.
+              </Typography.Text>
+            </Card>
+          </Link>
         </Col>
       </Row>
 
@@ -103,7 +151,7 @@ export const DashboardMetrics = () => {
         </Card>
       ) : null}
 
-      <Row gutter={[16, 16]}>
+      <Row className="dashboard-priority-queue-row" gutter={[16, 16]}>
         <Col className="min-w-0" xs={24} xxl={14}>
           <OpportunityPriorityQueue />
         </Col>
