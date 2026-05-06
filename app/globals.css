@@ -239,8 +239,9 @@ body {
   color: #fff4ea;
   display: inline-flex;
   font-weight: 600;
-  height: 2.3rem;
-  padding-inline: 0.95rem;
+  font-size: 0.75rem;
+  height: 1.55rem;
+  padding-inline: 0.7rem;
 }
 
 .dashboard-header-home-button.ant-btn:hover,
