@@ -2,6 +2,7 @@
 
 import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import {
   backendRequest,
   coerceItems,
@@ -38,6 +39,8 @@ export default function NoteProvider({
 }: Readonly<{ children: React.ReactNode }>) {
   const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
+  const isScopedClient = isClientScopedUser(user?.clientIds);
   const cacheKey = useMemo(
     () => createProviderCacheKey("notes", user?.tenantId, user?.userId),
     [user?.tenantId, user?.userId],
@@ -47,10 +50,18 @@ export default function NoteProvider({
     () => cachedNotes ?? [],
   );
 
+  const scopeNotes = useCallback(
+    (items: INoteItem[]) =>
+      isScopedClient
+        ? items.filter((note) => Boolean(note.clientId) && scopedClientIds.has(note.clientId as string))
+        : items,
+    [isScopedClient, scopedClientIds],
+  );
+
   const loadNotes = useCallback(async () => {
     const payload = await backendRequest<{ items?: INoteItem[] } | INoteItem[]>("/api/Notes");
-    setNotes(writeProviderCache(cacheKey, coerceItems(payload)));
-  }, [cacheKey]);
+    setNotes(writeProviderCache(cacheKey, scopeNotes(coerceItems(payload))));
+  }, [cacheKey, scopeNotes]);
 
   useEffect(() => {
     writeProviderCache(cacheKey, notes);
@@ -69,7 +80,7 @@ export default function NoteProvider({
           console.error(error);
 
           if (isActive) {
-            setNotes(writeProviderCache(cacheKey, initialNotes()));
+            setNotes(writeProviderCache(cacheKey, scopeNotes(initialNotes())));
           }
         });
       }, 0);
@@ -105,7 +116,7 @@ export default function NoteProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [cacheKey, cachedNotes, isAuthenticated, isDemoMode, loadNotes]);
+  }, [cacheKey, cachedNotes, isAuthenticated, isDemoMode, loadNotes, scopeNotes]);
 
   return (
     <NoteStateContext.Provider value={{ notes: isAuthenticated ? notes : [] }}>

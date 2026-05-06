@@ -1,6 +1,6 @@
 "use client";
 
-import { MailOutlined, SendOutlined } from "@ant-design/icons";
+import { MailOutlined, SendOutlined, TeamOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import {
   Button,
@@ -26,6 +26,7 @@ import { getPrimaryUserRole } from "@/lib/auth/roles";
 import {
   CLIENT_MESSAGE_CATEGORY,
   getScopedMessageThreads,
+  isClientRequestThread,
   prioritizeMessageThread,
 } from "@/lib/dashboard/message-threads";
 import { useAuthState } from "@/providers/authProvider";
@@ -43,8 +44,16 @@ type MessageFormValues = {
   subject: string;
 };
 
+type AssignmentFormValues = {
+  assignmentMessage: string;
+  representativeIds: string[];
+};
+
 const createMessageId = () =>
   `workspace-message-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+const createAssignmentId = () =>
+  `team-assignment-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
 const clientFacingRole = (role: string) =>
   [
@@ -84,9 +93,12 @@ function MessagesPanelContent({
     initialRepresentativeId,
   );
   const [selectedSource, setSelectedSource] = useState<string>(initialSource);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isReplyModalOpen, setIsReplyModalOpen] = useState(false);
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
   const [activeThread, setActiveThread] = useState<INoteItem | null>(null);
-  const [form] = Form.useForm<MessageFormValues>();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [replyForm] = Form.useForm<MessageFormValues>();
+  const [assignmentForm] = Form.useForm<AssignmentFormValues>();
 
   const isScopedClientUser = isClientScopedUser(user?.clientIds);
 
@@ -143,40 +155,34 @@ function MessagesPanelContent({
     ? selectedSource
     : "all";
 
-  const visibleThreads = useMemo(
-    () => {
-      const filteredThreads = messageThreads.filter((note) => {
-        if (
-          resolvedSelectedClientId !== "all" &&
-          note.clientId !== resolvedSelectedClientId
-        ) {
-          return false;
-        }
+  const visibleThreads = useMemo(() => {
+    const filteredThreads = messageThreads.filter((note) => {
+      if (resolvedSelectedClientId !== "all" && note.clientId !== resolvedSelectedClientId) {
+        return false;
+      }
 
-        if (
-          resolvedSelectedRepresentativeId !== "all" &&
-          note.representativeId !== resolvedSelectedRepresentativeId
-        ) {
-          return false;
-        }
+      if (
+        resolvedSelectedRepresentativeId !== "all" &&
+        note.representativeId !== resolvedSelectedRepresentativeId
+      ) {
+        return false;
+      }
 
-        if (resolvedSelectedSource !== "all" && note.source !== resolvedSelectedSource) {
-          return false;
-        }
+      if (resolvedSelectedSource !== "all" && note.source !== resolvedSelectedSource) {
+        return false;
+      }
 
-        return true;
-      });
+      return true;
+    });
 
-      return prioritizeMessageThread(filteredThreads, selectedThreadId);
-    },
-    [
-      messageThreads,
-      resolvedSelectedClientId,
-      resolvedSelectedRepresentativeId,
-      resolvedSelectedSource,
-      selectedThreadId,
-    ],
-  );
+    return prioritizeMessageThread(filteredThreads, selectedThreadId);
+  }, [
+    messageThreads,
+    resolvedSelectedClientId,
+    resolvedSelectedRepresentativeId,
+    resolvedSelectedSource,
+    selectedThreadId,
+  ]);
 
   const clientOptions = useMemo(
     () =>
@@ -187,8 +193,7 @@ function MessagesPanelContent({
     [clients],
   );
   const visibleClientOptions = useMemo(
-    () =>
-      clientOptions.filter((option) => scopedClientIds.includes(option.value)),
+    () => clientOptions.filter((option) => scopedClientIds.includes(option.value)),
     [clientOptions, scopedClientIds],
   );
   const visibleRepresentativeOptions = useMemo(
@@ -199,25 +204,25 @@ function MessagesPanelContent({
     [representativeOptions, scopedRepresentativeIds],
   );
 
-  const unacknowledgedCount = messageThreads.filter(
-    (note) => note.source === "client_portal" && note.status !== "Acknowledged",
+  const pendingAdminReviewCount = messageThreads.filter(
+    (note) => isClientRequestThread(note) && note.status === "Pending admin review",
+  ).length;
+  const pendingClientResponseCount = messageThreads.filter(
+    (note) => note.requestType === "team_assignment" && note.status === "Pending client response",
   ).length;
   const outboundCount = messageThreads.filter((note) => note.source === "workspace").length;
   const uniqueClientCount = new Set(
     messageThreads.map((note) => note.clientId).filter(Boolean),
   ).size;
-  const activeRepCount = new Set(
-    messageThreads.map((note) => note.representativeId).filter(Boolean),
-  ).size;
 
-  const openComposer = (note?: INoteItem) => {
+  const openReplyComposer = (note?: INoteItem) => {
     const accountLeadId =
       note?.clientId &&
       opportunities.find(
         (opportunity) => opportunity.clientId === note.clientId && opportunity.ownerId,
       )?.ownerId;
 
-    form.setFieldsValue({
+    replyForm.setFieldsValue({
       clientId: note?.clientId ?? clients[0]?.id ?? "",
       content: note ? `Hi, regarding "${note.title}"...` : "",
       representativeId:
@@ -229,16 +234,16 @@ function MessagesPanelContent({
       subject: note ? `Re: ${note.title}` : "Client follow-up",
     });
     setActiveThread(note ?? null);
-    setIsModalOpen(true);
+    setIsReplyModalOpen(true);
   };
 
-  const closeComposer = () => {
-    setIsModalOpen(false);
+  const closeReplyComposer = () => {
+    setIsReplyModalOpen(false);
     setActiveThread(null);
-    form.resetFields();
+    replyForm.resetFields();
   };
 
-  const handleSubmit = (values: MessageFormValues) => {
+  const handleReplySubmit = async (values: MessageFormValues) => {
     const representative = teamMembers.find((member) => member.id === values.representativeId);
 
     if (!representative) {
@@ -246,29 +251,107 @@ function MessagesPanelContent({
       return;
     }
 
-    addNote({
-      category: CLIENT_MESSAGE_CATEGORY,
-      clientId: values.clientId,
-      content: values.content.trim(),
-      createdDate: new Date().toISOString().split("T")[0],
-      id: createMessageId(),
-      kind: "client_message",
-      representativeId: representative.id,
-      representativeName: representative.name,
-      source: "workspace",
-      status: "Acknowledged",
-      submittedBy: user?.email ?? undefined,
-      title: values.subject.trim(),
-    });
+    setIsSubmitting(true);
 
-    if (activeThread && activeThread.status !== "Acknowledged") {
-      updateNote(activeThread.id, {
+    try {
+      await addNote({
+        category: CLIENT_MESSAGE_CATEGORY,
+        clientId: values.clientId,
+        content: values.content.trim(),
+        createdDate: new Date().toISOString().split("T")[0],
+        id: createMessageId(),
+        kind: "client_message",
+        representativeId: representative.id,
+        representativeName: representative.name,
+        source: "workspace",
         status: "Acknowledged",
+        submittedBy: user?.email ?? undefined,
+        title: values.subject.trim(),
       });
+
+      if (activeThread && activeThread.status !== "Acknowledged") {
+        await updateNote(activeThread.id, {
+          status: "Acknowledged",
+        });
+      }
+
+      messageApi.success("Message recorded in the workspace.");
+      closeReplyComposer();
+    } catch (error) {
+      console.error(error);
+      messageApi.error("Could not save the workspace reply.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const openAssignModal = (note: INoteItem) => {
+    assignmentForm.setFieldsValue({
+      assignmentMessage: `We are assigning the right sales reps to support "${note.title}".`,
+      representativeIds: [],
+    });
+    setActiveThread(note);
+    setIsAssignModalOpen(true);
+  };
+
+  const closeAssignModal = () => {
+    setIsAssignModalOpen(false);
+    setActiveThread(null);
+    assignmentForm.resetFields();
+  };
+
+  const handleAssignSubmit = async (values: AssignmentFormValues) => {
+    if (!activeThread?.clientId) {
+      messageApi.error("Choose a client request before assigning a representative.");
+      return;
     }
 
-    messageApi.success("Message recorded in the workspace.");
-    closeComposer();
+    const selectedRepresentatives = teamMembers.filter((member) =>
+      values.representativeIds.includes(member.id),
+    );
+
+    if (selectedRepresentatives.length === 0) {
+      messageApi.error("Select at least one representative.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      for (const representative of selectedRepresentatives) {
+        await addNote({
+          assignedByUserId: user?.userId ?? undefined,
+          assignedByUserName:
+            `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim() || user?.email || undefined,
+          category: CLIENT_MESSAGE_CATEGORY,
+          clientId: activeThread.clientId,
+          content: values.assignmentMessage.trim(),
+          createdDate: new Date().toISOString().split("T")[0],
+          id: createAssignmentId(),
+          kind: "team_assignment",
+          linkedRequestId: activeThread.id,
+          representativeId: representative.id,
+          representativeName: representative.name,
+          requestType: "team_assignment",
+          source: "workspace",
+          status: "Pending client response",
+          submittedBy: user?.email ?? undefined,
+          title: `Assigned ${representative.name} to ${activeThread.title}`,
+        });
+      }
+
+      await updateNote(activeThread.id, {
+        status: "Acknowledged",
+      });
+
+      messageApi.success("Assignment shared with the client for review.");
+      closeAssignModal();
+    } catch (error) {
+      console.error(error);
+      messageApi.error("Could not save the assignment.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const columns: ColumnsType<INoteItem> = [
@@ -303,7 +386,21 @@ function MessagesPanelContent({
     {
       key: "status",
       render: (_value, record) => (
-        <Tag color={record.status === "Acknowledged" ? "green" : "blue"}>
+        <Tag
+          color={
+            record.status === "Accepted"
+              ? "green"
+              : record.status === "Rejected"
+                ? "red"
+                : record.status === "Pending admin review"
+                  ? "orange"
+                  : record.status === "Pending client response"
+                    ? "gold"
+                    : record.status === "Acknowledged"
+                      ? "green"
+                      : "blue"
+          }
+        >
           {record.status ?? "Sent"}
         </Tag>
       ),
@@ -316,11 +413,16 @@ function MessagesPanelContent({
     },
     {
       key: "actions",
-      render: (_value, record) => (
-        <Button icon={<SendOutlined />} onClick={() => openComposer(record)}>
-          Reply
-        </Button>
-      ),
+      render: (_value, record) =>
+        isClientRequestThread(record) && record.status === "Pending admin review" ? (
+          <Button icon={<TeamOutlined />} onClick={() => openAssignModal(record)} type="primary">
+            Assign reps
+          </Button>
+        ) : (
+          <Button icon={<SendOutlined />} onClick={() => openReplyComposer(record)}>
+            Reply
+          </Button>
+        ),
       title: "Actions",
     },
   ];
@@ -344,12 +446,21 @@ function MessagesPanelContent({
           </Typography.Text>
         </Card>
         <Card className={styles.card}>
-          <Typography.Text className={styles.metricLabel}>Waiting on response</Typography.Text>
+          <Typography.Text className={styles.metricLabel}>Needs assignment</Typography.Text>
           <Typography.Title className={styles.metricTitle} level={3}>
-            {unacknowledgedCount}
+            {pendingAdminReviewCount}
           </Typography.Title>
           <Typography.Text className={styles.metricText}>
-            Incoming client messages not yet acknowledged.
+            Client requests waiting for admin assignment.
+          </Typography.Text>
+        </Card>
+        <Card className={styles.card}>
+          <Typography.Text className={styles.metricLabel}>Waiting on client</Typography.Text>
+          <Typography.Title className={styles.metricTitle} level={3}>
+            {pendingClientResponseCount}
+          </Typography.Title>
+          <Typography.Text className={styles.metricText}>
+            Assigned reps still awaiting client acceptance.
           </Typography.Text>
         </Card>
         <Card className={styles.card}>
@@ -358,16 +469,7 @@ function MessagesPanelContent({
             {outboundCount}
           </Typography.Title>
           <Typography.Text className={styles.metricText}>
-            Workspace-originated messages recorded in notes.
-          </Typography.Text>
-        </Card>
-        <Card className={styles.card}>
-          <Typography.Text className={styles.metricLabel}>Active representatives</Typography.Text>
-          <Typography.Title className={styles.metricTitle} level={3}>
-            {activeRepCount}
-          </Typography.Title>
-          <Typography.Text className={styles.metricText}>
-            Team members currently linked to client threads.
+            Workspace-originated updates recorded in notes.
           </Typography.Text>
         </Card>
       </div>
@@ -375,7 +477,7 @@ function MessagesPanelContent({
       <Card
         className={styles.card}
         extra={
-          <Button icon={<MailOutlined />} onClick={() => openComposer()} type="primary">
+          <Button icon={<MailOutlined />} onClick={() => openReplyComposer()} type="primary">
             Reply from workspace
           </Button>
         }
@@ -444,20 +546,40 @@ function MessagesPanelContent({
                       <Tag color={note.source === "workspace" ? "gold" : "blue"}>
                         {note.source === "workspace" ? "Workspace" : "Client"}
                       </Tag>
-                      <Tag color={note.status === "Acknowledged" ? "green" : "blue"}>
+                      <Tag
+                        color={
+                          note.status === "Accepted"
+                            ? "green"
+                            : note.status === "Rejected"
+                              ? "red"
+                              : note.status === "Pending admin review"
+                                ? "orange"
+                                : note.status === "Pending client response"
+                                  ? "gold"
+                                  : note.status === "Acknowledged"
+                                    ? "green"
+                                    : "blue"
+                        }
+                      >
                         {note.status ?? "Sent"}
                       </Tag>
                     </Space>
                   </div>
-                  <Button icon={<SendOutlined />} onClick={() => openComposer(note)}>
-                    Reply
-                  </Button>
+                  {isClientRequestThread(note) && note.status === "Pending admin review" ? (
+                    <Button icon={<TeamOutlined />} onClick={() => openAssignModal(note)} type="primary">
+                      Assign reps
+                    </Button>
+                  ) : (
+                    <Button icon={<SendOutlined />} onClick={() => openReplyComposer(note)}>
+                      Reply
+                    </Button>
+                  )}
                 </div>
                 <Typography.Paragraph className={styles.messageText}>
                   {note.content}
                 </Typography.Paragraph>
                 <Typography.Text className={styles.messageFooter}>
-                  {note.representativeName ?? "Unassigned"} · {note.createdDate}
+                  {(note.representativeName ?? "Unassigned") + " · " + note.createdDate}
                 </Typography.Text>
               </div>
             ))}
@@ -472,13 +594,14 @@ function MessagesPanelContent({
 
       <Modal
         forceRender
-        onCancel={closeComposer}
-        onOk={() => form.submit()}
+        onCancel={closeReplyComposer}
+        onOk={() => replyForm.submit()}
+        okButtonProps={{ loading: isSubmitting }}
         okText="Send reply"
-        open={isModalOpen}
+        open={isReplyModalOpen}
         title="Reply from workspace"
       >
-        <Form className={styles.modalForm} form={form} layout="vertical" onFinish={handleSubmit}>
+        <Form className={styles.modalForm} form={replyForm} layout="vertical" onFinish={handleReplySubmit}>
           <Form.Item
             label="Client"
             name="clientId"
@@ -506,6 +629,40 @@ function MessagesPanelContent({
             rules={[{ message: "Enter the message", required: true }]}
           >
             <Input.TextArea placeholder="Write the reply" rows={5} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        forceRender
+        onCancel={closeAssignModal}
+        onOk={() => assignmentForm.submit()}
+        okButtonProps={{ loading: isSubmitting }}
+        okText="Assign reps"
+        open={isAssignModalOpen}
+        title="Assign the right sales reps"
+      >
+        <Form className={styles.modalForm} form={assignmentForm} layout="vertical" onFinish={handleAssignSubmit}>
+          <Form.Item
+            label="Representatives"
+            name="representativeIds"
+            rules={[{ message: "Choose at least one representative", required: true }]}
+          >
+            <Select
+              mode="multiple"
+              options={representativeOptions}
+              placeholder="Select one or more representatives"
+            />
+          </Form.Item>
+          <Form.Item
+            label="Client-facing assignment message"
+            name="assignmentMessage"
+            rules={[{ message: "Add the assignment message", required: true }]}
+          >
+            <Input.TextArea
+              placeholder="Explain who is being assigned and why"
+              rows={5}
+            />
           </Form.Item>
         </Form>
       </Modal>

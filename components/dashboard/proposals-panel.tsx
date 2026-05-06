@@ -4,6 +4,8 @@ import { Button, Input, Modal, Space, Tag, Typography, message } from "antd";
 import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { useMemo, useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import { useAuthState } from "@/providers/authProvider";
 import { OpportunityStage, PROPOSAL_STATUS_COLORS, ProposalStatus, type IProposal } from "@/providers/salesTypes";
 import { formatCurrency } from "@/providers/salesSelectors";
 import { useClientState } from "@/providers/clientProvider";
@@ -34,6 +36,7 @@ const getOpportunityStageForProposal = (status: string) => {
 };
 
 export function ProposalsPanel() {
+  const { user } = useAuthState();
   const { clients } = useClientState();
   const { proposals } = useProposalState();
   const { updateOpportunity } = useOpportunityActions();
@@ -43,6 +46,7 @@ export function ProposalsPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [rejectingProposalId, setRejectingProposalId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const isScopedClient = isClientScopedUser(user?.clientIds);
 
   const proposalById = useMemo(
     () => new Map(proposals.map((proposal) => [proposal.id, proposal])),
@@ -144,6 +148,10 @@ export function ProposalsPanel() {
     {
       key: "workflow",
       render: (_: unknown, record: IProposal) => {
+        if (isScopedClient) {
+          return <Typography.Text type="secondary">Read only</Typography.Text>;
+        }
+
         const status = String(record.status);
 
         return (
@@ -174,21 +182,25 @@ export function ProposalsPanel() {
     {
       key: "actions",
       render: (_: unknown, record: IProposal) => (
-        <Space>
-          <Button
-            icon={<EditOutlined />}
-            onClick={() => setEditingId(record.id)}
-            size="small"
-            type="text"
-          />
-          <Button
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() => void handleDelete(record.id)}
-            size="small"
-            type="text"
-          />
-        </Space>
+        isScopedClient ? (
+          <Typography.Text type="secondary">Read only</Typography.Text>
+        ) : (
+          <Space>
+            <Button
+              icon={<EditOutlined />}
+              onClick={() => setEditingId(record.id)}
+              size="small"
+              type="text"
+            />
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => void handleDelete(record.id)}
+              size="small"
+              type="text"
+            />
+          </Space>
+        )
       ),
       title: "Actions",
     },
@@ -204,12 +216,16 @@ export function ProposalsPanel() {
             Proposals ({proposals.length})
           </Typography.Title>
           <Typography.Text className="!text-slate-500">
-            Build structured commercials, then move them through draft, submission, approval, and rejection.
+            {isScopedClient
+              ? "Review the proposals that belong to your client workspace."
+              : "Build structured commercials, then move them through draft, submission, approval, and rejection."}
           </Typography.Text>
         </div>
-        <Button icon={<PlusOutlined />} onClick={() => setIsModalOpen(true)} type="primary">
-          Create proposal
-        </Button>
+        {!isScopedClient ? (
+          <Button icon={<PlusOutlined />} onClick={() => setIsModalOpen(true)} type="primary">
+            Create proposal
+          </Button>
+        ) : null}
       </div>
 
       <ProposalStatusChart
@@ -233,9 +249,21 @@ export function ProposalsPanel() {
           title: proposal.title,
           value: proposal.value || 0,
         }))}
-        onDelete={(id) => void handleDelete(id)}
-        onEdit={(id) => setEditingId(id)}
-        onStageChange={handleStageChange}
+        onDelete={(id) => {
+          if (!isScopedClient) {
+            void handleDelete(id);
+          }
+        }}
+        onEdit={(id) => {
+          if (!isScopedClient) {
+            setEditingId(id);
+          }
+        }}
+        onStageChange={(id, status) => {
+          if (!isScopedClient) {
+            handleStageChange(id, status);
+          }
+        }}
         stageColors={PROPOSAL_STATUS_COLORS}
         stages={[
           ProposalStatus.Draft,
@@ -253,14 +281,16 @@ export function ProposalsPanel() {
         rowKey="id"
       />
 
-      <ProposalForm
-        editingId={editingId}
-        isOpen={isModalOpen || editingId !== null}
-        onClose={() => {
-          setIsModalOpen(false);
-          setEditingId(null);
-        }}
-      />
+      {!isScopedClient ? (
+        <ProposalForm
+          editingId={editingId}
+          isOpen={isModalOpen || editingId !== null}
+          onClose={() => {
+            setIsModalOpen(false);
+            setEditingId(null);
+          }}
+        />
+      ) : null}
 
       <Modal
         onCancel={() => {
@@ -281,7 +311,7 @@ export function ProposalsPanel() {
         }}
         okButtonProps={{ danger: true }}
         okText="Reject proposal"
-        open={Boolean(rejectingProposalId)}
+        open={!isScopedClient && Boolean(rejectingProposalId)}
         title="Reject proposal"
       >
         <div className="space-y-3 pt-2">

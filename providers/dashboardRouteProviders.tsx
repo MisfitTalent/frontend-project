@@ -106,6 +106,7 @@ export function DashboardRouteProviders({
     needsSalesRepDashboard ||
     needsClientDashboard ||
     isClientsRoute ||
+    isContactsRoute ||
     isMessagesRoute ||
     isNotesRoute ||
     isTeamMembersRoute;

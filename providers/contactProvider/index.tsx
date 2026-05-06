@@ -2,6 +2,7 @@
 
 import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { useAuthState } from "@/providers/authProvider";
 import {
   type BackendContactDto,
@@ -48,6 +49,8 @@ export default function ContactProvider({
 }: ContactProviderProps) {
   const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
+  const isScopedClient = isClientScopedUser(user?.clientIds);
   const cacheKey = useMemo(
     () => createProviderCacheKey("contacts", user?.tenantId, user?.userId),
     [user?.tenantId, user?.userId],
@@ -57,13 +60,23 @@ export default function ContactProvider({
     () => cachedContacts ?? [],
   );
 
+  const scopeContacts = useCallback(
+    (items: IContact[]) =>
+      isScopedClient
+        ? items.filter((contact) => scopedClientIds.has(contact.clientId))
+        : items,
+    [isScopedClient, scopedClientIds],
+  );
+
   const loadContacts = useCallback(async () => {
     const payload = await backendRequest<BackendPagedResult<BackendContactDto> | BackendContactDto[]>(
       "/api/Contacts?pageNumber=1&pageSize=100",
     );
 
-    setContacts(writeProviderCache(cacheKey, coerceItems(payload).map(mapBackendContact)));
-  }, [cacheKey]);
+    setContacts(
+      writeProviderCache(cacheKey, scopeContacts(coerceItems(payload).map(mapBackendContact))),
+    );
+  }, [cacheKey, scopeContacts]);
 
   useEffect(() => {
     writeProviderCache(cacheKey, contacts);
@@ -82,7 +95,7 @@ export default function ContactProvider({
           console.error(error);
 
           if (isActive) {
-            setContacts(writeProviderCache(cacheKey, initialContacts()));
+            setContacts(writeProviderCache(cacheKey, scopeContacts(initialContacts())));
           }
         });
       }, 0);
@@ -118,7 +131,7 @@ export default function ContactProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [cacheKey, cachedContacts, isAuthenticated, isDemoMode, loadContacts]);
+  }, [cacheKey, cachedContacts, isAuthenticated, isDemoMode, loadContacts, scopeContacts]);
 
   return (
     <ContactStateContext.Provider value={{ contacts: isAuthenticated ? contacts : [] }}>

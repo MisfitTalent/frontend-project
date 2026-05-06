@@ -4,15 +4,19 @@ import { Button, Empty, Table, Tag, Typography } from "antd";
 import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import { useAuthState } from "@/providers/authProvider";
 import { type IRenewal } from "@/providers/salesTypes";
 import { useContractActions, useContractState } from "@/providers/contractProvider";
 import { RenewalForm } from "./renewal-form";
 
 export function RenewalsPanel() {
+  const { user } = useAuthState();
   const { renewals } = useContractState();
   const { deleteRenewal } = useContractActions();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const isScopedClient = isClientScopedUser(user?.clientIds);
 
   const getUrgencyColor = (daysUntilRenewal: number) => {
     if (daysUntilRenewal <= 7) return "#f97316";
@@ -24,16 +28,20 @@ export function RenewalsPanel() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">
-          <Typography.Title className="!m-0" level={4}>
-            Renewals ({renewals.length})
-          </Typography.Title>
-          <Typography.Text className="!text-slate-500">
-            Watch contract risk and upcoming dates before revenue slips.
-          </Typography.Text>
-        </div>
-        <Button icon={<PlusOutlined />} onClick={() => setIsModalOpen(true)} type="primary">
-          Add renewal
-        </Button>
+        <Typography.Title className="!m-0" level={4}>
+          Renewals ({renewals.length})
+        </Typography.Title>
+        <Typography.Text className="!text-slate-500">
+          {isScopedClient
+            ? "Review the contracts and renewals linked to your client workspace."
+            : "Watch contract risk and upcoming dates before revenue slips."}
+        </Typography.Text>
+      </div>
+        {!isScopedClient ? (
+          <Button icon={<PlusOutlined />} onClick={() => setIsModalOpen(true)} type="primary">
+            Add renewal
+          </Button>
+        ) : null}
       </div>
 
       {renewals.length === 0 ? (
@@ -62,21 +70,25 @@ export function RenewalsPanel() {
             {
               key: "actions",
               render: (_: unknown, record: IRenewal) => (
-                <div className="space-x-2">
-                  <Button
-                    icon={<EditOutlined />}
-                    onClick={() => setEditingId(record.id)}
-                    size="small"
-                    type="text"
-                  />
-                  <Button
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={() => deleteRenewal(record.id)}
-                    size="small"
-                    type="text"
-                  />
-                </div>
+                isScopedClient ? (
+                  <Typography.Text type="secondary">Read only</Typography.Text>
+                ) : (
+                  <div className="space-x-2">
+                    <Button
+                      icon={<EditOutlined />}
+                      onClick={() => setEditingId(record.id)}
+                      size="small"
+                      type="text"
+                    />
+                    <Button
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={() => deleteRenewal(record.id)}
+                      size="small"
+                      type="text"
+                    />
+                  </div>
+                )
               ),
               title: "Actions",
             },
@@ -87,14 +99,16 @@ export function RenewalsPanel() {
         />
       )}
 
-      <RenewalForm
-        editingId={editingId}
-        isOpen={isModalOpen || editingId !== null}
-        onClose={() => {
-          setIsModalOpen(false);
-          setEditingId(null);
-        }}
-      />
+      {!isScopedClient ? (
+        <RenewalForm
+          editingId={editingId}
+          isOpen={isModalOpen || editingId !== null}
+          onClose={() => {
+            setIsModalOpen(false);
+            setEditingId(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
