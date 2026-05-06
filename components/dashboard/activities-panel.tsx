@@ -103,17 +103,19 @@ export function ActivitiesPanel() {
         rowKey="id"
       />
 
-      <ActivityForm
-        editingId={editingId}
-        isOpen={isModalOpen || editingId !== null}
-        isSubmitting={isSubmitting}
-        onClose={() => {
-          setIsModalOpen(false);
-          setEditingId(null);
-        }}
-        onSubmitStart={() => setIsSubmitting(true)}
-        onSubmitEnd={() => setIsSubmitting(false)}
-      />
+      {isModalOpen || editingId !== null ? (
+        <ActivityForm
+          editingId={editingId}
+          isOpen={isModalOpen || editingId !== null}
+          isSubmitting={isSubmitting}
+          onClose={() => {
+            setIsModalOpen(false);
+            setEditingId(null);
+          }}
+          onSubmitStart={() => setIsSubmitting(true)}
+          onSubmitEnd={() => setIsSubmitting(false)}
+        />
+      ) : null}
     </div>
   );
 }

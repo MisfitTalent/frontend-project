@@ -1,8 +1,9 @@
 "use client";
 
 import { Form, Input, Modal, Select } from "antd";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
+import { useMounted } from "@/lib/client/use-mounted";
 import { ActivityStatus, ActivityType, type IActivity } from "@/providers/salesTypes";
 import { useActivityActions, useActivityState } from "@/providers/activityProvider";
 import { useDashboardState } from "@/providers/dashboardProvider";
@@ -26,17 +27,13 @@ export default function ActivityForm({
   onSubmitStart,
   onSubmitEnd,
 }: ActivityFormProps) {
-  const [isClient, setIsClient] = useState(false);
+  const mounted = useMounted();
   const [form] = Form.useForm();
   const { activities } = useActivityState();
   const { opportunities } = useOpportunityState();
   const { proposals } = useProposalState();
   const { teamMembers } = useDashboardState();
   const { addActivity, updateActivity } = useActivityActions();
-
-  useEffect(() => {
-    setIsClient(true);
-  }, []);
 
   useEffect(() => {
     if (editingId) {
@@ -93,10 +90,9 @@ export default function ActivityForm({
     }
   };
 
-  if (!isClient) {
+  if (!mounted) {
     return null;
   }
-
   return (
     <Modal
       forceRender
