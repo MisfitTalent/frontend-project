@@ -266,6 +266,8 @@ type PendingOpportunityEditRequest = {
   title: string | null;
 };
 
+type OpportunityCreateSlotUpdate = Partial<PendingOpportunityCreateRequest>;
+
 type PendingServiceRequestCreateRequest = {
   clientId: string | null;
   clientName: string | null;
@@ -1522,6 +1524,125 @@ const extractOpportunityEditTitle = (message: string) =>
   message.match(/\bchange\s+the\s+name\s+of\s+.+?\s+to\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim().replace(/[.\s]+$/, "") ??
   null;
 
+const isBestFitOwnerInstruction = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return [
+    "assign the best",
+    "assign best",
+    "assign any",
+    "assign a reasonable owner",
+    "assign reasonable owner",
+    "assign the right owner",
+    "assign a suitable owner",
+    "assign the most reliable owner",
+    "pick the best one",
+    "pick best one",
+    "lowest current workload",
+    "most reliable owner",
+    "reasonable owner",
+    "suitable owner",
+    "right owner",
+    "best fit",
+    "best fits",
+    "who best fits",
+    "best person",
+    "best owner",
+    "best rep",
+    "best advisor",
+  ].some((token) => normalized.includes(token));
+};
+
+const isOpportunityCreateFieldRefinementOnly = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  if (
+    /\b(?:opportunity title|deal called|called|title is|title to|name the opportunity|name the deal|call the opportunity|call the deal|call it)\b/i.test(
+      message,
+    )
+  ) {
+    return false;
+  }
+
+  return (
+    normalized.includes("client is") ||
+    normalized.includes("client name") ||
+    normalized.includes("valued at") ||
+    normalized.includes("worth") ||
+    normalized.includes("close date") ||
+    normalized.includes("expected close date") ||
+    normalized.includes("closes") ||
+    normalized.includes("closing") ||
+    normalized.includes("assign ") ||
+    normalized.includes("pick ") ||
+    normalized.includes("choose ") ||
+    normalized.includes("owner") ||
+    normalized.includes("stage")
+  );
+};
+
+const parseOpportunityCreateTurn = (
+  message: string,
+  workspace: IAssistantWorkspace,
+  current: PendingOpportunityCreateRequest,
+): OpportunityCreateSlotUpdate => {
+  const normalized = normalizeLookupValue(message);
+  const client =
+    workspace.salesData.clients.find((item) =>
+      normalized.includes(normalizeLookupValue(item.name)),
+    ) ??
+    workspace.salesData.clients.find((item) =>
+      normalized.includes(normalizeLookupValue(item.id)),
+    ) ??
+    findClientByReferenceInWorkspace(workspace, extractPlainEnglishClientName(message)) ??
+    null;
+  const owner =
+    workspace.salesData.teamMembers.find((item) =>
+      normalized.includes(normalizeLookupValue(item.name)),
+    ) ??
+    workspace.salesData.teamMembers.find((item) =>
+      normalized.includes(normalizeLookupValue(item.name.split(" ")[0] ?? "")),
+    ) ??
+    workspace.salesData.teamMembers.find((item) =>
+      normalized.includes(normalizeLookupValue(item.id)),
+    ) ??
+    null;
+  const explicitOpportunityName =
+    message.match(/\b(?:opp|opportunity|deal)\s+name\s+(?:should be|must be|is|to)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+    null;
+  const extractedTitle = sanitizeWorkflowGeneratedTitle(
+    explicitOpportunityName ??
+      extractOpportunityTitle(
+        message,
+        workspace,
+        current.clientName ?? client?.name ?? null,
+        current.ownerName ?? owner?.name ?? null,
+      ),
+  );
+  const hasExplicitTitleRefinement =
+    /\b(?:opportunity title|deal called|called|title is|title to|name the opportunity|name the deal|call the opportunity|call the deal|call it)\b/i.test(
+      message,
+    );
+
+  return {
+    autoAssignBestOwner: isBestFitOwnerInstruction(message) || current.autoAssignBestOwner,
+    clientId: client?.id ?? current.clientId,
+    clientName: client?.name ?? current.clientName,
+    estimatedValue: extractOpportunityEstimatedValue(message) ?? current.estimatedValue,
+    expectedCloseDate:
+      extractOpportunityExpectedCloseDate(message) ?? current.expectedCloseDate,
+    ownerId: owner?.id ?? current.ownerId,
+    ownerName: owner?.name ?? current.ownerName,
+    stage: extractOpportunityStage(message) ?? current.stage,
+    title:
+      extractedTitle &&
+      !isOpportunityCreateFieldRefinementOnly(message) &&
+      (!current.title || hasExplicitTitleRefinement)
+        ? extractedTitle
+        : current.title,
+  };
+};
+
 const extractActivityType = (message: string) => {
   const normalized = normalizeLookupValue(message);
 
@@ -1984,61 +2105,10 @@ const inferPendingOpportunityCreateRequest = (
   };
 
   recentUserMessages.forEach((message) => {
-    const client =
-      workspace.salesData.clients.find((item) =>
-        normalizeLookupValue(message.content).includes(normalizeLookupValue(item.name)),
-      ) ??
-      workspace.salesData.clients.find((item) =>
-        normalizeLookupValue(message.content).includes(normalizeLookupValue(item.id)),
-      ) ??
-      null;
-    const owner =
-      workspace.salesData.teamMembers.find((item) =>
-        normalizeLookupValue(message.content).includes(normalizeLookupValue(item.name)),
-      ) ??
-      workspace.salesData.teamMembers.find((item) =>
-        normalizeLookupValue(message.content).includes(normalizeLookupValue(item.name.split(" ")[0] ?? "")),
-      ) ??
-      workspace.salesData.teamMembers.find((item) =>
-        normalizeLookupValue(message.content).includes(normalizeLookupValue(item.id)),
-      ) ??
-      null;
-
-    request.clientId = client?.id ?? request.clientId;
-    request.clientName = client?.name ?? request.clientName;
-    request.ownerId = owner?.id ?? request.ownerId;
-    request.ownerName = owner?.name ?? request.ownerName;
-    request.estimatedValue =
-      extractOpportunityEstimatedValue(message.content) ?? request.estimatedValue;
-    request.expectedCloseDate =
-      extractOpportunityExpectedCloseDate(message.content) ?? request.expectedCloseDate;
-    request.stage = extractOpportunityStage(message.content) ?? request.stage;
-    if (
-      /\b(?:assign|pick|choose)\b[\s\S]*\b(?:best|best fit|best fits|best person|best owner|best rep|best advisor|who best fits|most reliable owner|reasonable owner|right owner|suitable owner|any)\b/i.test(
-        message.content,
-      )
-    ) {
-      request.autoAssignBestOwner = true;
-    }
-    const extractedTitle = sanitizeWorkflowGeneratedTitle(
-      extractOpportunityTitle(
-        message.content,
-        workspace,
-        request.clientName,
-        request.ownerName,
-      ),
+    Object.assign(
+      request,
+      parseOpportunityCreateTurn(message.content, workspace, request),
     );
-    const hasExplicitTitleRefinement =
-      /\b(?:opportunity title|deal called|called|title is|title to|name the opportunity|name the deal|call the opportunity|call the deal|call it)\b/i.test(
-        message.content,
-      );
-
-    if (
-      extractedTitle &&
-      (!request.title || isOpportunityCreateIntent(message.content) || hasExplicitTitleRefinement)
-    ) {
-      request.title = extractedTitle;
-    }
   });
 
   if (request.clientName && !request.clientId) {
@@ -2109,11 +2179,30 @@ const getRecentPendingOpportunityCreateRequest = (
   messages: AssistantMessage[],
   workspace: IAssistantWorkspace,
 ) => {
-  const traceStep = getLatestActiveConfirmationTraceStep(
-    messages,
-    "confirmation_required_opportunity_create",
-    ["confirmed_opportunity_create_workflow"],
-  );
+  let traceStep: AssistantTraceStep | null = null;
+
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") {
+      continue;
+    }
+
+    const trace = message.trace ?? [];
+
+    if (trace.some((step) => step.tool === "confirmed_opportunity_create_workflow")) {
+      break;
+    }
+
+    traceStep =
+      trace.find((step) =>
+        ["confirmation_required_opportunity_create", "opportunity_create_missing_details"].includes(
+          step.tool,
+        ),
+      ) ?? null;
+
+    if (traceStep) {
+      break;
+    }
+  }
 
   if (!traceStep) {
     return inferPendingOpportunityCreateRequest(messages, workspace);
