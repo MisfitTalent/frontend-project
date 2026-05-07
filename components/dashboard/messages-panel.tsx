@@ -29,6 +29,7 @@ import {
   createServiceRequestAssignments,
   getServiceRequestDetail,
   listServiceRequests,
+  type ServiceRequestMessageRecipientType,
   type ServiceRequestAssignmentRecord,
   type ServiceRequestDetail,
   type ServiceRequestRecord,
@@ -59,6 +60,8 @@ type MessageFormValues = {
   clientId: string;
   content: string;
   representativeId: string;
+  representativeIds?: string[];
+  recipientType?: ServiceRequestMessageRecipientType;
   subject: string;
 };
 
@@ -132,6 +135,34 @@ const clientFacingRole = (role: string) =>
     "Proposal Manager",
     "Deal Desk Specialist",
   ].some((token) => role.includes(token));
+
+const getServiceRequestMessageRecipientSummary = (payload: Record<string, unknown>) => {
+  const recipientType =
+    payload.recipientType === "client" ||
+    payload.recipientType === "representative" ||
+    payload.recipientType === "both"
+      ? payload.recipientType
+      : "client";
+  const representativeNames = Array.isArray(payload.representativeNames)
+    ? payload.representativeNames.filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      )
+    : [];
+
+  if (recipientType === "both") {
+    return representativeNames.length > 0
+      ? `To client and reps: ${representativeNames.join(", ")}`
+      : "To client and reps";
+  }
+
+  if (recipientType === "representative") {
+    return representativeNames.length > 0
+      ? `To reps: ${representativeNames.join(", ")}`
+      : "To reps";
+  }
+
+  return "To client";
+};
 
 type MessagePanelContentProps = Readonly<{
   initialClientId: string;
@@ -512,14 +543,13 @@ function MessagesPanelContent({
       )?.ownerId;
 
     replyForm.setFieldsValue({
-      clientId: note?.clientId ?? clients[0]?.id ?? "",
+      clientId: note?.clientId ?? undefined,
       content: note ? `Hi, regarding "${note.title}"...` : "",
       representativeId:
         note?.representativeId ??
         accountLeadId ??
         representativeOptions.find((option) => option.value === user?.userId)?.value ??
-        representativeOptions[0]?.value ??
-        "",
+        undefined,
       subject: note ? `Re: ${note.title}` : "Client follow-up",
     });
     setActiveThread(note ?? null);
@@ -527,10 +557,16 @@ function MessagesPanelContent({
   };
 
   const openServiceRequestReplyComposer = (request: ServiceRequestRecord) => {
+    const requestDetail = serviceRequestDetailsById[request.id];
+    const assignedRepresentativeIds =
+      requestDetail?.assignments.map((assignment) => assignment.representativeUserId) ?? [];
+
     replyForm.setFieldsValue({
       clientId: request.clientId,
       content: "",
+      recipientType: "client",
       representativeId: "",
+      representativeIds: assignedRepresentativeIds,
       subject: `Re: ${request.title}`,
     });
     setActiveThread(null);
@@ -552,6 +588,11 @@ function MessagesPanelContent({
       try {
         const detail = await addServiceRequestMessage(activeServiceRequest.id, {
           content: values.content.trim(),
+          recipientType: values.recipientType ?? "client",
+          representativeUserIds:
+            values.recipientType === "representative" || values.recipientType === "both"
+              ? values.representativeIds ?? []
+              : [],
         });
         setServiceRequestDetailsById((current) => ({
           ...current,
@@ -570,25 +611,22 @@ function MessagesPanelContent({
       return;
     }
 
-    const representative = teamMembers.find((member) => member.id === values.representativeId);
-
-    if (!representative) {
-      messageApi.error("Choose a representative before sending the reply.");
-      return;
-    }
+    const representative = values.representativeId
+      ? teamMembers.find((member) => member.id === values.representativeId)
+      : null;
 
     setIsSubmitting(true);
 
     try {
       await addNote({
         category: CLIENT_MESSAGE_CATEGORY,
-        clientId: values.clientId,
+        clientId: values.clientId || undefined,
         content: values.content.trim(),
         createdDate: new Date().toISOString().split("T")[0],
         id: createMessageId(),
         kind: "client_message",
-        representativeId: representative.id,
-        representativeName: representative.name,
+        representativeId: representative?.id,
+        representativeName: representative?.name,
         source: "workspace",
         status: "Acknowledged",
         submittedBy: user?.email ?? undefined,
@@ -1131,7 +1169,10 @@ function MessagesPanelContent({
                 key={event.id}
               >
                 <Typography.Text className={styles.conversationMeta}>
-                  {event.actorType} · {event.createdAt.split("T")[0]} · {event.eventType}
+                  {event.actorType} · {event.createdAt.split("T")[0]} ·{" "}
+                  {event.eventType === "service_request_message_added"
+                    ? getServiceRequestMessageRecipientSummary(event.payloadJson)
+                    : event.eventType}
                 </Typography.Text>
                 <Typography.Paragraph className={styles.messageText}>
                   {event.eventType === "service_request_message_added"
@@ -1396,16 +1437,18 @@ function MessagesPanelContent({
                   <Form.Item
                     label="Client"
                     name="clientId"
-                    rules={[{ message: "Choose a client", required: true }]}
                   >
-                    <Select options={clientOptions} placeholder="Select client" />
+                    <Select allowClear options={clientOptions} placeholder="No client selected" />
                   </Form.Item>
                   <Form.Item
                     label="Representative"
                     name="representativeId"
-                    rules={[{ message: "Choose a representative", required: true }]}
                   >
-                    <Select options={representativeOptions} placeholder="Select representative" />
+                    <Select
+                      allowClear
+                      options={representativeOptions}
+                      placeholder="No representative selected"
+                    />
                   </Form.Item>
                   <Form.Item
                     label="Subject"
@@ -1416,6 +1459,66 @@ function MessagesPanelContent({
                   </Form.Item>
                 </>
               )}
+              {activeServiceRequest ? (
+                <>
+                  <Form.Item
+                    label="Send to"
+                    name="recipientType"
+                    rules={[{ message: "Choose who should receive the reply", required: true }]}
+                  >
+                    <Select
+                      options={[
+                        { label: "Client", value: "client" },
+                        { label: "Representative", value: "representative" },
+                        { label: "Client and representative", value: "both" },
+                      ]}
+                      placeholder="Choose the message audience"
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    dependencies={["recipientType"]}
+                    label="Representatives"
+                    name="representativeIds"
+                    rules={[
+                      ({ getFieldValue }) => ({
+                        validator(_, value: string[] | undefined) {
+                          const recipientType = getFieldValue("recipientType");
+
+                          if (
+                            recipientType !== "representative" &&
+                            recipientType !== "both"
+                          ) {
+                            return Promise.resolve();
+                          }
+
+                          if (Array.isArray(value) && value.length > 0) {
+                            return Promise.resolve();
+                          }
+
+                          return Promise.reject(
+                            new Error("Choose at least one representative recipient."),
+                          );
+                        },
+                      }),
+                    ]}
+                  >
+                    <Select
+                      mode="multiple"
+                      options={
+                        (
+                          activeServiceRequest
+                            ? serviceRequestDetailsById[activeServiceRequest.id]?.assignments ?? []
+                            : []
+                        ).map((assignment) => ({
+                          label: assignment.representativeName,
+                          value: assignment.representativeUserId,
+                        }))
+                      }
+                      placeholder="Choose one or more assigned representatives"
+                    />
+                  </Form.Item>
+                </>
+              ) : null}
               <Form.Item
                 label={activeServiceRequest ? "Reply" : "Message"}
                 name="content"

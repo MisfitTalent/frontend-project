@@ -5,15 +5,16 @@ import {
   CloseOutlined,
   HomeOutlined,
   LogoutOutlined,
+  MailOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
 } from "@ant-design/icons";
 import { Badge, Button, Layout, Menu, Space, Tag, Typography } from "antd";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { getSessionToken } from "@/lib/client/backend-api";
+import { backendRequest, coerceItems, getSessionToken } from "@/lib/client/backend-api";
 import { listServiceRequests } from "@/lib/client/service-request-api";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
 import { dashboardNavItems } from "@/constants/dashboard-nav";
@@ -23,6 +24,7 @@ import {
   getDashboardNavItemForPath,
 } from "@/lib/auth/dashboard-access";
 import { useAuthActions, useAuthState } from "@/providers/authProvider";
+import type { INoteItem } from "@/providers/domainSeeds";
 import { type UserRole } from "@/providers/salesTypes";
 import { BoxfusionLogo } from "./boxfusion-logo";
 
@@ -34,13 +36,19 @@ type DashboardFrameProps = Readonly<{
 
 export function DashboardFrame({ children }: DashboardFrameProps) {
   const alertDismissKey = "dashboard-admin-alert-dismissed";
+  const messageDismissKey = "dashboard-message-alert-dismissed";
   const [collapsed, setCollapsed] = useState(false);
   const [dismissedAlertSignature, setDismissedAlertSignature] = useState<string | null>(() =>
     typeof window === "undefined" ? null : window.sessionStorage.getItem(alertDismissKey),
   );
+  const [dismissedMessageSignature, setDismissedMessageSignature] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : window.sessionStorage.getItem(messageDismissKey),
+  );
   const [pendingAdminRequestCount, setPendingAdminRequestCount] = useState(0);
   const [latestPendingRequestId, setLatestPendingRequestId] = useState<string | null>(null);
   const [latestPendingRequestTitle, setLatestPendingRequestTitle] = useState<string | null>(null);
+  const [incomingMessageCount, setIncomingMessageCount] = useState(0);
+  const [latestIncomingMessage, setLatestIncomingMessage] = useState<INoteItem | null>(null);
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useAuthActions();
@@ -150,9 +158,94 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
     };
   }, [activeRole, isAuthenticated]);
 
+  const isPlainMessage = (note: INoteItem) =>
+    note.kind === "client_message" && !note.requestType;
+
+  const getIncomingMessages = useCallback(
+    (notes: INoteItem[]) => {
+      const clientIdSet = new Set(user?.clientIds ?? []);
+
+      if (clientIdSet.size > 0) {
+        return notes.filter(
+          (note) =>
+            isPlainMessage(note) &&
+            Boolean(note.clientId) &&
+            clientIdSet.has(note.clientId as string) &&
+            note.source !== "client_portal",
+        );
+      }
+
+      if (activeRole === "SalesRep" && user?.userId) {
+        return notes.filter(
+          (note) =>
+            isPlainMessage(note) &&
+            note.representativeId === user.userId &&
+            note.source !== "client_portal",
+        );
+      }
+
+      return notes.filter(
+        (note) => isPlainMessage(note) && note.source === "client_portal",
+      );
+    },
+    [activeRole, user?.clientIds, user?.userId],
+  );
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    let isActive = true;
+    let pollTimer: number | null = null;
+
+    const loadIncomingMessages = async () => {
+      try {
+        const payload = await backendRequest<{ items?: INoteItem[] } | INoteItem[]>("/api/Notes");
+        const incomingMessages = getIncomingMessages(coerceItems(payload)).sort((left, right) =>
+          right.createdDate.localeCompare(left.createdDate),
+        );
+
+        if (isActive) {
+          setIncomingMessageCount(incomingMessages.length);
+          setLatestIncomingMessage(incomingMessages[0] ?? null);
+        }
+      } catch (error) {
+        console.error(error);
+
+        if (isActive) {
+          setIncomingMessageCount(0);
+          setLatestIncomingMessage(null);
+        }
+      }
+    };
+
+    void loadIncomingMessages();
+    pollTimer = window.setInterval(() => {
+      void loadIncomingMessages();
+    }, 5000);
+
+    const handleWorkspaceUpdate = () => {
+      void loadIncomingMessages();
+    };
+
+    window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+
+    return () => {
+      isActive = false;
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+      }
+      window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+    };
+  }, [getIncomingMessages, isAuthenticated]);
+
   const currentAlertSignature = `${latestPendingRequestId ?? "none"}:${pendingAdminRequestCount}`;
   const isAdminAlertDismissed =
     pendingAdminRequestCount > 0 && dismissedAlertSignature === currentAlertSignature;
+  const currentMessageAlertSignature = `${latestIncomingMessage?.id ?? "none"}:${incomingMessageCount}`;
+  const isMessageAlertDismissed =
+    incomingMessageCount > 0 && dismissedMessageSignature === currentMessageAlertSignature;
 
   const dismissAdminAlert = () => {
     if (typeof window !== "undefined") {
@@ -160,6 +253,14 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
     }
 
     setDismissedAlertSignature(currentAlertSignature);
+  };
+
+  const dismissMessageAlert = () => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(messageDismissKey, currentMessageAlertSignature);
+    }
+
+    setDismissedMessageSignature(currentMessageAlertSignature);
   };
 
   const openAdminRequestQueue = () => {
@@ -173,6 +274,30 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
     }
 
     router.push(`/dashboard/messages?${params.toString()}`);
+  };
+
+  const openIncomingMessages = () => {
+    dismissMessageAlert();
+
+    const params = new URLSearchParams();
+
+    if (latestIncomingMessage?.clientId) {
+      params.set("clientId", latestIncomingMessage.clientId);
+    }
+
+    if (latestIncomingMessage?.representativeId) {
+      params.set("representativeId", latestIncomingMessage.representativeId);
+    }
+
+    if (latestIncomingMessage?.id) {
+      params.set("threadId", latestIncomingMessage.id);
+    }
+
+    if (latestIncomingMessage?.source) {
+      params.set("source", latestIncomingMessage.source);
+    }
+
+    router.push(params.toString() ? `/dashboard/messages?${params.toString()}` : "/dashboard/messages");
   };
 
   return (
@@ -296,6 +421,44 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
                 </Button>
               )
             ) : null}
+            {incomingMessageCount > 0 && !isMessageAlertDismissed ? (
+              <div
+                aria-label={`${incomingMessageCount} message notifications`}
+                className="flex max-w-[24rem] items-center gap-2 rounded-full border border-sky-300 bg-sky-50 px-2 py-1 text-sky-950 shadow-sm"
+                role="region"
+              >
+                <Badge count={incomingMessageCount} size="small">
+                  <button
+                    className="flex items-center gap-2 rounded-full bg-transparent px-2 py-1 text-left text-xs font-medium text-sky-950 transition hover:bg-sky-100"
+                    onClick={openIncomingMessages}
+                    type="button"
+                  >
+                    <MailOutlined />
+                    <span className="max-w-[14rem] truncate">
+                      {latestIncomingMessage?.title ??
+                        `${incomingMessageCount} message${incomingMessageCount === 1 ? "" : "s"} waiting`}
+                    </span>
+                  </button>
+                </Badge>
+                <button
+                  aria-label="Dismiss message alert"
+                  className="flex h-6 w-6 items-center justify-center rounded-full text-sky-700 transition hover:bg-sky-100"
+                  onClick={dismissMessageAlert}
+                  type="button"
+                >
+                  <CloseOutlined />
+                </button>
+              </div>
+            ) : (
+              <Button
+                className="dashboard-header-home-button"
+                icon={<MailOutlined />}
+                onClick={openIncomingMessages}
+                type="default"
+              >
+                Messages
+              </Button>
+            )}
             {!isHomeRoute ? (
               <Button
                 className="dashboard-header-home-button"

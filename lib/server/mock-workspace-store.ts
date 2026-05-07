@@ -1,5 +1,6 @@
 import "server-only";
 
+import { readLocalStateSnapshot, writeLocalStateSnapshot } from "@/lib/server/local-state-store";
 import type { IMockUser } from "@/app/api/Auth/mock-users";
 import {
   initialActivities,
@@ -84,7 +85,13 @@ type CreatePricingRequestInput = Omit<IPricingRequest, "createdAt" | "id"> & {
 };
 
 const workspaceStore =
-  globalThis.__mockWorkspaceStore__ ?? new Map<string, MockWorkspaceState>();
+  globalThis.__mockWorkspaceStore__ ??
+  new Map<string, MockWorkspaceState>(
+    Object.entries(readLocalStateSnapshot().mockWorkspaceStore).map(([tenantId, state]) => [
+      tenantId,
+      state as MockWorkspaceState,
+    ]),
+  );
 
 globalThis.__mockWorkspaceStore__ = workspaceStore;
 
@@ -92,6 +99,12 @@ const createId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const clone = <T,>(value: T): T => structuredClone(value);
+
+const persistWorkspaceStore = () => {
+  writeLocalStateSnapshot((state) => {
+    state.mockWorkspaceStore = Object.fromEntries(workspaceStore.entries());
+  });
+};
 
 const buildSeedWorkspace = (): MockWorkspaceState => ({
   documents: initialDocuments(),
@@ -119,6 +132,7 @@ const getWorkspaceState = (tenantId: string) => {
 
   const next = buildSeedWorkspace();
   workspaceStore.set(tenantId, next);
+  persistWorkspaceStore();
 
   return next;
 };
@@ -179,6 +193,7 @@ export const createMockClient = (user: IMockUser, input: CreateClientInput) => {
     id: createId("auto"),
     title: "Client created",
   });
+  persistWorkspaceStore();
 
   return clone(client);
 };
@@ -199,6 +214,7 @@ export const updateMockClient = (
     ...workspace.salesData.clients[index],
     ...patch,
   };
+  persistWorkspaceStore();
 
   return clone(workspace.salesData.clients[index]);
 };
@@ -209,6 +225,7 @@ export const deleteMockClient = (tenantId: string, clientId: string) => {
   workspace.salesData.contacts = workspace.salesData.contacts.filter((item) => item.clientId !== clientId);
   workspace.salesData.opportunities = workspace.salesData.opportunities.filter((item) => item.clientId !== clientId);
   workspace.salesData.proposals = workspace.salesData.proposals.filter((item) => item.clientId !== clientId);
+  persistWorkspaceStore();
 };
 
 export const createMockContact = (user: IMockUser, input: Omit<IContact, "id">) => {
@@ -226,6 +243,7 @@ export const createMockContact = (user: IMockUser, input: Omit<IContact, "id">) 
     id: createId("auto"),
     title: "Contact created",
   });
+  persistWorkspaceStore();
 
   return clone(contact);
 };
@@ -246,6 +264,7 @@ export const updateMockContact = (
     ...workspace.salesData.contacts[index],
     ...patch,
   };
+  persistWorkspaceStore();
 
   return clone(workspace.salesData.contacts[index]);
 };
@@ -253,6 +272,7 @@ export const updateMockContact = (
 export const deleteMockContact = (tenantId: string, contactId: string) => {
   const workspace = getWorkspaceState(tenantId);
   workspace.salesData.contacts = workspace.salesData.contacts.filter((item) => item.id !== contactId);
+  persistWorkspaceStore();
 };
 
 export const listMockOpportunities = (tenantId: string) =>
@@ -302,6 +322,7 @@ export const createMockOpportunity = (
     id: createId("auto"),
     title: `Opportunity added to pipeline`,
   });
+  persistWorkspaceStore();
 
   return clone(opportunity);
 };
@@ -325,6 +346,7 @@ export const updateMockOpportunity = (
       patch.expectedCloseDate ?? workspace.salesData.opportunities[index].expectedCloseDate,
     ),
   };
+  persistWorkspaceStore();
 
   return clone(workspace.salesData.opportunities[index]);
 };
@@ -337,6 +359,7 @@ export const deleteMockOpportunity = (tenantId: string, opportunityId: string) =
   workspace.salesData.proposals = workspace.salesData.proposals.filter(
     (item) => item.opportunityId !== opportunityId,
   );
+  persistWorkspaceStore();
 };
 
 export const assignMockOpportunity = (
@@ -396,6 +419,7 @@ export const createMockProposal = (user: IMockUser, input: CreateProposalInput) 
     id: createId("auto"),
     title: `Proposal created`,
   });
+  persistWorkspaceStore();
 
   return clone(proposal);
 };
@@ -427,6 +451,7 @@ export const updateMockProposal = (
       getLineItemsTotal(nextLineItems) ??
       workspace.salesData.proposals[index].value,
   };
+  persistWorkspaceStore();
 
   return clone(workspace.salesData.proposals[index]);
 };
@@ -436,6 +461,7 @@ export const deleteMockProposal = (tenantId: string, proposalId: string) => {
   workspace.salesData.proposals = workspace.salesData.proposals.filter(
     (item) => item.id !== proposalId,
   );
+  persistWorkspaceStore();
 };
 
 export const transitionMockProposal = (
@@ -554,6 +580,7 @@ export const createMockActivity = (user: IMockUser, input: CreateActivityInput) 
     id: createId("auto"),
     title: "Activity created",
   });
+  persistWorkspaceStore();
 
   return clone(activity);
 };
@@ -574,6 +601,7 @@ export const updateMockActivity = (
     ...workspace.salesData.activities[index],
     ...patch,
   };
+  persistWorkspaceStore();
 
   return clone(workspace.salesData.activities[index]);
 };
@@ -583,6 +611,7 @@ export const deleteMockActivity = (tenantId: string, activityId: string) => {
   workspace.salesData.activities = workspace.salesData.activities.filter(
     (item) => item.id !== activityId,
   );
+  persistWorkspaceStore();
 };
 
 export const listMockPricingRequests = (tenantId: string): IPricingRequest[] =>
@@ -608,6 +637,7 @@ export const createMockPricingRequest = (
     id: createId("auto"),
     title: "Commercial request created",
   });
+  persistWorkspaceStore();
 
   return clone(pricingRequest);
 };
@@ -631,6 +661,7 @@ export const updateMockPricingRequest = (
       patch.requiredByDate ?? workspace.pricingRequests[index].requiredByDate,
     ),
   };
+  persistWorkspaceStore();
 
   return clone(workspace.pricingRequests[index]);
 };
@@ -640,6 +671,7 @@ export const deleteMockPricingRequest = (tenantId: string, pricingRequestId: str
   workspace.pricingRequests = workspace.pricingRequests.filter(
     (item) => item.id !== pricingRequestId,
   );
+  persistWorkspaceStore();
 };
 
 export const listMockNotes = (tenantId: string): INoteItem[] =>
@@ -663,6 +695,7 @@ export const createMockNote = (
     id: createId("auto"),
     title: "Note created",
   });
+  persistWorkspaceStore();
 
   return clone(note);
 };
@@ -684,6 +717,7 @@ export const updateMockNote = (
     ...patch,
     createdDate: normalizeDate(patch.createdDate ?? workspace.notes[index].createdDate),
   };
+  persistWorkspaceStore();
 
   return clone(workspace.notes[index]);
 };
@@ -691,6 +725,7 @@ export const updateMockNote = (
 export const deleteMockNote = (tenantId: string, noteId: string) => {
   const workspace = getWorkspaceState(tenantId);
   workspace.notes = workspace.notes.filter((item) => item.id !== noteId);
+  persistWorkspaceStore();
 };
 
 export const syncMockUserWorkspaceProfile = (
@@ -743,6 +778,7 @@ export const syncMockUserWorkspaceProfile = (
     id: createId("auto"),
     title: linkedClientIds.size > 0 && organizationName ? "Client workspace updated" : "Profile updated",
   });
+  persistWorkspaceStore();
 
   return clone(workspace);
 };

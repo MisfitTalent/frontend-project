@@ -4,6 +4,7 @@ import { getAuthorizedUser } from "@/lib/server/assistant-auth";
 import { getRequestSessionToken, isLiveSessionToken } from "@/lib/server/request-session-token";
 import { addLiveServiceRequestMessage } from "@/lib/server/service-request-backend-store";
 import { addServiceRequestMessage } from "@/lib/server/service-request-store";
+import type { ServiceRequestMessageRecipientType } from "@/lib/client/service-request-api";
 
 export const runtime = "nodejs";
 
@@ -22,10 +23,23 @@ export async function POST(
     const { requestId } = await context.params;
     const body = (await request.json()) as {
       content?: unknown;
+      recipientType?: unknown;
+      representativeUserIds?: unknown;
     };
 
     const payload = {
       content: typeof body.content === "string" ? body.content : "",
+      recipientType:
+        body.recipientType === "client" ||
+        body.recipientType === "representative" ||
+        body.recipientType === "both"
+          ? (body.recipientType as ServiceRequestMessageRecipientType)
+          : "client",
+      representativeUserIds: Array.isArray(body.representativeUserIds)
+        ? body.representativeUserIds.filter(
+            (value): value is string => typeof value === "string" && value.trim().length > 0,
+          )
+        : [],
     };
 
     const result = isLiveSessionToken(token)

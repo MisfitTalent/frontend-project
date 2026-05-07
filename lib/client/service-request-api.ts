@@ -73,6 +73,8 @@ export type ServiceRequestDetail = {
   request: ServiceRequestRecord;
 };
 
+export type ServiceRequestMessageRecipientType = "client" | "representative" | "both";
+
 const extractErrorMessage = (value: unknown) => {
   if (typeof value === "string" && value.trim()) {
     return value;
@@ -213,6 +215,8 @@ export const addServiceRequestMessage = async (
   requestId: string,
   payload: {
     content: string;
+    recipientType: ServiceRequestMessageRecipientType;
+    representativeUserIds?: string[];
   },
 ) =>
   serviceRequestApi<ServiceRequestDetail>(`/api/service-requests/${requestId}/messages`, {
