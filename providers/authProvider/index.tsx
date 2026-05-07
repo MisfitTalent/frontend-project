@@ -31,6 +31,17 @@ import {
   type IUserRegisterRequest,
 } from "./context";
 import { AuthReducer } from "./reducers";
+
+class AuthRequestError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "AuthRequestError";
+    this.status = status;
+  }
+}
+
 export const useAuthState = () => {
   const context = useContext(AuthStateContext);
 
@@ -83,7 +94,7 @@ const authRequest = async <T,>(
   const payload = (await readJsonPayload<T & { message?: string }>(response));
 
   if (!response.ok) {
-    throw new Error(payload.message ?? "Authentication failed.");
+    throw new AuthRequestError(payload.message ?? "Authentication failed.", response.status);
   }
 
   return payload;
@@ -179,9 +190,19 @@ export default function AuthProvider({ children }: AuthProviderProps) {
       return;
     } catch (error) {
       console.error(error);
+
+      if (error instanceof AuthRequestError && (error.status === 401 || error.status === 403)) {
+        clearAuthSession();
+        dispatch(logoutSuccess());
+        return;
+      }
+
+      if (storedUser) {
+        dispatch(getMeSuccess(storedUser));
+        return;
+      }
     }
 
-    clearAuthSession();
     dispatch(logoutSuccess());
   }, []);
 

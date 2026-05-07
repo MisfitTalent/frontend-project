@@ -52,6 +52,18 @@ Until those changes are made, the assistant will remain vulnerable to
 "disappearing state" after periods of idleness even if the workflow logic
 itself is correct.
 
+## Local development persistence status
+
+The local development path now persists:
+
+- assistant chat history and advisor chat history in browser `localStorage`
+- auth session state in browser `localStorage`
+- mock workspace state and mock service-request workflow state in
+  `.local-state/assistant-workflow.json`
+
+The remaining production-grade requirement is still a real backend source of
+truth instead of local browser or local filesystem persistence.
+
 ## Primary workflow
 
 1. Client submits a service request.
@@ -306,9 +318,8 @@ Request body:
 
 ```json
 {
-  "channel": "internal",
-  "recipientUserIds": ["user_10"],
-  "subject": "New request ready for review",
+  "recipientType": "both",
+  "representativeUserIds": ["user_10"],
   "content": "The client approved your assignment. Review the proposal and scope."
 }
 ```

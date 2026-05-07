@@ -135,14 +135,16 @@ export function AssistantPanel() {
     setMessages([]);
     setError(null);
     setLastResponseReason(null);
-    clearSessionDraft(draftStorageKey);
-    clearSessionDraft(messageStorageKey);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
+    clearSessionDraft(messageStorageKey, { storage: "local" });
   };
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setDraft(readSessionDraft<string>(draftStorageKey) ?? "");
-      setMessages(readSessionDraft<AssistantMessage[]>(messageStorageKey) ?? []);
+      setDraft(readSessionDraft<string>(draftStorageKey, { storage: "local" }) ?? "");
+      setMessages(
+        readSessionDraft<AssistantMessage[]>(messageStorageKey, { storage: "local" }) ?? [],
+      );
       setError(null);
       setLastResponseReason(null);
       setLoadedStorageIdentity(storageIdentity);
@@ -188,11 +190,11 @@ export function AssistantPanel() {
     }
 
     if (draft) {
-      writeSessionDraft(draftStorageKey, draft);
+      writeSessionDraft(draftStorageKey, draft, { storage: "local" });
       return;
     }
 
-    clearSessionDraft(draftStorageKey);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
   }, [draft, draftStorageKey, loadedStorageIdentity, storageIdentity]);
 
   useEffect(() => {
@@ -201,11 +203,11 @@ export function AssistantPanel() {
     }
 
     if (messages.length > 0) {
-      writeSessionDraft(messageStorageKey, messages);
+      writeSessionDraft(messageStorageKey, messages, { storage: "local" });
       return;
     }
 
-    clearSessionDraft(messageStorageKey);
+    clearSessionDraft(messageStorageKey, { storage: "local" });
   }, [loadedStorageIdentity, messageStorageKey, messages, storageIdentity]);
 
   useEffect(() => {
@@ -279,7 +281,7 @@ export function AssistantPanel() {
 
     setMessages(nextMessages);
     setDraft("");
-    clearSessionDraft(draftStorageKey);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
     setError(null);
     setLastResponseReason(null);
     setIsSubmitting(true);
@@ -366,8 +368,8 @@ export function AssistantPanel() {
       if (fresh) {
         setMessages([]);
         setDraft("");
-        clearSessionDraft(draftStorageKey);
-        clearSessionDraft(messageStorageKey);
+        clearSessionDraft(draftStorageKey, { storage: "local" });
+        clearSessionDraft(messageStorageKey, { storage: "local" });
       }
 
       void sendMessage(prompt, { baseMessages }).finally(() => {
