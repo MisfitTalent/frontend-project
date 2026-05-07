@@ -8,6 +8,7 @@ import {
   SendOutlined,
 } from "@ant-design/icons";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
@@ -96,6 +97,7 @@ const getResponseStatusLabel = (mode: AssistantRuntimeMode, scopeLabel?: string)
 };
 
 export function AssistantPanel() {
+  const searchParams = useSearchParams();
   const { user } = useAuthState();
   const role = getPrimaryUserRole(user?.roles);
   const isScopedClientUser = isClientScopedUser(user?.clientIds);
@@ -116,27 +118,9 @@ export function AssistantPanel() {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [loadedStorageIdentity, setLoadedStorageIdentity] = useState<string | null>(null);
   const [statusLabel, setStatusLabel] = useState("Awaiting your question");
-  const [autoPrompt] = useState(() => {
-    if (typeof window === "undefined") {
-      return "";
-    }
-
-    return new URLSearchParams(window.location.search).get("prompt")?.trim() ?? "";
-  });
-  const [shouldAutoRun] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-
-    return new URLSearchParams(window.location.search).get("autorun") === "1";
-  });
-  const [shouldStartFresh] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-
-    return new URLSearchParams(window.location.search).get("fresh") === "1";
-  });
+  const autoPrompt = searchParams.get("prompt")?.trim() ?? "";
+  const shouldAutoRun = searchParams.get("autorun") === "1";
+  const shouldStartFresh = searchParams.get("fresh") === "1";
   const autoRunKeyRef = useRef<string | null>(null);
   const storageIdentity = `${draftStorageKey}::${messageStorageKey}`;
   const modeTag = getModeTag(assistantMode);
@@ -391,6 +375,12 @@ export function AssistantPanel() {
       });
     },
   );
+
+  useEffect(() => {
+    if (!shouldAutoRun) {
+      autoRunKeyRef.current = null;
+    }
+  }, [shouldAutoRun]);
 
   useEffect(() => {
     if (!autoPrompt || !shouldAutoRun || loadedStorageIdentity !== storageIdentity || isSubmitting) {

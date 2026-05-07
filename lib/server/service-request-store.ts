@@ -772,3 +772,25 @@ export const applyServiceRequestRepDecision = (
 
   return clone(updated);
 };
+
+export const addServiceRequestMessage = (
+  user: IMockUser,
+  requestId: string,
+  input: {
+    content: string;
+  },
+) => {
+  const content = input.content.trim();
+
+  if (!content) {
+    throw new Error("Message content is required.");
+  }
+
+  const { request, state } = getVisibleRequestOrThrow(user, requestId);
+
+  appendEvent(state, request, user, "service_request_message_added", {
+    content,
+  });
+
+  return getServiceRequestDetail(user, requestId);
+};

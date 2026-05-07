@@ -244,6 +244,7 @@ type PendingProposalEditRequest = {
 };
 
 type PendingOpportunityCreateRequest = {
+  autoAssignBestOwner?: boolean;
   clientId: string | null;
   clientName: string | null;
   estimatedValue: number | null;
@@ -873,7 +874,9 @@ const getLatestActiveConfirmationTraceStep = (
   pendingTool: string,
   completedTools: string[] = [],
 ) => {
-  for (const message of [...messages].reverse()) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+
     if (message.role !== "assistant") {
       continue;
     }
@@ -886,6 +889,19 @@ const getLatestActiveConfirmationTraceStep = (
 
     const pendingStep = trace.find((step) => step.tool === pendingTool);
     if (pendingStep) {
+      const hasLaterNonConfirmationUserMessage = messages
+        .slice(index + 1)
+        .some(
+          (laterMessage) =>
+            laterMessage.role === "user" &&
+            !isConfirmationMessage(laterMessage.content) &&
+            !isAcknowledgementMessage(laterMessage.content),
+        );
+
+      if (hasLaterNonConfirmationUserMessage) {
+        return null;
+      }
+
       return pendingStep;
     }
   }
@@ -1160,13 +1176,39 @@ const isAdminRequestHandlingIntent = (message: string) => {
   const normalized = normalizeLookupValue(message);
 
   return (
-    ["review", "handle", "process", "work on", "take care of", "triage"].some((token) =>
-      normalized.includes(token),
-    ) &&
+    [
+      "review",
+      "handle",
+      "process",
+      "work on",
+      "take care of",
+      "triage",
+      "sort it out",
+      "deal with",
+      "do whatever needs doing",
+      "do what needs doing",
+    ].some((token) => normalized.includes(token)) &&
     ["request", "client request", "service request", "client needs", "client asked"].some(
       (token) => normalized.includes(token),
     )
   );
+};
+
+const isAdminRequestFullWorkflowIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return [
+    "sort it out",
+    "deal with this",
+    "deal with it",
+    "do whatever needs doing",
+    "do what needs doing",
+    "take care of this",
+    "take care of it",
+    "handle this one",
+    "handle it",
+    "sort this out",
+  ].some((token) => normalized.includes(token));
 };
 
 const isExplicitStructuredMutationIntent = (message: string) => {
@@ -1258,6 +1300,7 @@ const extractOpportunityEstimatedValue = (message: string) => {
     .replace(/\b\d{1,2}\s+[a-z]+\s+(?:\d{4}|this year)\b/gi, " ");
   const currencyMatch =
     sanitizedMessage.match(/\b(?:r|zar)\s*[:\-]?\s*(\d+(?:[ ,]\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)/i)?.[0] ??
+    sanitizedMessage.match(/\bvalued?\s+at\s+(?:r|zar)?\s*(\d+(?:[ ,]\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)/i)?.[0] ??
     sanitizedMessage.match(/\bworth\s+(?:r|zar)?\s*(\d+(?:[ ,]\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)/i)?.[0] ??
     null;
 
@@ -1353,8 +1396,18 @@ const sanitizeWorkflowGeneratedTitle = (value: string | null) => {
 
   if (
     trimmed.length > 90 ||
+    normalized.includes("create a new opportunity") ||
+    normalized.includes("existing client") ||
     normalized.includes("please review") ||
+    normalized.includes("review the client request") ||
     normalized.includes("latest request") ||
+    normalized.includes("sort it out") ||
+    normalized.includes("do whatever needs doing") ||
+    normalized.includes("do what needs doing") ||
+    normalized.includes("handle this one") ||
+    normalized.includes("handle this request") ||
+    normalized.includes("take care of this request") ||
+    normalized.includes("take care of this") ||
     normalized.includes("assign the best") ||
     normalized.includes("create an opportunity") ||
     normalized.includes("create opportunity") ||
@@ -1525,6 +1578,18 @@ const extractOpportunityTitle = (
 
   if (directTitle) {
     return directTitle;
+  }
+
+  const refinementTitle =
+    message.match(/\bname\s+(?:the\s+)?(?:opportunity|deal)\s+["“]?(.+?)["”]?(?=\s+(?:worth|close|closing|expected close date|date|stage|assign to|and assign|owner)\b|$|\n)/i)?.[1]?.trim() ??
+    message.match(/\bcall\s+(?:the\s+)?(?:opportunity|deal)\s+["“]?(.+?)["”]?(?=\s+(?:worth|close|closing|expected close date|date|stage|assign to|and assign|owner)\b|$|\n)/i)?.[1]?.trim() ??
+    message.match(/\bcall\s+it\s+["“]?(.+?)["”]?(?=\s+(?:worth|close|closing|expected close date|date|stage|assign to|and assign|owner)\b|$|\n)/i)?.[1]?.trim() ??
+    null;
+
+  if (refinementTitle) {
+    return refinementTitle
+      .replace(/^(?:it will be|it should be|it is|it'll be)\s+/i, "")
+      .replace(/[.\s]+$/, "");
   }
 
   const explicit =
@@ -1907,6 +1972,7 @@ const inferPendingOpportunityCreateRequest = (
   }
 
   const request: PendingOpportunityCreateRequest = {
+    autoAssignBestOwner: false,
     clientId: null,
     clientName: null,
     estimatedValue: null,
@@ -1947,13 +2013,32 @@ const inferPendingOpportunityCreateRequest = (
     request.expectedCloseDate =
       extractOpportunityExpectedCloseDate(message.content) ?? request.expectedCloseDate;
     request.stage = extractOpportunityStage(message.content) ?? request.stage;
-    request.title =
+    if (
+      /\b(?:assign|pick|choose)\b[\s\S]*\b(?:best|best fit|best fits|best person|best owner|best rep|best advisor|who best fits|most reliable owner|reasonable owner|right owner|suitable owner|any)\b/i.test(
+        message.content,
+      )
+    ) {
+      request.autoAssignBestOwner = true;
+    }
+    const extractedTitle = sanitizeWorkflowGeneratedTitle(
       extractOpportunityTitle(
         message.content,
         workspace,
         request.clientName,
         request.ownerName,
-      ) ?? request.title;
+      ),
+    );
+    const hasExplicitTitleRefinement =
+      /\b(?:opportunity title|deal called|called|title is|title to|name the opportunity|name the deal|call the opportunity|call the deal|call it)\b/i.test(
+        message.content,
+      );
+
+    if (
+      extractedTitle &&
+      (!request.title || isOpportunityCreateIntent(message.content) || hasExplicitTitleRefinement)
+    ) {
+      request.title = extractedTitle;
+    }
   });
 
   if (request.clientName && !request.clientId) {
@@ -1962,6 +2047,23 @@ const inferPendingOpportunityCreateRequest = (
 
   if (request.ownerName && !request.ownerId) {
     request.ownerId = findOwnerByReferenceInWorkspace(workspace, request.ownerName)?.id ?? null;
+  }
+
+  if (
+    request.autoAssignBestOwner &&
+    !request.ownerId &&
+    request.clientId &&
+    request.estimatedValue
+  ) {
+    const client = findClientByReferenceInWorkspace(workspace, request.clientId);
+    const bestOwner = client
+      ? getBestOwner(workspace.salesData, request.estimatedValue, client.industry ?? "General", {
+          pricingRequests: workspace.pricingRequests,
+        })
+      : null;
+
+    request.ownerId = bestOwner?.id ?? request.ownerId;
+    request.ownerName = bestOwner?.name ?? request.ownerName;
   }
 
   return request;
@@ -1980,7 +2082,7 @@ const createOpportunityMissingFieldsMessage = (
     missing.push("the opportunity name");
   }
 
-  if (!request.ownerId && !request.ownerName) {
+  if (!request.ownerId && !request.ownerName && !request.autoAssignBestOwner) {
     missing.push("the owner name or id");
   }
 
@@ -2018,6 +2120,10 @@ const getRecentPendingOpportunityCreateRequest = (
   }
 
   return {
+    autoAssignBestOwner:
+      typeof traceStep.arguments.autoAssignBestOwner === "boolean"
+        ? traceStep.arguments.autoAssignBestOwner
+        : false,
     clientId: typeof traceStep.arguments.clientId === "string" ? traceStep.arguments.clientId : null,
     clientName:
       typeof traceStep.arguments.clientName === "string" ? traceStep.arguments.clientName : null,
@@ -2176,7 +2282,7 @@ const inferPendingAdminRequestHandlingRequest = (
     request.clientName = client?.name ?? request.clientName;
     request.createOpportunity =
       request.createOpportunity ||
-      /\b(?:opportunity|deal|sale|pipeline)\b/i.test(message.content);
+      /\b(?:opportunity|opp|deal|sale|pipeline)\b/i.test(message.content);
     request.createProposal =
       request.createProposal || /\b(?:proposal|quote)\b/i.test(message.content);
     request.estimatedValue =
@@ -2189,13 +2295,17 @@ const inferPendingAdminRequestHandlingRequest = (
       findOwnerByReferenceInWorkspace(workspace, message.content)?.name ?? request.ownerName;
     request.stage = extractOpportunityStage(message.content) ?? request.stage;
     request.opportunityTitle =
-      extractOpportunityTitle(
-        message.content,
-        workspace,
-        request.clientName,
-        request.ownerName,
+      sanitizeWorkflowGeneratedTitle(
+        extractOpportunityTitle(
+          message.content,
+          workspace,
+          request.clientName,
+          request.ownerName,
+        ),
       ) ?? request.opportunityTitle;
-    request.proposalTitle = extractProposalTitle(message.content) ?? request.proposalTitle;
+    request.proposalTitle =
+      sanitizeWorkflowGeneratedTitle(extractProposalTitle(message.content)) ??
+      request.proposalTitle;
     request.proposalValidUntil =
       extractProposalValidUntil(message.content) ?? request.proposalValidUntil;
 
@@ -2212,6 +2322,17 @@ const inferPendingAdminRequestHandlingRequest = (
     request.requestId = matchedRequest?.id ?? request.requestId;
     request.requestTitle = matchedRequest?.title ?? request.requestTitle;
     request.clientId = matchedRequest?.clientId ?? request.clientId;
+
+    if (matchedRequest && isAdminRequestFullWorkflowIntent(message.content)) {
+      request.createOpportunity =
+        request.createOpportunity ||
+        (!matchedRequest.opportunityId &&
+          ["proposal_support", "pricing_support"].includes(matchedRequest.requestType));
+      request.createProposal =
+        request.createProposal ||
+        (!matchedRequest.proposalId &&
+          ["proposal_support", "pricing_support"].includes(matchedRequest.requestType));
+    }
   });
 
   if (!request.requestId) {
@@ -3777,6 +3898,11 @@ const createConfirmedOpportunityCreateResult = async (
 
   const owner =
     findOwnerByReferenceInWorkspace(workspace, request.ownerId ?? request.ownerName) ??
+    (request.autoAssignBestOwner
+      ? getBestOwner(workspace.salesData, request.estimatedValue, client.industry ?? "General", {
+          pricingRequests: workspace.pricingRequests,
+        })
+      : null) ??
     null;
 
   const opportunity =
@@ -4413,9 +4539,12 @@ const getRecentConfirmedGenericMutationRequest = (messages: AssistantMessage[]) 
     messages,
     "confirmation_required_generic_mutation",
     [
+      "confirmed_delete_client_workflow",
+      "confirmed_delete_opportunity_workflow",
       "confirmed_create_note_workflow",
       "confirmed_update_note_workflow",
       "confirmed_delete_note_workflow",
+      "confirmed_delete_proposal_workflow",
       "confirmed_create_pricing_request_workflow",
       "confirmed_update_pricing_request_workflow",
       "confirmed_delete_pricing_request_workflow",
@@ -4444,6 +4573,9 @@ const getRecentConfirmedGenericMutationRequest = (messages: AssistantMessage[]) 
 type ConfirmedGenericToolRequest = {
   args: Record<string, unknown>;
   toolName:
+    | "delete_client"
+    | "delete_opportunity"
+    | "delete_proposal"
     | "create_activity"
     | "update_activity"
     | "delete_activity"
@@ -4457,9 +4589,20 @@ type ConfirmedGenericToolRequest = {
 
 const inferConfirmedGenericToolRequest = (
   workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
   request: string,
 ): ConfirmedGenericToolRequest | null => {
   const normalized = normalizeLookupValue(request);
+  const recentContext = getRecentWorkflowContext(workspace, messages);
+  const recentCreateMutation = [...messages]
+    .reverse()
+    .filter((message) => message.role === "assistant")
+    .flatMap((message) => message.mutations ?? [])
+    .find(
+      (mutation) =>
+        mutation.operation === "create" &&
+        ["client", "opportunity", "proposal"].includes(mutation.entityType),
+    );
   const mentionedOpportunity = extractOpportunityReference(request, workspace);
   const opportunity = findOpportunityByReferenceInWorkspace(workspace, mentionedOpportunity);
   const explicitAssignedToId =
@@ -4532,6 +4675,83 @@ const inferConfirmedGenericToolRequest = (
             noteId: note.id,
           },
           toolName: "delete_note",
+        }
+      : null;
+  }
+
+  const mentionsClientDeletion = /\b(?:delete|remove)\b[\s\S]*\bclient\b/.test(normalized);
+  const mentionsOpportunityDeletion =
+    /\b(?:delete|remove)\b[\s\S]*\b(?:opportunity|deal)\b/.test(normalized);
+  const mentionsProposalDeletion = /\b(?:delete|remove)\b[\s\S]*\bproposal\b/.test(normalized);
+
+  if (mentionsClientDeletion && mentionsProposalDeletion && recentCreateMutation) {
+    if (recentCreateMutation.entityType === "client" && recentContext.client) {
+      return {
+        args: {
+          clientId: recentContext.client.id,
+        },
+        toolName: "delete_client",
+      };
+    }
+
+    if (recentCreateMutation.entityType === "proposal" && recentContext.proposal) {
+      return {
+        args: {
+          proposalId: recentContext.proposal.id,
+        },
+        toolName: "delete_proposal",
+      };
+    }
+  }
+
+  if (mentionsClientDeletion) {
+    const client =
+      findClientByReferenceInWorkspace(
+        workspace,
+        workspace.salesData.clients.find((item) =>
+          normalized.includes(normalizeLookupValue(item.name)),
+        )?.id ?? null,
+      ) ?? recentContext.client;
+
+    return client
+      ? {
+          args: {
+            clientId: client.id,
+          },
+          toolName: "delete_client",
+        }
+      : null;
+  }
+
+  if (mentionsOpportunityDeletion) {
+    const targetOpportunity = opportunity ?? recentContext.opportunity;
+
+    return targetOpportunity
+      ? {
+          args: {
+            opportunityId: targetOpportunity.id,
+          },
+          toolName: "delete_opportunity",
+        }
+      : null;
+  }
+
+  if (mentionsProposalDeletion) {
+    const proposal =
+      findProposalByReferenceInWorkspace(
+        workspace,
+        workspace.salesData.proposals.find((item) =>
+          normalized.includes(normalizeLookupValue(item.title)),
+        )?.id ?? null,
+      ) ??
+      recentContext.proposal;
+
+    return proposal
+      ? {
+          args: {
+            proposalId: proposal.id,
+          },
+          toolName: "delete_proposal",
         }
       : null;
   }
@@ -8319,7 +8539,7 @@ async function createConfirmedGenericMutationLocalResult(
     return null;
   }
 
-  const localRequest = inferConfirmedGenericToolRequest(workspace, confirmedRequest);
+  const localRequest = inferConfirmedGenericToolRequest(workspace, messages, confirmedRequest);
 
   if (!localRequest) {
     return null;
@@ -8341,6 +8561,12 @@ async function createConfirmedGenericMutationLocalResult(
   const resultRecord = output as Record<string, unknown>;
   const responseMessage = (() => {
     switch (localRequest.toolName) {
+      case "delete_client":
+        return `Deleted client ${String(mutation.title ?? "Untitled client")}.`;
+      case "delete_opportunity":
+        return `Deleted opportunity ${String(mutation.title ?? "Untitled opportunity")}.`;
+      case "delete_proposal":
+        return `Deleted proposal ${String(mutation.title ?? "Untitled proposal")}.`;
       case "create_note":
         return `Created note ${String(mutation.title ?? "Untitled note")}.`;
       case "update_note":
