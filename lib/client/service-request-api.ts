@@ -208,3 +208,14 @@ export const applyServiceRequestRepresentativeDecision = async (
     body: JSON.stringify(payload),
     method: "POST",
   });
+
+export const addServiceRequestMessage = async (
+  requestId: string,
+  payload: {
+    content: string;
+  },
+) =>
+  serviceRequestApi<ServiceRequestDetail>(`/api/service-requests/${requestId}/messages`, {
+    body: JSON.stringify(payload),
+    method: "POST",
+  });

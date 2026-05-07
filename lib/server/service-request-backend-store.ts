@@ -720,6 +720,29 @@ export const applyLiveServiceRequestRepDecision = async (
   return clone(updatedRequest);
 };
 
+export const addLiveServiceRequestMessage = async (
+  user: IMockUser,
+  token: string,
+  requestId: string,
+  input: {
+    content: string;
+  },
+) => {
+  const content = input.content.trim();
+
+  if (!content) {
+    throw new Error("Message content is required.");
+  }
+
+  const { request } = await getVisibleRequestOrThrow(user, token, requestId);
+
+  await appendEvent(token, request.request, user, "service_request_message_added", {
+    content,
+  });
+
+  return getLiveServiceRequestDetail(user, token, requestId);
+};
+
 export const attachLiveOpportunityToServiceRequest = async (
   user: IMockUser,
   token: string,
