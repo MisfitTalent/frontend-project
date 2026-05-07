@@ -424,21 +424,21 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
             {incomingMessageCount > 0 && !isMessageAlertDismissed ? (
               <div
                 aria-label={`${incomingMessageCount} message notifications`}
-                className="flex max-w-[24rem] items-center gap-2 rounded-full border border-sky-300 bg-sky-50 px-2 py-1 text-sky-950 shadow-sm"
+                className="flex max-w-[24rem] items-center gap-2"
                 role="region"
               >
                 <Badge count={incomingMessageCount} size="small">
-                  <button
-                    className="flex items-center gap-2 rounded-full bg-transparent px-2 py-1 text-left text-xs font-medium text-sky-950 transition hover:bg-sky-100"
+                  <Button
+                    className="dashboard-header-home-button border-sky-300 !bg-sky-50 !text-sky-950 hover:!border-sky-400 hover:!bg-sky-100 hover:!text-sky-950"
+                    icon={<MailOutlined />}
                     onClick={openIncomingMessages}
-                    type="button"
+                    type="default"
                   >
-                    <MailOutlined />
                     <span className="max-w-[14rem] truncate">
                       {latestIncomingMessage?.title ??
                         `${incomingMessageCount} message${incomingMessageCount === 1 ? "" : "s"} waiting`}
                     </span>
-                  </button>
+                  </Button>
                 </Badge>
                 <button
                   aria-label="Dismiss message alert"
