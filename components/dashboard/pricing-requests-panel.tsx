@@ -240,6 +240,7 @@ export function PricingRequestsPanel() {
       />
 
       <Modal
+        forceRender
         onCancel={() => {
           setFormError(null);
           setIsModalOpen(false);

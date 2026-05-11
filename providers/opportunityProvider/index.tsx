@@ -20,7 +20,7 @@ import {
 import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { initialOpportunities } from "@/providers/domainSeeds";
 import { OpportunityActionContext, OpportunityStateContext } from "./context";
-import { OpportunityStage, type IOpportunity } from "@/providers/salesTypes";
+import type { IOpportunity } from "@/providers/salesTypes";
 
 export const useOpportunityState = () => {
   const context = useContext(OpportunityStateContext);
@@ -165,7 +165,7 @@ export default function OpportunityProvider({
   };
 
   const moveStageIfNeeded = async (opportunity: IOpportunity, stage?: string) => {
-    if (!stage || stage === OpportunityStage.New) {
+    if (!stage) {
       return opportunity;
     }
 

@@ -107,6 +107,7 @@ export function NotesPanel() {
         />
       )}
       <Modal
+        forceRender
         onCancel={() => {
           setIsModalOpen(false);
           setEditingId(null);

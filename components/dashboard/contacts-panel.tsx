@@ -2,6 +2,7 @@
 
 import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { Button, Tag, Typography } from "antd";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
@@ -11,50 +12,11 @@ import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
 import { useContactActions, useContactState } from "@/providers/contactProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
-import { type IContact, type ITeamMember } from "@/providers/salesTypes";
+import { type IContact } from "@/providers/salesTypes";
 import { useTeamMembersState } from "@/providers/teamMembersProvider";
 import { AnimatedDashboardTable } from "./animated-dashboard-table";
+import { buildContactDirectory, type ContactRow } from "./contact-directory";
 import { ContactForm } from "./contact-form";
-
-type ContactRow = {
-  category: "client" | "internal" | "admin";
-  clientLabel: string;
-  clientNames: string[];
-  email: string;
-  id: string;
-  isEditable: boolean;
-  name: string;
-  phoneNumber?: string;
-  position: string;
-  sourceContact?: IContact;
-};
-
-const WORKSPACE_ADMIN_ROW: ContactRow = {
-  category: "admin",
-  clientLabel: "Workspace-wide",
-  clientNames: [],
-  email: "admin@autosales.com",
-  id: "workspace-admin",
-  isEditable: false,
-  name: "Workspace administrator",
-  phoneNumber: "+27 11 000 0100",
-  position: "Administrator",
-};
-
-const buildInternalRow = (
-  member: ITeamMember,
-  clientNames: string[],
-): ContactRow => ({
-  category: "internal",
-  clientLabel: clientNames.length > 0 ? clientNames.join(", ") : "Internal team",
-  clientNames,
-  email: `${member.name.toLowerCase().replace(/\s+/g, ".")}@autosales.com`,
-  id: `internal-${member.id}`,
-  isEditable: false,
-  name: member.name,
-  phoneNumber: undefined,
-  position: member.role,
-});
 
 export function ContactsPanel() {
   const { user } = useAuthState();
@@ -73,90 +35,31 @@ export function ContactsPanel() {
   const canManageContacts = !isClientUser;
   const isPrivileged = isAdminRole(role) || isManagerRole(role);
 
-  const visibleClientIds = useMemo(() => {
-    if (isClientUser) {
-      return new Set(user?.clientIds ?? []);
-    }
-
-    if (isPrivileged) {
-      return new Set(clients.map((client) => client.id));
-    }
-
-    return new Set(
-      opportunities
-        .filter((opportunity) => opportunity.ownerId === user?.userId)
-        .map((opportunity) => opportunity.clientId),
-    );
-  }, [clients, isClientUser, isPrivileged, opportunities, user?.clientIds, user?.userId]);
-
-  const visibleClientContacts = useMemo<ContactRow[]>(
-    () =>
-      contacts
-        .filter((contact) => visibleClientIds.has(contact.clientId))
-        .map((contact) => ({
-          category: "client",
-          clientLabel:
-            clients.find((client) => client.id === contact.clientId)?.name ?? "Unknown client",
-          clientNames: [],
-          email: contact.email,
-          id: contact.id,
-          isEditable: canManageContacts,
-          name: `${contact.firstName} ${contact.lastName}`.trim(),
-          phoneNumber: contact.phoneNumber,
-          position: contact.position,
-          sourceContact: contact,
-        })),
-    [canManageContacts, clients, contacts, visibleClientIds],
-  );
-
-  const internalRows = useMemo<ContactRow[]>(() => {
-    if (isPrivileged) {
-      return teamMembers.map((member) => buildInternalRow(member, []));
-    }
-
-    if (isClientUser) {
-      const involvedClientIds = new Set(user?.clientIds ?? []);
-      const involvedOpportunityIds = new Set(
-        opportunities
-          .filter((opportunity) => involvedClientIds.has(opportunity.clientId))
-          .map((opportunity) => opportunity.id),
-      );
-      const involvedMemberIds = new Set(
-        opportunities
-          .filter((opportunity) => involvedClientIds.has(opportunity.clientId) && opportunity.ownerId)
-          .map((opportunity) => opportunity.ownerId as string),
-      );
-
-      activities.forEach((activity) => {
-        if (involvedOpportunityIds.has(activity.relatedToId) && activity.assignedToId) {
-          involvedMemberIds.add(activity.assignedToId);
-        }
-      });
-
-      return teamMembers
-        .filter((member) => involvedMemberIds.has(member.id))
-        .map((member) =>
-          buildInternalRow(
-            member,
-            clients
-              .filter((client) => involvedClientIds.has(client.id))
-              .map((client) => client.name),
-          ),
-        );
-    }
-
-    return teamMembers.map((member) => buildInternalRow(member, []));
-  }, [activities, clients, isClientUser, isPrivileged, opportunities, teamMembers, user?.clientIds]);
-
   const rows = useMemo(() => {
-    const combined = [...visibleClientContacts, ...internalRows];
-
-    if (!isClientUser) {
-      combined.push(WORKSPACE_ADMIN_ROW);
-    }
-
-    return combined.sort((left, right) => left.name.localeCompare(right.name));
-  }, [internalRows, isClientUser, visibleClientContacts]);
+    return buildContactDirectory({
+      activities,
+      canManageContacts,
+      clients,
+      contacts,
+      isClientUser,
+      isPrivileged,
+      opportunities,
+      teamMembers,
+      userClientIds: user?.clientIds,
+      userId: user?.userId,
+    });
+  }, [
+    activities,
+    canManageContacts,
+    clients,
+    contacts,
+    isClientUser,
+    isPrivileged,
+    opportunities,
+    teamMembers,
+    user?.clientIds,
+    user?.userId,
+  ]);
 
   const columns = [
     {
@@ -164,7 +67,12 @@ export function ContactsPanel() {
       title: "Name",
       render: (_: unknown, record: ContactRow) => (
         <div className="space-y-1">
-          <Typography.Text strong>{record.name}</Typography.Text>
+          <Link
+            className="font-medium text-[#1f365c] transition-colors hover:text-[#f28c28]"
+            href={`/dashboard/contacts/${record.id}`}
+          >
+            {record.name}
+          </Link>
           <div>
             <Tag color={record.category === "client" ? "blue" : record.category === "admin" ? "gold" : "purple"}>
               {record.category === "client"
