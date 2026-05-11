@@ -33,7 +33,6 @@ export interface INoteItem {
   submittedBy?: string;
   source?: "assistant" | "client_portal" | "workspace";
   status?: "Acknowledged" | "Sent";
-  submittedBy?: string;
   title: string;
 }
 
