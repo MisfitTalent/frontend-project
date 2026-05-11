@@ -1,13 +1,13 @@
 import "server-only";
 
 import type { IMockUser } from "@/app/api/Auth/mock-users";
-import { type IDocumentItem, type INoteItem } from "@/providers/domainSeeds";
-import type { IPricingRequest, ISalesData, UserRole } from "@/providers/salesTypes";
 import { getUserRoleLabel, normalizeUserRole } from "@/lib/auth/roles";
 import { getMockWorkspaceSnapshot } from "@/lib/server/mock-workspace-store";
+import { type IDocumentItem, type INoteItem } from "@/providers/domainSeeds";
+import type { IPricingRequest, ISalesData, UserRole } from "@/providers/salesTypes";
 
 export interface IAssistantWorkspace {
-  clientIds?: string[];
+  clientIds?: string[] | null;
   documents: IDocumentItem[];
   isClientScoped: boolean;
   notes: INoteItem[];
@@ -30,8 +30,8 @@ export const getAssistantWorkspaceForUser = (
 
   if (!isClientScoped) {
     return {
+      clientIds: user.clientIds ?? null,
       documents: workspace.documents,
-      clientIds: user.clientIds ?? undefined,
       isClientScoped: false,
       notes: workspace.notes,
       pricingRequests: workspace.pricingRequests,
@@ -82,9 +82,7 @@ export const getAssistantWorkspaceForUser = (
     (document) => !document.clientId || allowedClientIds.has(document.clientId),
   );
   const scopedNotes = workspace.notes.filter(
-    (note) =>
-      note.category !== "Internal" &&
-      (!note.clientId || allowedClientIds.has(note.clientId)),
+    (note) => note.category !== "Internal" && (!note.clientId || allowedClientIds.has(note.clientId)),
   );
   const scopedPricingRequests = workspace.pricingRequests.filter((request) =>
     scopedOpportunityIds.has(request.opportunityId),
@@ -103,8 +101,8 @@ export const getAssistantWorkspaceForUser = (
   };
 
   return {
+    clientIds: user.clientIds ?? null,
     documents: scopedDocuments,
-    clientIds: user.clientIds ?? undefined,
     isClientScoped: true,
     notes: scopedNotes,
     pricingRequests: scopedPricingRequests,
