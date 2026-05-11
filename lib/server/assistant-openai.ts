@@ -9,6 +9,7 @@ import {
   getOpportunityInsights,
   getTeamCapacity,
 } from "@/providers/salesSelectors";
+import { OpportunityStage, ProposalStatus } from "@/providers/salesTypes";
 
 import {
   getAssistantServerConfig,
@@ -19,21 +20,28 @@ import type { IAssistantWorkspace } from "./assistant-workspace";
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { isManagerRole } from "@/lib/auth/roles";
 import {
+  createLiveOpportunity,
+  createLiveProposal,
+  deleteLiveOpportunity,
+  deleteLiveProposal,
+  updateLiveProposal,
+} from "@/lib/server/assistant-backend";
+import {
   createMockActivity,
   createMockClient,
   createMockContact,
   createMockNote,
-  listMockNotes,
-  listMockPricingRequests,
-  deleteMockClient,
-  deleteMockOpportunity,
-  deleteMockProposal,
   deleteMockActivity,
+  deleteMockClient,
   deleteMockNote,
+  deleteMockOpportunity,
   deleteMockPricingRequest,
+  deleteMockProposal,
   createMockOpportunity,
   createMockPricingRequest,
   createMockProposal,
+  listMockNotes,
+  listMockPricingRequests,
   updateMockActivity,
   updateMockNote,
   updateMockOpportunity,
@@ -83,6 +91,31 @@ type ProviderResponse = {
   output_text?: string;
 };
 
+type ChatCompletionToolCall = {
+  id?: string;
+  function?: {
+    arguments?: string;
+    name?: string;
+  };
+  type?: string;
+};
+
+type ChatCompletionMessage = {
+  content?: string | null;
+  role?: string;
+  tool_calls?: ChatCompletionToolCall[];
+};
+
+type ChatCompletionChoice = {
+  finish_reason?: string | null;
+  message?: ChatCompletionMessage | null;
+};
+
+type ChatCompletionResponse = {
+  choices?: ChatCompletionChoice[] | null;
+  id?: string;
+};
+
 type AssistantInputMessage = {
   content: string;
   role: "assistant" | "user";
@@ -105,6 +138,29 @@ type AssistantResponseInput =
   | AssistantFunctionCallInput
   | AssistantFunctionOutputInput
   | AssistantInputMessage;
+
+type AssistantChatMessage =
+  | {
+      content: string;
+      role: "assistant" | "system" | "user";
+    }
+  | {
+      content?: string | null;
+      role: "assistant";
+      tool_calls: Array<{
+        id: string;
+        function: {
+          arguments: string;
+          name: string;
+        };
+        type: "function";
+      }>;
+    }
+  | {
+      content: string;
+      role: "tool";
+      tool_call_id: string;
+    };
 
 type AssistantActor = {
   email: string;
@@ -148,6 +204,32 @@ type PendingMessageSendRequest = {
   recipientId: string | null;
   recipientName: string | null;
   subject: string | null;
+};
+
+type PendingProposalDraftRequest = {
+  description: string | null;
+  opportunityId: string | null;
+  opportunityTitle: string | null;
+  title: string | null;
+  validUntil: string | null;
+};
+
+type PendingProposalEditRequest = {
+  proposalId: string | null;
+  proposalTitle: string | null;
+  title: string | null;
+  validUntil: string | null;
+};
+
+type PendingOpportunityCreateRequest = {
+  clientId: string | null;
+  clientName: string | null;
+  estimatedValue: number | null;
+  expectedCloseDate: string | null;
+  ownerId: string | null;
+  ownerName: string | null;
+  stage: string | null;
+  title: string | null;
 };
 
 type WorkloadBoostPlan = {
@@ -541,6 +623,497 @@ const resolveMessageRecipientReference = (
 
 const buildMessageSubject = (recipientName: string | null) =>
   recipientName ? `Message to ${recipientName}` : "Workspace message";
+
+const PROPOSAL_DRAFT_CONFIRMATION_TOOL = "confirmation_required_proposal_draft_create";
+const PROPOSAL_EDIT_CONFIRMATION_TOOL = "confirmation_required_proposal_edit";
+
+const parseDateReference = (value: string) => {
+  const isoMatch = value.match(/(\d{4}-\d{2}-\d{2})/);
+
+  if (isoMatch?.[1]) {
+    return isoMatch[1];
+  }
+
+  const normalized = value.replace(/\b(expire|expires|expiry|on|until|valid|date)\b/gi, " ").trim();
+  const parsed = new Date(normalized);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString().split("T")[0];
+};
+
+const isProposalDraftIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return (
+    normalized.includes("create a draft proposal") ||
+    normalized.includes("create draft proposal") ||
+    normalized.includes("create a proposal") ||
+    normalized.includes("new draft proposal") ||
+    normalized.includes("fresh draft proposal")
+  );
+};
+
+const isProposalEditIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return (
+    normalized.includes("change it") ||
+    normalized.includes("edit it") ||
+    normalized.includes("update it") ||
+    normalized.includes("rename it") ||
+    normalized.includes("change proposal") ||
+    normalized.includes("edit proposal") ||
+    normalized.includes("update proposal")
+  );
+};
+
+const extractProposalTitle = (message: string) =>
+  message.match(/\btitle\s+(?:is|to)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+  message.match(/\b(?:rename|call)\s+(?:it|the proposal)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+  message.match(/\bdraft proposal titled\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+  null;
+
+const extractProposalValidUntil = (message: string) => {
+  const raw =
+    message.match(/\b(?:expire|expires|expiry|valid until)\s*(?:on)?\s*[:\-]?\s*([\s\S]+)$/i)?.[1]?.trim() ??
+    null;
+
+  return raw ? parseDateReference(raw) : null;
+};
+
+const isOpportunityCreateIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return (
+    normalized.includes("create a new opportunity") ||
+    normalized.includes("create new opportunity") ||
+    normalized.includes("create an opportunity") ||
+    normalized.includes("create opportunity") ||
+    normalized.includes("new opportunity")
+  );
+};
+
+const findClientByReferenceInWorkspace = (
+  workspace: IAssistantWorkspace,
+  reference: string | null,
+) => {
+  if (!reference) {
+    return null;
+  }
+
+  const normalizedReference = normalizeLookupValue(reference);
+
+  return (
+    workspace.salesData.clients.find(
+      (client) => normalizeLookupValue(client.id) === normalizedReference,
+    ) ??
+    workspace.salesData.clients.find(
+      (client) => normalizeLookupValue(client.name) === normalizedReference,
+    ) ??
+    workspace.salesData.clients.find((client) =>
+      normalizeLookupValue(client.name).includes(normalizedReference),
+    ) ??
+    null
+  );
+};
+
+const findOwnerByReferenceInWorkspace = (
+  workspace: IAssistantWorkspace,
+  reference: string | null,
+) => {
+  if (!reference) {
+    return null;
+  }
+
+  const normalizedReference = normalizeLookupValue(reference);
+
+  return (
+    workspace.salesData.teamMembers.find(
+      (member) => normalizeLookupValue(member.id) === normalizedReference,
+    ) ??
+    workspace.salesData.teamMembers.find(
+      (member) => normalizeLookupValue(member.name) === normalizedReference,
+    ) ??
+    workspace.salesData.teamMembers.find((member) =>
+      normalizeLookupValue(member.name).includes(normalizedReference),
+    ) ??
+    null
+  );
+};
+
+const extractOpportunityEstimatedValue = (message: string) => {
+  const sanitizedMessage = message
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ")
+    .replace(/\b\d{1,2}\s+[a-z]+\s+(?:\d{4}|this year)\b/gi, " ");
+  const currencyMatch =
+    sanitizedMessage.match(/\b(?:r|zar)\s*[:\-]?\s*(\d+(?:[ ,]\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)/i)?.[0] ??
+    sanitizedMessage.match(/\bworth\s+(?:r|zar)?\s*(\d+(?:[ ,]\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)/i)?.[0] ??
+    null;
+
+  if (!currencyMatch) {
+    return null;
+  }
+
+  const value = parseCurrencyNumber(currencyMatch);
+  return value > 0 ? value : null;
+};
+
+const extractOpportunityExpectedCloseDate = (message: string) => {
+  const isoMatch = message.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+
+  if (isoMatch?.[1]) {
+    return isoMatch[1];
+  }
+
+  const naturalMatch =
+    message.match(/\b(\d{1,2}\s+[a-z]+\s+\d{4})\b/i)?.[1] ??
+    message.match(/\b(\d{1,2}\s+[a-z]+\s+this year)\b/i)?.[1] ??
+    message.match(
+      /\b(?:close date|expected close date|date)\s*(?:is|on|to)?\s*[:\-]?\s*([a-z0-9\s,-]+)/i,
+    )?.[1] ??
+    null;
+
+  return naturalMatch ? parseDateReference(naturalMatch) : null;
+};
+
+const extractOpportunityStage = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  if (normalized.includes("negotiation") || normalized.includes("negotiating")) {
+    return OpportunityStage.Negotiating;
+  }
+  if (normalized.includes("proposal sent") || normalized.includes("proposal")) {
+    return OpportunityStage.ProposalSent;
+  }
+  if (normalized.includes("qualified")) {
+    return OpportunityStage.Qualified;
+  }
+  if (normalized.includes("won")) {
+    return OpportunityStage.Won;
+  }
+  if (normalized.includes("lost")) {
+    return OpportunityStage.Lost;
+  }
+  if (normalized.includes("new")) {
+    return OpportunityStage.New;
+  }
+
+  return null;
+};
+
+const extractOpportunityTitle = (
+  message: string,
+  workspace: IAssistantWorkspace,
+  clientName: string | null,
+  ownerName: string | null,
+) => {
+  const explicit =
+    message.match(/\bopportunity title\s*(?:is|to)?\s*[:\-]?\s*["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+    message.match(/\bdeal called\s*["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+    message.match(/\btitle\s*(?:is|to)\s*["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+    null;
+
+  if (explicit) {
+    return explicit;
+  }
+
+  let remainder = ` ${message} `;
+
+  if (clientName) {
+    remainder = remainder.replace(new RegExp(clientName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
+  }
+
+  if (ownerName) {
+    remainder = remainder.replace(new RegExp(ownerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
+    const firstName = ownerName.split(" ")[0];
+    if (firstName) {
+      remainder = remainder.replace(new RegExp(firstName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
+    }
+  }
+
+  workspace.salesData.teamMembers.forEach((member) => {
+    const firstName = member.name.split(" ")[0];
+    if (firstName && normalizeLookupValue(message).includes(normalizeLookupValue(firstName))) {
+      remainder = remainder.replace(new RegExp(firstName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
+    }
+  });
+
+  remainder = remainder
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ")
+    .replace(/\b\d{1,2}\s+[a-z]+\s+(?:\d{4}|this year)\b/gi, " ")
+    .replace(/\b(?:r|zar)\s*[:\-]?\s*[\d][\d\s,]*(?:\.\d+)?\b/gi, " ")
+    .replace(/\b(?:close date|expected close date|date|owner|stage|client|assign to|worth)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return remainder.length > 0 ? remainder : null;
+};
+
+const findOpportunityByReferenceInWorkspace = (
+  workspace: IAssistantWorkspace,
+  reference: string | null,
+) => {
+  if (!reference) {
+    return null;
+  }
+
+  const normalizedReference = normalizeLookupValue(reference);
+
+  return (
+    workspace.salesData.opportunities.find(
+      (opportunity) => normalizeLookupValue(opportunity.id) === normalizedReference,
+    ) ??
+    workspace.salesData.opportunities.find(
+      (opportunity) => normalizeLookupValue(opportunity.title) === normalizedReference,
+    ) ??
+    workspace.salesData.opportunities.find((opportunity) =>
+      normalizeLookupValue(opportunity.title).includes(normalizedReference),
+    ) ??
+    null
+  );
+};
+
+const findProposalByReferenceInWorkspace = (
+  workspace: IAssistantWorkspace,
+  reference: string | null,
+) => {
+  if (!reference) {
+    return null;
+  }
+
+  const normalizedReference = normalizeLookupValue(reference);
+
+  return (
+    workspace.salesData.proposals.find(
+      (proposal) => normalizeLookupValue(proposal.id) === normalizedReference,
+    ) ??
+    workspace.salesData.proposals.find(
+      (proposal) => normalizeLookupValue(proposal.title) === normalizedReference,
+    ) ??
+    workspace.salesData.proposals.find((proposal) =>
+      normalizeLookupValue(proposal.title).includes(normalizedReference),
+    ) ??
+    null
+  );
+};
+
+const extractOpportunityReference = (
+  message: string,
+  workspace: IAssistantWorkspace,
+) =>
+  workspace.salesData.opportunities.find((opportunity) =>
+    normalizeLookupValue(message).includes(normalizeLookupValue(opportunity.title)),
+  )?.title ?? null;
+
+const inferPendingProposalDraftRequest = (
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  const recentUserMessages = getRecentUserMessages(messages).slice(-6);
+  const hasDraftIntent = recentUserMessages.some((message) => isProposalDraftIntent(message.content));
+
+  if (!hasDraftIntent) {
+    return null;
+  }
+
+  const request: PendingProposalDraftRequest = {
+    description: null,
+    opportunityId: null,
+    opportunityTitle: null,
+    title: null,
+    validUntil: null,
+  };
+
+  recentUserMessages.forEach((message) => {
+    request.title = extractProposalTitle(message.content) ?? request.title;
+    request.validUntil = extractProposalValidUntil(message.content) ?? request.validUntil;
+    request.opportunityTitle =
+      extractOpportunityReference(message.content, workspace) ?? request.opportunityTitle;
+  });
+
+  const opportunity = findOpportunityByReferenceInWorkspace(workspace, request.opportunityTitle);
+  request.opportunityId = opportunity?.id ?? null;
+
+  return request;
+};
+
+const inferPendingProposalEditRequest = (
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  const recentUserMessages = getRecentUserMessages(messages).slice(-6);
+  const recentAssistant = lastAssistantContent(messages);
+  const hasEditIntent =
+    recentUserMessages.some((message) => isProposalEditIntent(message.content)) &&
+    normalizeLookupValue(recentAssistant).includes("proposal");
+
+  if (!hasEditIntent) {
+    return null;
+  }
+
+  const request: PendingProposalEditRequest = {
+    proposalId: null,
+    proposalTitle: null,
+    title: null,
+    validUntil: null,
+  };
+
+  recentUserMessages.forEach((message) => {
+    request.title = extractProposalTitle(message.content) ?? request.title;
+    request.validUntil = extractProposalValidUntil(message.content) ?? request.validUntil;
+    request.proposalTitle =
+      request.proposalTitle ??
+      findProposalByReferenceInWorkspace(workspace, message.content)?.title ??
+      null;
+  });
+
+  request.proposalTitle =
+    request.proposalTitle ??
+    recentAssistant.match(/proposal(?: is| titled)?\s+["“]?(.+?)["”]?(?:,| currently|\.)/i)?.[1]?.trim() ??
+    workspace.salesData.proposals[0]?.title ??
+    null;
+
+  const proposal = findProposalByReferenceInWorkspace(workspace, request.proposalTitle);
+  request.proposalId = proposal?.id ?? null;
+
+  return request;
+};
+
+const getRecentPendingProposalDraftRequest = (
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  const traceStep = [...messages]
+    .reverse()
+    .filter((message) => message.role === "assistant")
+    .flatMap((message) => message.trace ?? [])
+    .find((step) => step.tool === PROPOSAL_DRAFT_CONFIRMATION_TOOL);
+
+  if (!traceStep) {
+    return inferPendingProposalDraftRequest(messages, workspace);
+  }
+
+  return {
+    description:
+      typeof traceStep.arguments.description === "string" ? traceStep.arguments.description : null,
+    opportunityId:
+      typeof traceStep.arguments.opportunityId === "string" ? traceStep.arguments.opportunityId : null,
+    opportunityTitle:
+      typeof traceStep.arguments.opportunityTitle === "string"
+        ? traceStep.arguments.opportunityTitle
+        : null,
+    title: typeof traceStep.arguments.title === "string" ? traceStep.arguments.title : null,
+    validUntil:
+      typeof traceStep.arguments.validUntil === "string" ? traceStep.arguments.validUntil : null,
+  } satisfies PendingProposalDraftRequest;
+};
+
+const getRecentPendingProposalEditRequest = (
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  const traceStep = [...messages]
+    .reverse()
+    .filter((message) => message.role === "assistant")
+    .flatMap((message) => message.trace ?? [])
+    .find((step) => step.tool === PROPOSAL_EDIT_CONFIRMATION_TOOL);
+
+  if (!traceStep) {
+    return inferPendingProposalEditRequest(messages, workspace);
+  }
+
+  return {
+    proposalId:
+      typeof traceStep.arguments.proposalId === "string" ? traceStep.arguments.proposalId : null,
+    proposalTitle:
+      typeof traceStep.arguments.proposalTitle === "string"
+        ? traceStep.arguments.proposalTitle
+        : null,
+    title: typeof traceStep.arguments.title === "string" ? traceStep.arguments.title : null,
+    validUntil:
+      typeof traceStep.arguments.validUntil === "string" ? traceStep.arguments.validUntil : null,
+  } satisfies PendingProposalEditRequest;
+};
+
+const inferPendingOpportunityCreateRequest = (
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  const recentUserMessages = getRecentUserMessages(messages).slice(-6);
+  const recentAssistant = lastAssistantContent(messages);
+  const confirmedMutationRequest = getRecentConfirmedGenericMutationRequest(messages);
+  const hasCreateIntent =
+    recentUserMessages.some((message) => isOpportunityCreateIntent(message.content)) ||
+    (confirmedMutationRequest ? isOpportunityCreateIntent(confirmedMutationRequest) : false) ||
+    normalizeLookupValue(recentAssistant).includes("create the opportunity");
+
+  if (!hasCreateIntent) {
+    return null;
+  }
+
+  const request: PendingOpportunityCreateRequest = {
+    clientId: null,
+    clientName: null,
+    estimatedValue: null,
+    expectedCloseDate: null,
+    ownerId: null,
+    ownerName: null,
+    stage: null,
+    title: null,
+  };
+
+  recentUserMessages.forEach((message) => {
+    const client =
+      workspace.salesData.clients.find((item) =>
+        normalizeLookupValue(message.content).includes(normalizeLookupValue(item.name)),
+      ) ??
+      workspace.salesData.clients.find((item) =>
+        normalizeLookupValue(message.content).includes(normalizeLookupValue(item.id)),
+      ) ??
+      null;
+    const owner =
+      workspace.salesData.teamMembers.find((item) =>
+        normalizeLookupValue(message.content).includes(normalizeLookupValue(item.name)),
+      ) ??
+      workspace.salesData.teamMembers.find((item) =>
+        normalizeLookupValue(message.content).includes(normalizeLookupValue(item.name.split(" ")[0] ?? "")),
+      ) ??
+      workspace.salesData.teamMembers.find((item) =>
+        normalizeLookupValue(message.content).includes(normalizeLookupValue(item.id)),
+      ) ??
+      null;
+
+    request.clientId = client?.id ?? request.clientId;
+    request.clientName = client?.name ?? request.clientName;
+    request.ownerId = owner?.id ?? request.ownerId;
+    request.ownerName = owner?.name ?? request.ownerName;
+    request.estimatedValue =
+      extractOpportunityEstimatedValue(message.content) ?? request.estimatedValue;
+    request.expectedCloseDate =
+      extractOpportunityExpectedCloseDate(message.content) ?? request.expectedCloseDate;
+    request.stage = extractOpportunityStage(message.content) ?? request.stage;
+    request.title =
+      extractOpportunityTitle(
+        message.content,
+        workspace,
+        request.clientName,
+        request.ownerName,
+      ) ?? request.title;
+  });
+
+  if (request.clientName && !request.clientId) {
+    request.clientId = findClientByReferenceInWorkspace(workspace, request.clientName)?.id ?? null;
+  }
+
+  if (request.ownerName && !request.ownerId) {
+    request.ownerId = findOwnerByReferenceInWorkspace(workspace, request.ownerName)?.id ?? null;
+  }
+
+  return request;
+};
 
 const CLIENT_REQUEST_ASSIGNMENT_CONFIRMATION_TOOL =
   "confirmation_required_client_request_assignment";
@@ -1150,6 +1723,57 @@ const createMutationConfirmationReply = (
     );
   }
 
+  const proposalDraftRequest = inferPendingProposalDraftRequest(messages, workspace);
+
+  if (proposalDraftRequest) {
+    if (!proposalDraftRequest.opportunityId && !proposalDraftRequest.opportunityTitle) {
+      return createLocalAssistantResult({
+        arguments: {
+          missing: "opportunity",
+        },
+        message:
+          "I can create the draft proposal, but I still need the opportunity title or id so I can attach it to the right deal.",
+        output: proposalDraftRequest,
+        reason: "Proposal draft request is missing the target opportunity.",
+        tool: "proposal_draft_missing_opportunity",
+      });
+    }
+
+    if (!proposalDraftRequest.title || !proposalDraftRequest.validUntil) {
+      return createLocalAssistantResult({
+        arguments: {
+          missingTitle: !proposalDraftRequest.title,
+          missingValidUntil: !proposalDraftRequest.validUntil,
+        },
+        message:
+          "I can create the draft proposal, but I still need the proposal title and expiry date.",
+        output: proposalDraftRequest,
+        reason: "Proposal draft request is missing required proposal details.",
+        tool: "proposal_draft_missing_details",
+      });
+    }
+
+    return createConfirmationResult(
+      `I can create draft proposal ${proposalDraftRequest.title} with expiry ${proposalDraftRequest.validUntil}. Reply confirm to proceed.`,
+      proposalDraftRequest,
+      PROPOSAL_DRAFT_CONFIRMATION_TOOL,
+    );
+  }
+
+  const proposalEditRequest = inferPendingProposalEditRequest(messages, workspace);
+
+  if (proposalEditRequest?.proposalId && (proposalEditRequest.title || proposalEditRequest.validUntil)) {
+    return createConfirmationResult(
+      `I can update ${proposalEditRequest.proposalTitle ?? "that proposal"}${
+        proposalEditRequest.title ? ` with title ${proposalEditRequest.title}` : ""
+      }${
+        proposalEditRequest.validUntil ? ` and expiry ${proposalEditRequest.validUntil}` : ""
+      }. Reply confirm to proceed.`,
+      proposalEditRequest,
+      PROPOSAL_EDIT_CONFIRMATION_TOOL,
+    );
+  }
+
   if (isMessageDraftIntent(latestUserMessage)) {
     return createDraftMessageReply(latestUserMessage);
   }
@@ -1403,6 +2027,281 @@ const createClientRequestAssignmentResult = (
           request: plan.request.title,
         }),
         tool: CLIENT_REQUEST_ASSIGNMENT_TOOL,
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
+const shouldRunConfirmedProposalDraftWorkflow = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) =>
+  isConfirmationMessage(latestUserMessage) &&
+  Boolean(getRecentPendingProposalDraftRequest(messages, workspace)?.title);
+
+const createConfirmedProposalDraftResult = async (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const request = getRecentPendingProposalDraftRequest(messages, workspace);
+
+  if (!request?.title || !request.validUntil) {
+    return null;
+  }
+
+  const opportunity =
+    findOpportunityByReferenceInWorkspace(workspace, request.opportunityId ?? request.opportunityTitle) ??
+    null;
+
+  if (!opportunity) {
+    return null;
+  }
+
+  const proposal = workspace.isLiveBackend && workspace.sessionToken
+    ? await createLiveProposal(workspace.sessionToken, {
+        clientId: opportunity.clientId,
+        currency: "ZAR",
+        description:
+          request.description ??
+          `Generated from assistant draft proposal request for ${request.title}.`,
+        id: "",
+        opportunityId: opportunity.id,
+        status: ProposalStatus.Draft,
+        title: request.title,
+        validUntil: request.validUntil,
+      })
+    : createMockProposal(createAssistantActor(workspace), {
+        currency: "ZAR",
+        description:
+          request.description ??
+          `Generated from assistant draft proposal request for ${request.title}.`,
+        opportunityId: opportunity.id,
+        title: request.title,
+        validUntil: request.validUntil,
+      });
+  upsertById(workspace.salesData.proposals, proposal);
+
+  return {
+    message:
+      `Created draft proposal ${proposal.title} for ${opportunity.title}, valid until ${proposal.validUntil}.`,
+    mode: "workflow" as const,
+    model: "local-proposal-draft-workflow",
+    reason: "Confirmed draft proposal executed locally from recent assistant context.",
+    mutations: [
+      {
+        entityId: proposal.id,
+        entityType: "proposal" as const,
+        operation: "create" as const,
+        record: proposal as unknown as Record<string, unknown>,
+        title: proposal.title,
+      },
+    ] satisfies AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          opportunityId: opportunity.id,
+          title: proposal.title,
+          validUntil: proposal.validUntil,
+        },
+        outputPreview: createTracePreview({
+          opportunity: opportunity.title,
+          proposal: proposal.title,
+          validUntil: proposal.validUntil,
+        }),
+        tool: "confirmed_proposal_draft_workflow",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
+const shouldRunConfirmedProposalEditWorkflow = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) =>
+  isConfirmationMessage(latestUserMessage) &&
+  Boolean(getRecentPendingProposalEditRequest(messages, workspace)?.proposalId);
+
+const createConfirmedProposalEditResult = async (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const request = getRecentPendingProposalEditRequest(messages, workspace);
+
+  if (!request?.proposalId) {
+    return null;
+  }
+
+  const existingProposal =
+    findProposalByReferenceInWorkspace(workspace, request.proposalId ?? request.proposalTitle) ??
+    null;
+
+  if (!existingProposal) {
+    return null;
+  }
+
+  const updatedProposal =
+    workspace.isLiveBackend && workspace.sessionToken
+      ? await updateLiveProposal(workspace.sessionToken, {
+          ...existingProposal,
+          title: request.title ?? existingProposal.title,
+          validUntil: request.validUntil ?? existingProposal.validUntil,
+        })
+      : updateMockProposal(workspace.tenantId, existingProposal.id, {
+          title: request.title ?? existingProposal.title,
+          validUntil: request.validUntil ?? existingProposal.validUntil,
+        });
+
+  if (!updatedProposal) {
+    return null;
+  }
+
+  upsertById(workspace.salesData.proposals, updatedProposal);
+
+  return {
+    message:
+      `Updated proposal ${updatedProposal.title}. It is now valid until ${updatedProposal.validUntil}.`,
+    mode: "workflow" as const,
+    model: "local-proposal-edit-workflow",
+    reason: "Confirmed proposal edit executed locally from recent assistant context.",
+    mutations: [
+      {
+        entityId: updatedProposal.id,
+        entityType: "proposal" as const,
+        operation: "update" as const,
+        record: updatedProposal as unknown as Record<string, unknown>,
+        title: updatedProposal.title,
+      },
+    ] satisfies AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          proposalId: updatedProposal.id,
+          title: updatedProposal.title,
+          validUntil: updatedProposal.validUntil,
+        },
+        outputPreview: createTracePreview({
+          proposal: updatedProposal.title,
+          validUntil: updatedProposal.validUntil,
+        }),
+        tool: "confirmed_proposal_edit_workflow",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
+const shouldRunConfirmedOpportunityCreateWorkflow = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  if (isClientScopedUser(workspace.clientIds)) {
+    return false;
+  }
+
+  const request = inferPendingOpportunityCreateRequest(messages, workspace);
+
+  if (!request?.clientId || !request.title || !request.estimatedValue || !request.expectedCloseDate) {
+    return false;
+  }
+
+  const hasUserConfirmation = getRecentUserMessages(messages).some((message) =>
+    isConfirmationMessage(message.content),
+  );
+
+  return hasUserConfirmation && !isConfirmationMessage(latestUserMessage);
+};
+
+const createConfirmedOpportunityCreateResult = async (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const request = inferPendingOpportunityCreateRequest(messages, workspace);
+
+  if (
+    !request?.clientId ||
+    !request.title ||
+    !request.estimatedValue ||
+    !request.expectedCloseDate
+  ) {
+    return null;
+  }
+
+  const client = findClientByReferenceInWorkspace(
+    workspace,
+    request.clientId ?? request.clientName,
+  );
+
+  if (!client) {
+    return null;
+  }
+
+  const owner =
+    findOwnerByReferenceInWorkspace(workspace, request.ownerId ?? request.ownerName) ??
+    null;
+
+  const opportunity =
+    workspace.isLiveBackend && workspace.sessionToken
+      ? await createLiveOpportunity(workspace.sessionToken, {
+          clientId: client.id,
+          createdDate: new Date().toISOString().split("T")[0],
+          currency: "ZAR",
+          estimatedValue: request.estimatedValue,
+          expectedCloseDate: request.expectedCloseDate,
+          id: "",
+          ownerId: owner?.id,
+          probability: 50,
+          source: 1,
+          stage: request.stage ?? OpportunityStage.New,
+          title: request.title,
+          value: request.estimatedValue,
+        })
+      : createMockOpportunity(createAssistantActor(workspace), {
+          clientId: client.id,
+          estimatedValue: request.estimatedValue,
+          expectedCloseDate: request.expectedCloseDate,
+          ownerId: owner?.id,
+          stage: request.stage ?? OpportunityStage.New,
+          title: request.title,
+        });
+
+  upsertById(workspace.salesData.opportunities, opportunity);
+
+  return {
+    message:
+      `Created opportunity ${opportunity.title} for ${client.name}` +
+      ` worth ${formatCurrency(opportunity.value ?? opportunity.estimatedValue)}` +
+      ` closing on ${opportunity.expectedCloseDate}` +
+      `${owner ? ` and assigned it to ${owner.name}.` : "."}`,
+    mode: "workflow" as const,
+    model: "local-opportunity-create-workflow",
+    reason: "Confirmed opportunity creation executed locally from recent assistant context.",
+    mutations: [
+      {
+        entityId: opportunity.id,
+        entityType: "opportunity" as const,
+        operation: "create" as const,
+        record: opportunity as unknown as Record<string, unknown>,
+        title: opportunity.title,
+      },
+    ] satisfies AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          clientId: client.id,
+          estimatedValue: opportunity.value ?? opportunity.estimatedValue,
+          expectedCloseDate: opportunity.expectedCloseDate,
+          ownerId: owner?.id ?? null,
+          stage: opportunity.stage,
+          title: opportunity.title,
+        },
+        outputPreview: createTracePreview({
+          client: client.name,
+          opportunity: opportunity.title,
+          owner: owner?.name ?? null,
+        }),
+        tool: "confirmed_opportunity_create_workflow",
       },
     ] satisfies AssistantTraceStep[],
   };
@@ -4179,7 +5078,7 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
     },
   ];
 
-  const runTool = (name: string, rawArguments: string) => {
+  const runTool = async (name: string, rawArguments: string) => {
     const args = rawArguments ? JSON.parse(rawArguments) as Record<string, unknown> : {};
     const internalMutationTools = new Set([
       "create_client",
@@ -4452,16 +5351,33 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
       }
       case "create_opportunity": {
         const client = resolveClient(args, { allowRecentFallback: true });
-        const opportunity = createMockOpportunity(actor, {
-          clientId: client.id,
-          description: typeof args.description === "string" ? args.description : undefined,
-          estimatedValue: Number(args.estimatedValue ?? 0),
-          expectedCloseDate: String(args.expectedCloseDate ?? ""),
-          ownerId: typeof args.ownerId === "string" ? args.ownerId : undefined,
-          probability: Number(args.probability ?? 50),
-          stage: typeof args.stage === "string" ? args.stage : undefined,
-          title: String(args.title ?? "Untitled opportunity"),
-        });
+        const opportunity =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await createLiveOpportunity(workspace.sessionToken, {
+                clientId: client.id,
+                createdDate: new Date().toISOString().split("T")[0],
+                currency: "ZAR",
+                description: typeof args.description === "string" ? args.description : undefined,
+                estimatedValue: Number(args.estimatedValue ?? 0),
+                expectedCloseDate: String(args.expectedCloseDate ?? ""),
+                id: "",
+                ownerId: typeof args.ownerId === "string" ? args.ownerId : undefined,
+                probability: Number(args.probability ?? 50),
+                source: 1,
+                stage: typeof args.stage === "string" ? args.stage : OpportunityStage.New,
+                title: String(args.title ?? "Untitled opportunity"),
+                value: Number(args.estimatedValue ?? 0),
+              })
+            : createMockOpportunity(actor, {
+                clientId: client.id,
+                description: typeof args.description === "string" ? args.description : undefined,
+                estimatedValue: Number(args.estimatedValue ?? 0),
+                expectedCloseDate: String(args.expectedCloseDate ?? ""),
+                ownerId: typeof args.ownerId === "string" ? args.ownerId : undefined,
+                probability: Number(args.probability ?? 50),
+                stage: typeof args.stage === "string" ? args.stage : undefined,
+                title: String(args.title ?? "Untitled opportunity"),
+              });
 
         upsertById(workspace.salesData.opportunities, opportunity);
 
@@ -4481,25 +5397,39 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
       }
       case "create_proposal": {
         const opportunity = resolveOpportunity(args, { allowRecentFallback: true });
-        const proposal = createMockProposal(actor, {
-          currency: typeof args.currency === "string" ? args.currency : "ZAR",
-          description: typeof args.description === "string" ? args.description : undefined,
-          lineItems: Array.isArray(args.lineItems)
-            ? args.lineItems
-                .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-                .map((item) => ({
-                  description: typeof item.description === "string" ? item.description : undefined,
-                  discount: Number(item.discount ?? 0),
-                  productServiceName: String(item.productServiceName ?? ""),
-                  quantity: Number(item.quantity ?? 1),
-                  taxRate: Number(item.taxRate ?? 0),
-                  unitPrice: Number(item.unitPrice ?? 0),
-                }))
-            : [],
-          opportunityId: opportunity.id,
-          title: String(args.title ?? "Untitled proposal"),
-          validUntil: String(args.validUntil ?? ""),
-        });
+        const lineItems = Array.isArray(args.lineItems)
+          ? args.lineItems
+              .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+              .map((item) => ({
+                description: typeof item.description === "string" ? item.description : undefined,
+                discount: Number(item.discount ?? 0),
+                productServiceName: String(item.productServiceName ?? ""),
+                quantity: Number(item.quantity ?? 1),
+                taxRate: Number(item.taxRate ?? 0),
+                unitPrice: Number(item.unitPrice ?? 0),
+              }))
+          : [];
+        const proposal =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await createLiveProposal(workspace.sessionToken, {
+                clientId: opportunity.clientId,
+                currency: typeof args.currency === "string" ? args.currency : "ZAR",
+                description: typeof args.description === "string" ? args.description : undefined,
+                id: "",
+                lineItems,
+                opportunityId: opportunity.id,
+                status: ProposalStatus.Draft,
+                title: String(args.title ?? "Untitled proposal"),
+                validUntil: String(args.validUntil ?? ""),
+              })
+            : createMockProposal(actor, {
+                currency: typeof args.currency === "string" ? args.currency : "ZAR",
+                description: typeof args.description === "string" ? args.description : undefined,
+                lineItems,
+                opportunityId: opportunity.id,
+                title: String(args.title ?? "Untitled proposal"),
+                validUntil: String(args.validUntil ?? ""),
+              });
 
         upsertById(workspace.salesData.proposals, proposal);
 
@@ -4902,7 +5832,11 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
           allowRecentFallback: true,
         });
 
-        deleteMockOpportunity(workspace.tenantId, opportunity.id);
+        if (workspace.isLiveBackend && workspace.sessionToken) {
+          await deleteLiveOpportunity(workspace.sessionToken, opportunity.id);
+        } else {
+          deleteMockOpportunity(workspace.tenantId, opportunity.id);
+        }
         workspace.salesData.opportunities = workspace.salesData.opportunities.filter(
           (item) => item.id !== opportunity.id,
         );
@@ -4926,7 +5860,11 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
       case "delete_proposal": {
         const proposal = resolveProposal(args, { allowRecentFallback: true });
 
-        deleteMockProposal(workspace.tenantId, proposal.id);
+        if (workspace.isLiveBackend && workspace.sessionToken) {
+          await deleteLiveProposal(workspace.sessionToken, proposal.id);
+        } else {
+          deleteMockProposal(workspace.tenantId, proposal.id);
+        }
         workspace.salesData.proposals = workspace.salesData.proposals.filter(
           (item) => item.id !== proposal.id,
         );
@@ -5117,6 +6055,8 @@ const extractFunctionCalls = (response: ProviderResponse) =>
   (response.output ?? []).filter((item) => item.type === "function_call");
 
 const createResponsesUrl = (baseUrl: string) => `${baseUrl.replace(/\/$/, "")}/responses`;
+const createChatCompletionsUrl = (baseUrl: string) =>
+  `${baseUrl.replace(/\/$/, "")}/chat/completions`;
 
 const parseProviderError = async (response: Response) => {
   const raw = await response.text();
@@ -5200,6 +6140,46 @@ const callResponsesApi = async (
   return response.json() as Promise<ProviderResponse>;
 };
 
+const callChatCompletionsApi = async (
+  config: AssistantServerConfig,
+  body: Record<string, unknown>,
+): Promise<ChatCompletionResponse> => {
+  let response: Response;
+
+  try {
+    response = await fetch(createChatCompletionsUrl(config.baseUrl), {
+      body: JSON.stringify(body),
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    });
+  } catch (error) {
+    throw new AssistantProviderRequestError(
+      error instanceof Error
+        ? error.message
+        : "The live assistant provider could not be reached.",
+      { status: 0 },
+    );
+  }
+
+  if (!response.ok) {
+    if (response.status === 429) {
+      logProviderRateLimit(config, response);
+    }
+
+    const providerError = await parseProviderError(response);
+
+    throw new AssistantProviderRequestError(providerError.message, {
+      code: providerError.code,
+      status: response.status,
+    });
+  }
+
+  return response.json() as Promise<ChatCompletionResponse>;
+};
+
 const createToolMetadata = (toolDefinitions: ToolDefinition[]) =>
   toolDefinitions.map((tool) => ({
     description: tool.description,
@@ -5207,6 +6187,101 @@ const createToolMetadata = (toolDefinitions: ToolDefinition[]) =>
     parameters: tool.parameters,
     type: "function",
   }));
+
+const createChatCompletionToolMetadata = (toolDefinitions: ToolDefinition[]) =>
+  toolDefinitions.map((tool) => ({
+    function: {
+      description: tool.description,
+      name: tool.name,
+      parameters: tool.parameters,
+    },
+    type: "function",
+  }));
+
+const filterGeminiToolDefinitions = (
+  toolDefinitions: ToolDefinition[],
+  latestUserMessage: string,
+) => {
+  const normalized = normalizeLookupValue(latestUserMessage);
+  const selected = new Set<string>([
+    "get_scope_overview",
+    "list_opportunities",
+    "list_proposals",
+    "list_follow_ups",
+    "search_workspace_records",
+  ]);
+
+  if (
+    normalized.includes("message") ||
+    normalized.includes("email") ||
+    normalized.includes("send ")
+  ) {
+    selected.add("create_message");
+  }
+
+  if (
+    normalized.includes("opportunity") ||
+    normalized.includes("deal") ||
+    normalized.includes("pipeline")
+  ) {
+    selected.add("create_opportunity");
+    selected.add("delete_opportunity");
+  }
+
+  if (normalized.includes("proposal")) {
+    selected.add("create_proposal");
+    selected.add("delete_proposal");
+  }
+
+  if (
+    normalized.includes("pricing") ||
+    normalized.includes("commercial") ||
+    normalized.includes("deal desk")
+  ) {
+    selected.add("create_pricing_request");
+    selected.add("delete_pricing_request");
+  }
+
+  if (
+    normalized.includes("follow up") ||
+    normalized.includes("follow-up") ||
+    normalized.includes("task") ||
+    normalized.includes("activity") ||
+    normalized.includes("meeting") ||
+    normalized.includes("call")
+  ) {
+    selected.add("create_activity");
+    selected.add("delete_activity");
+  }
+
+  if (
+    normalized.includes("note") ||
+    normalized.includes("record this") ||
+    normalized.includes("log this")
+  ) {
+    selected.add("create_note");
+    selected.add("delete_note");
+  }
+
+  if (
+    normalized.includes("client") ||
+    normalized.includes("account") ||
+    normalized.includes("organization")
+  ) {
+    selected.add("create_client");
+    selected.add("delete_client");
+  }
+
+  if (
+    normalized.includes("reassign") ||
+    normalized.includes("rebalance") ||
+    normalized.includes("redistribute")
+  ) {
+    selected.add("rebalance_responsibilities");
+  }
+
+  return toolDefinitions.filter((tool) => selected.has(tool.name));
+};
 
 const mapMessagesToInput = (messages: AssistantMessage[]): AssistantInputMessage[] =>
   messages.map((message) => ({
@@ -5240,6 +6315,21 @@ const mapMessagesToProviderInput = (
     },
   ];
 };
+
+const mapMessagesToChatInput = (
+  systemPrompt: string,
+  messages: AssistantMessage[],
+  confirmedGenericMutationRequest?: string | null,
+): AssistantChatMessage[] => [
+  {
+    content: systemPrompt,
+    role: "system",
+  },
+  ...mapMessagesToProviderInput(messages, confirmedGenericMutationRequest).map((message) => ({
+    content: message.content,
+    role: message.role,
+  })),
+];
 
 const serializeFunctionCallsForInput = (
   calls: ResponseOutputItem[],
@@ -5289,6 +6379,114 @@ const createOfflineAssistantResult = ({
     ] satisfies AssistantTraceStep[],
     mutations: [] satisfies AssistantMutation[],
   };
+};
+
+const runGeminiWithTools = async ({
+  config,
+  messages,
+  runTool,
+  systemPrompt,
+  toolMetadata,
+  trace,
+  mutations,
+}: {
+  config: AssistantServerConfig;
+  messages: AssistantMessage[];
+  mutations: AssistantMutation[];
+  runTool: ReturnType<typeof createToolset>["runTool"];
+  systemPrompt: string;
+  toolMetadata: ReturnType<typeof createChatCompletionToolMetadata>;
+  trace: AssistantTraceStep[];
+}) => {
+  const chatMessages = mapMessagesToChatInput(systemPrompt, messages);
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    const response = await callChatCompletionsApi(config, {
+      messages: chatMessages,
+      model: config.model,
+      tool_choice: "auto",
+      tools: toolMetadata,
+    });
+
+    const choice = response.choices?.[0]?.message ?? null;
+    const toolCalls = choice?.tool_calls ?? [];
+
+    if (toolCalls.length === 0) {
+      return {
+        message:
+          choice?.content?.trim() ||
+          "The assistant could not produce a final response from the authorized data.",
+        mode: config.provider,
+        model: config.model,
+        reason: null,
+        mutations,
+        trace,
+      };
+    }
+
+    const normalizedToolCalls = toolCalls.flatMap((call) => {
+      const callId = call.id?.trim();
+      const name = call.function?.name?.trim();
+
+      if (!callId || !name) {
+        return [];
+      }
+
+      return [
+        {
+          arguments: call.function?.arguments ?? "{}",
+          id: callId,
+          name,
+        },
+      ];
+    });
+
+    if (normalizedToolCalls.length === 0) {
+      throw new Error("The assistant returned an invalid tool call.");
+    }
+
+    chatMessages.push({
+      content: choice?.content ?? null,
+      role: "assistant",
+      tool_calls: normalizedToolCalls.map((call) => ({
+        id: call.id,
+        function: {
+          arguments: call.arguments,
+          name: call.name,
+        },
+        type: "function",
+      })),
+    });
+
+    for (const call of normalizedToolCalls) {
+      const parsedArguments = call.arguments
+        ? (JSON.parse(call.arguments) as Record<string, unknown>)
+        : {};
+      const output = await runTool(call.name, call.arguments);
+      const mutation =
+        output && typeof output === "object" && "mutation" in output
+          ? (output as { mutation?: AssistantMutation }).mutation
+          : undefined;
+
+      if (mutation) {
+        mutations.push(mutation);
+      }
+
+      trace.push({
+        arguments: parsedArguments,
+        outputPreview: createTracePreview(output),
+        tool: call.name,
+      });
+
+      chatMessages.push({
+        content: JSON.stringify(output),
+        role: "tool",
+        tool_call_id: call.id,
+      });
+    }
+  }
+
+  throw new Error("The assistant exceeded the maximum number of tool rounds.");
 };
 
 const createConfirmedGenericMutationUnavailableResult = ({
@@ -5797,6 +6995,42 @@ export const runSecureAssistant = async ({
     return confirmedMessageSendResult;
   }
 
+  const confirmedProposalDraftResult = shouldRunConfirmedProposalDraftWorkflow(
+    latestUserMessage,
+    messages,
+    workspace,
+  )
+    ? await createConfirmedProposalDraftResult(workspace, messages)
+    : null;
+
+  if (confirmedProposalDraftResult) {
+    return confirmedProposalDraftResult;
+  }
+
+  const confirmedProposalEditResult = shouldRunConfirmedProposalEditWorkflow(
+    latestUserMessage,
+    messages,
+    workspace,
+  )
+    ? await createConfirmedProposalEditResult(workspace, messages)
+    : null;
+
+  if (confirmedProposalEditResult) {
+    return confirmedProposalEditResult;
+  }
+
+  const confirmedOpportunityCreateResult = shouldRunConfirmedOpportunityCreateWorkflow(
+    latestUserMessage,
+    messages,
+    workspace,
+  )
+    ? await createConfirmedOpportunityCreateResult(workspace, messages)
+    : null;
+
+  if (confirmedOpportunityCreateResult) {
+    return confirmedOpportunityCreateResult;
+  }
+
   const confirmedClientRequestAssignmentResult = shouldRunClientRequestAssignmentWorkflow(
     latestUserMessage,
     messages,
@@ -5926,21 +7160,37 @@ export const runSecureAssistant = async ({
   }
 
   const { runTool, toolDefinitions } = createToolset(workspace, messages);
-  const toolMetadata = createToolMetadata(toolDefinitions);
   const trace: AssistantTraceStep[] = [];
   const mutations: AssistantMutation[] = [];
   const initialInput = mapMessagesToProviderInput(messages, confirmedGenericMutationRequest);
   const providerErrors: AssistantProviderRequestError[] = [];
+  const systemPrompt = createSystemPrompt(workspace);
 
   for (const config of configuredProviders) {
-    let statelessInput: AssistantResponseInput[] = [...initialInput];
     const localTraceStart = trace.length;
     const localMutationStart = mutations.length;
 
     try {
+      if (config.provider === "gemini") {
+        const geminiToolMetadata = createChatCompletionToolMetadata(
+          filterGeminiToolDefinitions(toolDefinitions, latestUserMessage),
+        );
+        return await runGeminiWithTools({
+          config,
+          messages,
+          mutations,
+          runTool,
+          systemPrompt,
+          toolMetadata: geminiToolMetadata,
+          trace,
+        });
+      }
+
+      const toolMetadata = createToolMetadata(toolDefinitions);
+      let statelessInput: AssistantResponseInput[] = [...initialInput];
       let response = await callResponsesApi(config, {
         input: initialInput,
-        instructions: createSystemPrompt(workspace),
+        instructions: systemPrompt,
         model: config.model,
         reasoning: { effort: isManagerRole(workspace.role) ? "medium" : "low" },
         tool_choice: "auto",
@@ -5965,7 +7215,9 @@ export const runSecureAssistant = async ({
           };
         }
 
-        const toolOutputs: AssistantFunctionOutputInput[] = functionCalls.map((call) => {
+        const toolOutputs: AssistantFunctionOutputInput[] = [];
+
+        for (const call of functionCalls) {
           if (!call.call_id || !call.name) {
             throw new Error("The assistant returned an invalid tool call.");
           }
@@ -5973,7 +7225,7 @@ export const runSecureAssistant = async ({
           const parsedArguments = call.arguments
             ? (JSON.parse(call.arguments) as Record<string, unknown>)
             : {};
-          const output = runTool(call.name, call.arguments ?? "{}");
+          const output = await runTool(call.name, call.arguments ?? "{}");
           const mutation =
             output && typeof output === "object" && "mutation" in output
               ? (output as { mutation?: AssistantMutation }).mutation
@@ -5989,12 +7241,12 @@ export const runSecureAssistant = async ({
             tool: call.name,
           });
 
-          return {
+          toolOutputs.push({
             call_id: call.call_id,
             output: JSON.stringify(output),
             type: "function_call_output",
-          };
-        });
+          });
+        }
 
         if (config.supportsPreviousResponseId && response.id) {
           response = await callResponsesApi(config, {
@@ -6016,7 +7268,7 @@ export const runSecureAssistant = async ({
 
         response = await callResponsesApi(config, {
           input: statelessInput,
-          instructions: createSystemPrompt(workspace),
+          instructions: systemPrompt,
           model: config.model,
           reasoning: { effort: isManagerRole(workspace.role) ? "medium" : "low" },
           tool_choice: "auto",
@@ -6038,14 +7290,22 @@ export const runSecureAssistant = async ({
   }
 
   const hasRateLimit = providerErrors.some((error) => error.code === "rate_limit_exceeded");
+  const attemptedProviders = configuredProviders
+    .map((provider) => provider.provider[0].toUpperCase() + provider.provider.slice(1))
+    .join(", then ");
+  const firstProviderError = providerErrors[0];
+  const providerErrorSuffix =
+    firstProviderError?.message && process.env.NODE_ENV !== "production"
+      ? ` First provider error: ${firstProviderError.message}`
+      : "";
   const reason =
     configuredProviders.length > 1
       ? hasRateLimit
-        ? "The live assistant providers are temporarily rate-limited. Tried Groq, then OpenAI, and fell back to offline workspace guidance."
-        : "The live assistant providers are temporarily unavailable. Tried Groq, then OpenAI, and fell back to offline workspace guidance."
+        ? `The live assistant providers are temporarily rate-limited. Tried ${attemptedProviders}, and fell back to offline workspace guidance.${providerErrorSuffix}`
+        : `The live assistant providers are temporarily unavailable. Tried ${attemptedProviders}, and fell back to offline workspace guidance.${providerErrorSuffix}`
       : hasRateLimit
-        ? "The live assistant is temporarily rate-limited. Using offline workspace guidance."
-        : "The live assistant is temporarily unavailable. Using offline workspace guidance.";
+        ? `The live assistant is temporarily rate-limited. Using offline workspace guidance.${providerErrorSuffix}`
+        : `The live assistant is temporarily unavailable. Using offline workspace guidance.${providerErrorSuffix}`;
 
   if (confirmedGenericMutationRequest) {
     return createConfirmedGenericMutationUnavailableResult({
