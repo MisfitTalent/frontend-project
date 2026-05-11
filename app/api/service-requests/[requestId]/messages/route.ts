@@ -12,7 +12,7 @@ export async function POST(
   request: NextRequest,
   context: { params: Promise<{ requestId: string }> },
 ) {
-  const user = getAuthorizedUser(request);
+  const user = await getAuthorizedUser(request);
   const token = getRequestSessionToken(request);
 
   if (!user) {

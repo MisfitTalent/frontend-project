@@ -81,11 +81,15 @@ export async function POST(request: NextRequest) {
       sanitizeAuthPayload(responsePayload),
       { status: 200 },
     );
-    response.cookies.set(
-      AUTH_COOKIE_NAME,
-      responsePayload.token,
-      AUTH_COOKIE_OPTIONS,
-    );
+
+    if (responsePayload.token) {
+      response.cookies.set(
+        AUTH_COOKIE_NAME,
+        responsePayload.token,
+        AUTH_COOKIE_OPTIONS,
+      );
+    }
+
     return response;
   }
 

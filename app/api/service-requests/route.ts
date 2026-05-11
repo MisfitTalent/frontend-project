@@ -50,7 +50,7 @@ const parseStatuses = (request: NextRequest) => {
 };
 
 export async function GET(request: NextRequest) {
-  const user = getAuthorizedUser(request);
+  const user = await getAuthorizedUser(request);
   const token = getRequestSessionToken(request);
 
   if (!user) {
@@ -69,7 +69,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const user = getAuthorizedUser(request);
+  const user = await getAuthorizedUser(request);
   const token = getRequestSessionToken(request);
 
   if (!user) {

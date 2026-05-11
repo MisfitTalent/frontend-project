@@ -11,7 +11,7 @@ export async function GET(
   request: NextRequest,
   context: { params: Promise<{ requestId: string }> },
 ) {
-  const user = getAuthorizedUser(request);
+  const user = await getAuthorizedUser(request);
   const token = getRequestSessionToken(request);
 
   if (!user) {
