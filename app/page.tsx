@@ -4,6 +4,8 @@ import Link from "next/link";
 import { Button, Card, Col, Row, Tag } from "antd";
 import { Typography } from "antd";
 
+import { BoxfusionLogo } from "@/components/dashboard/boxfusion-logo";
+
 const heroCards = [
   {
     copy: "Kanban and list-based tracking across long-running B2B deals.",
@@ -24,7 +26,10 @@ export default function Home() {
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(242,140,40,0.16),_transparent_24%),linear-gradient(160deg,_#eef3f8,_#f8fafc_45%,_#eef3f8)] px-4 py-10">
       <section className="mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-7xl flex-col justify-center gap-10">
         <div className="max-w-4xl space-y-6">
-          <Tag color="#355c7d">AutoSales</Tag>
+          <div className="flex items-center gap-3">
+            <BoxfusionLogo size={52} />
+            <Tag color="#355c7d">AutoSales</Tag>
+          </div>
           <Typography.Title className="!mb-0 !text-5xl !leading-tight md:!text-6xl" level={1}>
             A sales automation workspace built for complex enterprise cycles.
           </Typography.Title>
