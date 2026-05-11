@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  getAvailableCapacity,
   formatCurrency,
   getAssignmentCount,
   getBestOwner,
@@ -9,14 +10,19 @@ import {
   getTeamCapacity,
 } from "@/providers/salesSelectors";
 
-import { getAssistantServerConfig } from "./assistant-config";
+import {
+  getAssistantServerConfig,
+  getAssistantServerConfigs,
+  type AssistantServerConfig,
+} from "./assistant-config";
 import type { IAssistantWorkspace } from "./assistant-workspace";
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { isManagerRole } from "@/lib/auth/roles";
 import {
   createMockActivity,
   createMockClient,
+  createMockContact,
   createMockNote,
-  listMockActivities,
   listMockNotes,
   listMockPricingRequests,
   deleteMockClient,
@@ -32,12 +38,14 @@ import {
   updateMockNote,
   updateMockOpportunity,
   updateMockPricingRequest,
+  updateMockProposal,
 } from "@/lib/server/mock-workspace-store";
 
 export type AssistantMessage = {
   content: string;
   mutations?: AssistantMutation[];
   role: "assistant" | "user";
+  trace?: AssistantTraceStep[];
 };
 
 export type AssistantTraceStep = {
@@ -109,6 +117,74 @@ type AssistantActor = {
   tenantName: string;
 };
 
+type AutonomousSaleRequest = {
+  clientName: string;
+  contactEmail: string;
+  contactName: string;
+  contactRole?: string;
+  deadline: string;
+  offerValue: number;
+  wants: string[];
+};
+
+type RecentSaleContext = {
+  client: IAssistantWorkspace["salesData"]["clients"][number] | null;
+  opportunity: IAssistantWorkspace["salesData"]["opportunities"][number] | null;
+  pricingRequest: IAssistantWorkspace["pricingRequests"][number] | null;
+  proposal: IAssistantWorkspace["salesData"]["proposals"][number] | null;
+};
+
+type DraftFollowUpProposal = {
+  assigneeName: string;
+  dueDate: string;
+  priority: number;
+  subject: string;
+  type: string;
+};
+
+type PendingMessageSendRequest = {
+  clientId: string | null;
+  content: string | null;
+  recipientId: string | null;
+  recipientName: string | null;
+  subject: string | null;
+};
+
+type WorkloadBoostPlan = {
+  movedActivities: IAssistantWorkspace["salesData"]["activities"];
+  opportunity: IAssistantWorkspace["salesData"]["opportunities"][number];
+  owner: IAssistantWorkspace["salesData"]["teamMembers"][number];
+  pricingRequest: IAssistantWorkspace["pricingRequests"][number] | null;
+  proposal: IAssistantWorkspace["salesData"]["proposals"][number] | null;
+  sourceOwner: IAssistantWorkspace["salesData"]["teamMembers"][number] | null;
+};
+
+type AdvisorAssignmentRecommendation = {
+  clientName: string;
+  currentOwner: IAssistantWorkspace["salesData"]["teamMembers"][number] | null;
+  openActivities: IAssistantWorkspace["salesData"]["activities"];
+  opportunity: IAssistantWorkspace["salesData"]["opportunities"][number];
+  pricingRequest: IAssistantWorkspace["pricingRequests"][number] | null;
+  proposal: IAssistantWorkspace["salesData"]["proposals"][number] | null;
+  targetOwner: IAssistantWorkspace["salesData"]["teamMembers"][number];
+};
+
+type AdvisorAssignmentPlan = {
+  recommendations: AdvisorAssignmentRecommendation[];
+};
+
+class AssistantProviderRequestError extends Error {
+  code?: string;
+  status: number;
+
+  constructor(message: string, options: { code?: string; status: number }) {
+    super(message);
+    this.name = "AssistantProviderRequestError";
+    this.code = options.code;
+    this.status = options.status;
+  }
+}
+
 const MAX_TOOL_ROUNDS = 5;
 const MAX_TRACE_PREVIEW_LENGTH = 320;
 
@@ -150,10 +226,17 @@ Behavior rules:
 - Give direct, practical sales advice.
 - For Admin and SalesManager users, focus on pipeline risk, next actions, owner load, proposals, renewals, and commercial blockers.
 - For BusinessDevelopmentManager and SalesRep users, focus on execution, assigned work, proposal progress, pricing requests, and next steps.
-- When helpful, recommend the next 1 to 3 actions.
-- Keep answers concise and business-ready.
-- Only create records when the user explicitly asks you to create, add, draft, or open something.
-- Only delete records when the user explicitly asks you to delete, remove, or cancel them.
+- For Client users, focus on their shared account workspace, messages, proposals, documents, contracts, and the next external-facing step.
+  - When helpful, recommend the next 1 to 3 actions.
+  - Keep answers concise and business-ready.
+  - Only create records when the user explicitly asks you to create, add, draft, or open something.
+  - Only delete records when the user explicitly asks you to delete, remove, or cancel them.
+  - You are allowed to delete clients, opportunities, proposals, activities, pricing requests, and notes when the user explicitly asks.
+  - If the user says "delete this", "delete them", "remove it", or similar immediately after you created or discussed records, use the most recent matching record context instead of refusing.
+  - All authenticated users are allowed to ask you to send a message. Use the messaging tool for that.
+  - Respect authenticated permissions at the tool layer. Do not promise a mutation if the current role or scope is not allowed to do it.
+  - Before you create, update, delete, reassign, approve, reject, send, or otherwise mutate workspace records, pause and ask for confirmation first.
+  - When the latest user message is a confirmation such as "confirm", "yes", or "go ahead", use the recent conversation context to complete the previously proposed action.
 
 Authorized scope summary:
 ${JSON.stringify(summarizeWorkspace(workspace), null, 2)}
@@ -189,9 +272,9 @@ const upsertById = <T extends { id: string }>(items: T[], nextItem: T) => {
 };
 
 const createAssistantActor = (workspace: IAssistantWorkspace): AssistantActor => ({
-  email: "",
+  email: workspace.userEmail ?? "",
   firstName: workspace.userDisplayName.split(" ")[0] ?? "Assistant",
-  id: workspace.userDisplayName,
+  id: workspace.userId ?? workspace.userDisplayName,
   lastName: workspace.userDisplayName.split(" ").slice(1).join(" "),
   password: "",
   role: workspace.role,
@@ -199,12 +282,2536 @@ const createAssistantActor = (workspace: IAssistantWorkspace): AssistantActor =>
   tenantName: workspace.scopeLabel,
 });
 
+const toIsoDate = (value: Date) => value.toISOString().split("T")[0];
+
+const addDays = (date: Date, days: number) => {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
+const addDaysClampedToDeadline = (deadline: string, daysFromToday: number) => {
+  const today = new Date();
+  const candidate = addDays(today, daysFromToday);
+  const deadlineDate = new Date(`${deadline}T00:00:00`);
+
+  return toIsoDate(candidate > deadlineDate ? deadlineDate : candidate);
+};
+
+const inferIndustryFromClientName = (clientName: string) => {
+  const normalized = clientName.toLowerCase();
+
+  if (normalized.includes("energy")) {
+    return "Energy";
+  }
+  if (normalized.includes("health")) {
+    return "Healthcare";
+  }
+  if (normalized.includes("bank")) {
+    return "Financial Services";
+  }
+  if (normalized.includes("retail")) {
+    return "Retail";
+  }
+  if (normalized.includes("logistics")) {
+    return "Logistics";
+  }
+  if (normalized.includes("facilities")) {
+    return "Facilities Management";
+  }
+
+  return "General";
+};
+
+const parseCurrencyNumber = (value: string) => {
+  const normalized = value.replace(/[^0-9.]/g, "");
+  const parsed = Number(normalized);
+
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const parseAutonomousSaleRequest = (message: string): AutonomousSaleRequest | null => {
+  if (!/create a new sale/i.test(message)) {
+    return null;
+  }
+
+  const clientName =
+    message.match(/create a new sale for\s+(.+?)(?:\.|\n)/i)?.[1]?.trim() ??
+    message.match(/client(?: name)?:\s*(.+)/i)?.[1]?.trim();
+  const contactName = message.match(/contact:\s*(.+)/i)?.[1]?.trim();
+  const contactEmail = message.match(/email:\s*([^\s]+)/i)?.[1]?.trim();
+  const contactRole = message.match(/role:\s*(.+)/i)?.[1]?.trim();
+  const offerValueRaw = message.match(/offer value:\s*([\s\S]*?)deadline:/i)?.[1]?.trim();
+  const deadline = message.match(/deadline:\s*([\s\S]*?)(?:assign|return|$)/i)?.[1]
+    ?.match(/(\d{4}-\d{2}-\d{2})/)?.[1];
+  const wantsBlock = message.match(/what they want:\s*([\s\S]*?)offer value:/i)?.[1] ?? "";
+  const wants = wantsBlock
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
+  const offerValue = offerValueRaw ? parseCurrencyNumber(offerValueRaw) : 0;
+
+  if (!clientName || !contactName || !contactEmail || !deadline || offerValue <= 0) {
+    return null;
+  }
+
+  return {
+    clientName,
+    contactEmail,
+    contactName,
+    contactRole,
+    deadline,
+    offerValue,
+    wants,
+  };
+};
+
+const unwrapAdvisorPromptContent = (message: string) => {
+  const match = message.match(/user request:\s*([\s\S]+)$/i);
+  return match?.[1]?.trim() ?? message;
+};
+
+const isConfirmationMessage = (message: string) => {
+  const normalized = normalizeLookupValue(unwrapAdvisorPromptContent(message))
+    .replace(/\b(?:please|kindly|just)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return [
+    "confirm",
+    "confirmed",
+    "yes",
+    "yeah",
+    "yep",
+    "go ahead",
+    "proceed",
+    "do it",
+    "do so",
+    "do that",
+    "yes please",
+    "sure",
+    "sure thing",
+    "make it happen",
+    "apply it",
+    "apply that",
+    "approved",
+    "okay",
+    "ok",
+  ].includes(normalized);
+};
+
+const getRecentUserMessages = (messages: AssistantMessage[]) =>
+  [...messages]
+    .filter((message) => message.role === "user")
+    .map((message) => ({
+      ...message,
+      content: unwrapAdvisorPromptContent(message.content),
+    }));
+
+const findRecentNonConfirmationUserMessage = (messages: AssistantMessage[]) =>
+  getRecentUserMessages(messages)
+    .reverse()
+    .find((message) => !isConfirmationMessage(message.content)) ?? null;
+
+const MESSAGE_SEND_CONFIRMATION_TOOL = "confirmation_required_message_send";
+const PENDING_MESSAGE_SEND_TOOLS = new Set([
+  MESSAGE_SEND_CONFIRMATION_TOOL,
+  "message_send_missing_content",
+  "message_send_missing_recipient",
+]);
+
+const isMessageDraftIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return (
+    normalized.includes("write a message") ||
+    normalized.includes("draft a message") ||
+    normalized.includes("compose a message") ||
+    normalized.includes("write an email") ||
+    normalized.includes("draft an email") ||
+    normalized.includes("compose an email")
+  );
+};
+
+const isMessageSendIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+  const hasMessageToken =
+    normalized.includes("message") ||
+    normalized.includes("messgae") ||
+    normalized.includes("mesage") ||
+    normalized.includes("email");
+  const hasSendToken =
+    normalized.includes("send ") ||
+    normalized.startsWith("send") ||
+    normalized.includes("send this") ||
+    normalized.includes("send that");
+
+  return (
+    (hasSendToken && hasMessageToken) ||
+    normalized.startsWith("message ") ||
+    (normalized.includes("message ") &&
+      (normalized.includes(" saying ") ||
+        normalized.includes(" about ") ||
+        normalized.includes(" regarding ") ||
+        normalized.includes(" to ")))
+  );
+};
+
+const extractMessageRecipient = (message: string) =>
+  message.match(
+    /\b(?:send(?:\s+(?:a|the))?\s+(?:message|messgae|mesage|email)\s+to|message)\s+([A-Za-z][A-Za-z\s.'-]{1,60}?)(?=\s+(?:saying|about|regarding|that|let|$))/i,
+  )?.[1]?.trim() ??
+  message.match(/\bto\s+([A-Za-z][A-Za-z\s.'-]{1,60}?)(?=\s+(?:saying|about|regarding|that|let|$))/i)?.[1]?.trim() ??
+  null;
+
+const extractQuotedText = (message: string) =>
+  message.match(/["“](.+?)["”]/)?.[1]?.trim() ??
+  message.match(/['](.+?)[']/)?.[1]?.trim() ??
+  null;
+
+const extractMessageBody = (message: string) =>
+  extractQuotedText(message) ??
+  message.match(/\b(?:let it say|make it say|message should say|that says|saying)\s+([\s\S]+)$/i)?.[1]?.trim() ??
+  message.match(/message\s+.*?\b(?:about|regarding)\s+([\s\S]+)$/i)?.[1]?.trim() ??
+  null;
+
+const isMessageSendRefinement = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+  const trimmed = message.trim();
+
+  return (
+    normalized.includes("let it say") ||
+    normalized.includes("make it say") ||
+    normalized.includes("message should say") ||
+    normalized.includes("that says") ||
+    normalized.startsWith("to ") ||
+    Boolean(extractQuotedText(trimmed))
+  );
+};
+
+const resolveMessageRecipientReference = (
+  reference: string | null,
+  workspace: IAssistantWorkspace,
+) => {
+  if (!reference) {
+    return {
+      recipientId: null,
+      recipientName: null,
+    };
+  }
+
+  const normalizedReference = normalizeLookupValue(reference);
+
+  if (["admin", "administrator"].includes(normalizedReference)) {
+    return {
+      recipientId: null,
+      recipientName: "Admin",
+    };
+  }
+
+  const referenceTokens = normalizedReference.split(" ").filter(Boolean);
+  const member =
+    workspace.salesData.teamMembers.find(
+      (candidate) => normalizeLookupValue(candidate.name) === normalizedReference,
+    ) ??
+    workspace.salesData.teamMembers.find((candidate) =>
+      referenceTokens.every((token) => normalizeLookupValue(candidate.name).includes(token)),
+    ) ??
+    null;
+
+  if (member) {
+    return {
+      recipientId: member.id,
+      recipientName: member.name,
+    };
+  }
+
+  return {
+    recipientId: null,
+    recipientName: reference.trim(),
+  };
+};
+
+const buildMessageSubject = (recipientName: string | null) =>
+  recipientName ? `Message to ${recipientName}` : "Workspace message";
+
+const parseExplicitMessageSendRequest = (
+  message: string,
+  workspace: IAssistantWorkspace,
+): PendingMessageSendRequest | null => {
+  if (!isMessageSendIntent(message)) {
+    return null;
+  }
+
+  const { recipientId, recipientName } = resolveMessageRecipientReference(
+    extractMessageRecipient(message),
+    workspace,
+  );
+  const content = extractMessageBody(message);
+
+  return {
+    clientId: null,
+    content,
+    recipientId,
+    recipientName,
+    subject: buildMessageSubject(recipientName),
+  };
+};
+
+const getRecentPendingMessageSendRequest = (
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+): PendingMessageSendRequest | null => {
+  const traceStep = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant")
+    ?.trace?.find((step) => PENDING_MESSAGE_SEND_TOOLS.has(step.tool));
+
+  if (!traceStep) {
+    return null;
+  }
+
+  const tracedRecipientName =
+    typeof traceStep.arguments.recipientName === "string"
+      ? traceStep.arguments.recipientName
+      : null;
+  const tracedRecipientId =
+    typeof traceStep.arguments.recipientId === "string" ? traceStep.arguments.recipientId : null;
+  const tracedSubject =
+    typeof traceStep.arguments.subject === "string" ? traceStep.arguments.subject : null;
+  const tracedContent =
+    typeof traceStep.arguments.content === "string" ? traceStep.arguments.content : null;
+  const tracedClientId =
+    typeof traceStep.arguments.clientId === "string" ? traceStep.arguments.clientId : null;
+  const fallbackSource =
+    typeof traceStep.arguments.latestUserMessage === "string"
+      ? parseExplicitMessageSendRequest(traceStep.arguments.latestUserMessage, workspace)
+      : null;
+
+  return {
+    clientId: tracedClientId ?? fallbackSource?.clientId ?? null,
+    content: tracedContent ?? fallbackSource?.content ?? null,
+    recipientId: tracedRecipientId ?? fallbackSource?.recipientId ?? null,
+    recipientName: tracedRecipientName ?? fallbackSource?.recipientName ?? null,
+    subject:
+      tracedSubject ??
+      fallbackSource?.subject ??
+      buildMessageSubject(tracedRecipientName ?? fallbackSource?.recipientName ?? null),
+  };
+};
+
+const createMessageSendConfirmationReply = (
+  latestUserMessage: string,
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  if (isConfirmationMessage(latestUserMessage)) {
+    return null;
+  }
+
+  const pendingRequest = getRecentPendingMessageSendRequest(messages, workspace);
+  const explicitRequest = parseExplicitMessageSendRequest(latestUserMessage, workspace);
+  const isPendingRefinement = Boolean(pendingRequest) && isMessageSendRefinement(latestUserMessage);
+
+  if (!explicitRequest && !isPendingRefinement) {
+    return null;
+  }
+
+  const request: PendingMessageSendRequest = {
+    clientId: explicitRequest?.clientId ?? pendingRequest?.clientId ?? null,
+    content: explicitRequest?.content ?? extractMessageBody(latestUserMessage) ?? pendingRequest?.content ?? null,
+    recipientId: explicitRequest?.recipientId ?? pendingRequest?.recipientId ?? null,
+    recipientName: explicitRequest?.recipientName ?? pendingRequest?.recipientName ?? null,
+    subject:
+      explicitRequest?.subject ??
+      pendingRequest?.subject ??
+      buildMessageSubject(explicitRequest?.recipientName ?? pendingRequest?.recipientName ?? null),
+  };
+
+  if (!request.recipientName) {
+    return {
+      message: "Tell me who the message should go to.",
+      mode: "workflow" as const,
+      model: "local-message-guard",
+      reason: "A message recipient is required before sending.",
+      mutations: [] satisfies AssistantMutation[],
+      trace: [
+        {
+          arguments: {
+            latestUserMessage,
+          },
+          outputPreview: createTracePreview({
+            missing: "recipient",
+          }),
+          tool: "message_send_missing_recipient",
+        },
+      ] satisfies AssistantTraceStep[],
+    };
+  }
+
+  if (!request.content) {
+    return {
+      message: `I can send a message to ${request.recipientName}, but I need the exact wording first.`,
+      mode: "workflow" as const,
+      model: "local-message-guard",
+      reason: "Message wording is required before sending.",
+      mutations: [] satisfies AssistantMutation[],
+      trace: [
+        {
+          arguments: {
+            latestUserMessage,
+            recipientName: request.recipientName,
+          },
+          outputPreview: createTracePreview({
+            missing: "content",
+            recipientName: request.recipientName,
+          }),
+          tool: "message_send_missing_content",
+        },
+      ] satisfies AssistantTraceStep[],
+    };
+  }
+
+  return createConfirmationResult(
+    `I can send this message to ${request.recipientName}: "${request.content}". Reply confirm to proceed.`,
+    {
+      clientId: request.clientId,
+      content: request.content,
+      latestUserMessage,
+      recipientId: request.recipientId,
+      recipientName: request.recipientName,
+      subject: request.subject,
+    },
+    MESSAGE_SEND_CONFIRMATION_TOOL,
+  );
+};
+
+const shouldRunConfirmedMessageSendWorkflow = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) =>
+  isConfirmationMessage(latestUserMessage) &&
+  Boolean(getRecentPendingMessageSendRequest(messages, workspace));
+
+const createConfirmedMessageSendResult = (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const pendingRequest = getRecentPendingMessageSendRequest(messages, workspace);
+
+  if (!pendingRequest?.recipientName || !pendingRequest.content) {
+    return null;
+  }
+
+  const actor = createAssistantActor(workspace);
+  const note = createMockNote(actor, {
+    category: "Client Message",
+    clientId: pendingRequest.clientId ?? undefined,
+    content: pendingRequest.content,
+    createdDate: new Date().toISOString(),
+    kind: "client_message",
+    representativeId: pendingRequest.recipientId ?? undefined,
+    representativeName: pendingRequest.recipientName,
+    source: isClientScopedUser(workspace.clientIds) ? "client_portal" : "workspace",
+    status: "Sent",
+    submittedBy: workspace.userEmail ?? undefined,
+    title: pendingRequest.subject ?? buildMessageSubject(pendingRequest.recipientName),
+  });
+
+  workspace.notes = listMockNotes(workspace.tenantId);
+
+  return {
+    message: `Sent message to ${pendingRequest.recipientName}: "${pendingRequest.content}".`,
+    mode: "workflow" as const,
+    model: "local-sale-workflow",
+    reason: "Confirmed message send executed locally without provider access.",
+    mutations: [
+      {
+        entityId: note.id,
+        entityType: "note" as const,
+        operation: "create" as const,
+        record: note as unknown as Record<string, unknown>,
+        title: note.title,
+      },
+    ] satisfies AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          clientId: pendingRequest.clientId,
+          content: pendingRequest.content,
+          recipientId: pendingRequest.recipientId,
+          recipientName: pendingRequest.recipientName,
+          subject: note.title,
+        },
+        outputPreview: createTracePreview({
+          content: pendingRequest.content,
+          recipientName: pendingRequest.recipientName,
+          title: note.title,
+        }),
+        tool: "message_send_workflow",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
+const createDraftMessageReply = (latestUserMessage: string) => {
+  const recipient = extractMessageRecipient(latestUserMessage) ?? "them";
+  const explicitBody = extractMessageBody(latestUserMessage);
+
+  const draft = explicitBody
+    ? `Hi ${recipient},\n\n${explicitBody}\n\nBest,\n[Your name]`
+    : `Hi ${recipient},\n\nI wanted to reach out and follow up with you.\n\nBest,\n[Your name]`;
+
+  const guidance = explicitBody
+    ? "If you want, I can revise the tone or shorten it. If you want it sent, tell me to send it and I will ask for confirmation."
+    : "Tell me what you want to say, or tell me to revise the draft. If you want it sent, tell me to send it and I will ask for confirmation.";
+
+  return {
+    message: `Draft message:\n\n${draft}\n\n${guidance}`,
+    mode: "workflow" as const,
+    model: "local-draft-guard",
+    reason: "Drafted message only. No message was sent.",
+    mutations: [] satisfies AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          latestUserMessage,
+          recipient,
+        },
+        outputPreview: createTracePreview({
+          draft,
+          sent: false,
+        }),
+        tool: "draft_message_reply",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
+const isGenericMutationIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return [
+    "create ",
+    "add ",
+    "update ",
+    "change ",
+    "delete ",
+    "remove ",
+    "reassign ",
+    "assign ",
+    "move ",
+    "mark ",
+    "approve ",
+    "reject ",
+    "draft ",
+    "send ",
+  ].some((token) => normalized.includes(token));
+};
+
+const isGreetingMessage = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return [
+    "good afternoon",
+    "good evening",
+    "good morning",
+    "hello",
+    "hello there",
+    "hey",
+    "hey there",
+    "hi",
+    "hi there",
+    "sup",
+    "yo",
+  ].includes(normalized);
+};
+
+const isCapabilityQuestion = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return (
+    normalized === "help" ||
+    normalized === "what can you do" ||
+    normalized === "what do you do" ||
+    normalized === "how can you help" ||
+    normalized === "what can i ask" ||
+    normalized === "what can i do here" ||
+    normalized === "what should i ask you"
+  );
+};
+
+const isAcknowledgementMessage = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return [
+    "cool",
+    "got it",
+    "nice",
+    "ok",
+    "okay",
+    "sounds good",
+    "thanks",
+    "thank you",
+  ].includes(normalized);
+};
+
+const isReadOnlyWorkspaceQuestion = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  if (
+    isAcknowledgementMessage(normalized) ||
+    isGreetingMessage(normalized) ||
+    isCapabilityQuestion(normalized) ||
+    isGenericMutationIntent(normalized) ||
+    isMessageDraftIntent(normalized) ||
+    isMessageSendIntent(normalized)
+  ) {
+    return false;
+  }
+
+  return [
+    "blocked",
+    "contract",
+    "deal",
+    "document",
+    "follow",
+    "message",
+    "next",
+    "pipeline",
+    "pricing",
+    "priorit",
+    "proposal",
+    "renewal",
+    "risk",
+    "summary",
+    "summaris",
+    "workload",
+  ].some((token) => normalized.includes(token));
+};
+
+const createLocalAssistantResult = ({
+  arguments: traceArguments,
+  message,
+  output,
+  reason,
+  tool,
+}: {
+  arguments: Record<string, unknown>;
+  message: string;
+  output: unknown;
+  reason: string;
+  tool: string;
+}) => ({
+  message,
+  mode: "local" as const,
+  model: "local-secure-assistant",
+  reason,
+  mutations: [] satisfies AssistantMutation[],
+  trace: [
+    {
+      arguments: traceArguments,
+      outputPreview: createTracePreview(output),
+      tool,
+    },
+  ] satisfies AssistantTraceStep[],
+});
+
+const createConfirmationResult = (
+  message: string,
+  context: Record<string, unknown>,
+  tool: string,
+) => ({
+  message,
+  mode: "workflow" as const,
+  model: "local-confirmation-guard",
+  reason: "Confirmation is required before changing workspace data.",
+  mutations: [] satisfies AssistantMutation[],
+  trace: [
+    {
+      arguments: context,
+      outputPreview: createTracePreview({ confirmationRequired: true, message }),
+      tool,
+    },
+  ] satisfies AssistantTraceStep[],
+});
+
+const createMutationConfirmationReply = (
+  latestUserMessage: string,
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  if (isConfirmationMessage(latestUserMessage)) {
+    return null;
+  }
+
+  const normalized = normalizeLookupValue(latestUserMessage);
+  const autonomousSaleRequest = parseAutonomousSaleRequest(latestUserMessage);
+
+  if (autonomousSaleRequest) {
+    return createConfirmationResult(
+      `I can create the client ${autonomousSaleRequest.clientName}, contact ${autonomousSaleRequest.contactName}, opportunity, best-owner assignment, follow-up activities, pricing request, proposal, and status note. Reply confirm to proceed.`,
+      {
+        clientName: autonomousSaleRequest.clientName,
+        deadline: autonomousSaleRequest.deadline,
+        offerValue: autonomousSaleRequest.offerValue,
+      },
+      "confirmation_required_sale_workflow",
+    );
+  }
+
+  if (
+    normalized.includes("proceed with the proposal") ||
+    normalized.includes("proposal accepted") ||
+    normalized.includes("ready to proceed") ||
+    normalized.includes("mark the proposal as accepted")
+  ) {
+    const context = getRecentWorkflowContext(workspace, messages);
+
+    return createConfirmationResult(
+      context.proposal && context.opportunity
+        ? `I can mark ${context.proposal.title} as approved, move ${context.opportunity.title} to Closed-Won, create the kickoff activity, and add the closing note. Reply confirm to proceed.`
+        : "I can advance the proposal workflow, update the opportunity, and create the related follow-up records. Reply confirm to proceed.",
+      {
+        opportunityId: context.opportunity?.id ?? null,
+        proposalId: context.proposal?.id ?? null,
+      },
+      "confirmation_required_proposal_workflow",
+    );
+  }
+
+  if (isMessageDraftIntent(latestUserMessage)) {
+    return createDraftMessageReply(latestUserMessage);
+  }
+
+  const messageSendConfirmationResult = createMessageSendConfirmationReply(
+    latestUserMessage,
+    workspace,
+    messages,
+  );
+
+  if (messageSendConfirmationResult) {
+    return messageSendConfirmationResult;
+  }
+
+  const workloadBoostConfirmationResult = createWorkloadBoostConfirmationReply(
+    latestUserMessage,
+    workspace,
+    messages,
+  );
+
+  if (workloadBoostConfirmationResult) {
+    return workloadBoostConfirmationResult;
+  }
+
+  const advisorAssignmentConfirmationResult = createAdvisorAssignmentConfirmationReply(
+    latestUserMessage,
+    workspace,
+    messages,
+  );
+
+  if (advisorAssignmentConfirmationResult) {
+    return advisorAssignmentConfirmationResult;
+  }
+
+  if (shouldRunReassignmentWorkflow(latestUserMessage, messages)) {
+    const targetOwner = getReassignmentTargetFromMessage(latestUserMessage, messages, workspace);
+    const context = getRecentWorkflowContext(workspace, messages);
+
+    return createConfirmationResult(
+      targetOwner && context.opportunity
+        ? `I can reassign ${context.opportunity.title}, its open activities, and any linked pricing request to ${targetOwner.name}. Reply confirm to proceed.`
+        : "I can reassign the relevant records from the recent context. Reply confirm to proceed.",
+      {
+        opportunityId: context.opportunity?.id ?? null,
+        targetOwnerId: targetOwner?.id ?? null,
+      },
+      "confirmation_required_reassignment",
+    );
+  }
+
+  if (isGenericMutationIntent(latestUserMessage)) {
+    return createConfirmationResult(
+      "I can make that workspace change, but I want your confirmation first. Reply confirm to proceed.",
+      {
+        latestUserMessage,
+        priorUserRequest: findRecentNonConfirmationUserMessage(messages)?.content ?? null,
+      },
+      "confirmation_required_generic_mutation",
+    );
+  }
+
+  return null;
+};
+
+const getRecentWorkflowContext = (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+): RecentSaleContext => {
+  const recentMutations = [...messages]
+    .reverse()
+    .filter((message) => message.role === "assistant")
+    .flatMap((message) => message.mutations ?? []);
+
+  const findRecentId = (entityType: AssistantMutation["entityType"]) =>
+    recentMutations.find(
+      (mutation) =>
+        mutation.entityType === entityType &&
+        ["create", "update"].includes(mutation.operation),
+    )?.entityId;
+
+  const clientId = findRecentId("client");
+  const opportunityId = findRecentId("opportunity");
+  const proposalId = findRecentId("proposal");
+  const pricingRequestId = findRecentId("pricing_request");
+
+  return {
+    client:
+      workspace.salesData.clients.find((item) => item.id === clientId) ??
+      (opportunityId
+        ? workspace.salesData.clients.find(
+            (item) =>
+              item.id ===
+              workspace.salesData.opportunities.find((opp) => opp.id === opportunityId)?.clientId,
+          ) ?? null
+        : null),
+    opportunity:
+      workspace.salesData.opportunities.find((item) => item.id === opportunityId) ?? null,
+    pricingRequest:
+      workspace.pricingRequests.find((item) => item.id === pricingRequestId) ?? null,
+    proposal: workspace.salesData.proposals.find((item) => item.id === proposalId) ?? null,
+  };
+};
+
+const lastAssistantContent = (messages: AssistantMessage[]) =>
+  [...messages].reverse().find((message) => message.role === "assistant")?.content ?? "";
+
+const lastAssistantMessage = (messages: AssistantMessage[]) =>
+  [...messages].reverse().find((message) => message.role === "assistant") ?? null;
+
+const parseDraftFollowUpProposal = (content: string): DraftFollowUpProposal | null => {
+  if (!/would you like me to create this activity/i.test(content)) {
+    return null;
+  }
+
+  const type = content.match(/activity type:\s*(.+)/i)?.[1]?.trim();
+  const subject = content
+    .match(/subject:\s*["“]?(.+?)["”]?(?:\r?\n|$)/i)?.[1]
+    ?.trim();
+  const dueDate = content.match(/due date:\s*(\d{4}-\d{2}-\d{2})/i)?.[1]?.trim();
+  const priorityRaw = content.match(/priority:\s*(\d+)/i)?.[1]?.trim();
+  const assigneeName = content.match(/assignee:\s*(.+)/i)?.[1]?.trim();
+  const priority = priorityRaw ? Number(priorityRaw) : NaN;
+
+  if (!type || !subject || !dueDate || !assigneeName || !Number.isFinite(priority)) {
+    return null;
+  }
+
+  return {
+    assigneeName,
+    dueDate,
+    priority,
+    subject,
+    type,
+  };
+};
+
+const getRecentDraftFollowUpProposal = (messages: AssistantMessage[]) => {
+  const assistantMessage = lastAssistantMessage(messages);
+  return assistantMessage ? parseDraftFollowUpProposal(assistantMessage.content) : null;
+};
+
+const getRecentConfirmedGenericMutationRequest = (messages: AssistantMessage[]) => {
+  const confirmationStep = [...messages]
+    .reverse()
+    .filter((message) => message.role === "assistant")
+    .flatMap((message) => message.trace ?? [])
+    .find((step) => step.tool === "confirmation_required_generic_mutation");
+
+  if (!confirmationStep) {
+    return null;
+  }
+
+  const latestUserMessage =
+    typeof confirmationStep.arguments.latestUserMessage === "string"
+      ? confirmationStep.arguments.latestUserMessage
+      : null;
+  const priorUserRequest =
+    typeof confirmationStep.arguments.priorUserRequest === "string"
+      ? confirmationStep.arguments.priorUserRequest
+      : null;
+
+  return latestUserMessage ?? priorUserRequest ?? null;
+};
+
+const getDefaultOpportunityForOwner = (
+  workspace: IAssistantWorkspace,
+  ownerId: string,
+) =>
+  workspace.salesData.opportunities
+    .filter((opportunity) => opportunity.ownerId === ownerId && isOpenOpportunityStage(opportunity.stage))
+    .sort((left, right) => {
+      const leftClose = new Date(`${left.expectedCloseDate}T00:00:00`).getTime();
+      const rightClose = new Date(`${right.expectedCloseDate}T00:00:00`).getTime();
+
+      if (leftClose !== rightClose) {
+        return leftClose - rightClose;
+      }
+
+      return (right.value ?? right.estimatedValue) - (left.value ?? left.estimatedValue);
+    })[0] ?? null;
+
+const shouldRunConfirmedDraftFollowUpWorkflow = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+) => isConfirmationMessage(latestUserMessage) && Boolean(getRecentDraftFollowUpProposal(messages));
+
+const isWorkloadBoostIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return (
+    normalized.includes("give him more") ||
+    normalized.includes("give her more") ||
+    normalized.includes("give lebo more") ||
+    normalized.includes("provide him with more tasks") ||
+    normalized.includes("provide her with more tasks") ||
+    normalized.includes("assign him an opportunity") ||
+    normalized.includes("assign her an opportunity") ||
+    normalized.includes("assign him a proposal") ||
+    normalized.includes("assign her a proposal") ||
+    normalized.includes("make up for lost time")
+  );
+};
+
+const getWorkloadBoostTargetFromMessages = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => getReassignmentTargetFromMessage(latestUserMessage, messages, workspace);
+
+const scoreOpportunityForOwner = (
+  opportunity: IAssistantWorkspace["salesData"]["opportunities"][number],
+  owner: IAssistantWorkspace["salesData"]["teamMembers"][number],
+  workspace: IAssistantWorkspace,
+) => {
+  const client = workspace.salesData.clients.find((item) => item.id === opportunity.clientId);
+  const proposal = workspace.salesData.proposals.find((item) => item.opportunityId === opportunity.id);
+  const ownerSkills = owner.skills.map((skill) => normalizeLookupValue(skill));
+  const industry = normalizeLookupValue(client?.industry ?? "");
+  const title = normalizeLookupValue(opportunity.title);
+  const description = normalizeLookupValue(opportunity.description ?? "");
+
+  let score = 0;
+
+  if (ownerSkills.includes(industry)) {
+    score += 40;
+  }
+  if (
+    ownerSkills.includes("renewals") &&
+    (title.includes("renewal") || description.includes("renewal") || String(opportunity.stage) === "Negotiating")
+  ) {
+    score += 34;
+  }
+  if (
+    ownerSkills.includes("healthcare") &&
+    (industry.includes("healthcare") || title.includes("health"))
+  ) {
+    score += 34;
+  }
+  if (proposal) {
+    score += 12;
+  }
+
+  score += Math.max(0, 25 - Math.max(getDaysUntil(opportunity.expectedCloseDate), 0));
+  score += Math.round((opportunity.value ?? opportunity.estimatedValue) / 100_000);
+
+  return score;
+};
+
+const createWorkloadBoostPlan = (
+  latestUserMessage: string,
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+): WorkloadBoostPlan | null => {
+  const owner = getWorkloadBoostTargetFromMessages(latestUserMessage, messages, workspace);
+
+  if (!owner) {
+    return null;
+  }
+
+  const candidateOpportunities = workspace.salesData.opportunities
+    .filter(
+      (opportunity) =>
+        isOpenOpportunityStage(String(opportunity.stage)) && opportunity.ownerId !== owner.id,
+    )
+    .map((opportunity) => ({
+      opportunity,
+      score: scoreOpportunityForOwner(opportunity, owner, workspace),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  const selectedOpportunity = candidateOpportunities[0]?.opportunity ?? null;
+
+  if (!selectedOpportunity) {
+    return null;
+  }
+
+  return {
+    movedActivities: workspace.salesData.activities.filter(
+      (activity) =>
+        activity.relatedToId === selectedOpportunity.id &&
+        !activity.completed &&
+        String(activity.status) !== "Completed",
+    ),
+    opportunity: selectedOpportunity,
+    owner,
+    pricingRequest:
+      workspace.pricingRequests.find((item) => item.opportunityId === selectedOpportunity.id) ?? null,
+    proposal:
+      workspace.salesData.proposals.find((item) => item.opportunityId === selectedOpportunity.id) ?? null,
+    sourceOwner:
+      workspace.salesData.teamMembers.find((member) => member.id === selectedOpportunity.ownerId) ?? null,
+  };
+};
+
+const shouldRunWorkloadBoostWorkflow = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) =>
+  isWorkloadBoostIntent(latestUserMessage) ||
+  (isConfirmationMessage(latestUserMessage) &&
+    Boolean(
+      (() => {
+        const recentRequest = findRecentNonConfirmationUserMessage(messages);
+        return recentRequest ? createWorkloadBoostPlan(recentRequest.content, workspace, messages) : null;
+      })(),
+    ));
+
+const includesAny = (value: string, patterns: string[]) =>
+  patterns.some((pattern) => value.includes(pattern));
+
+const ADVISOR_ASSIGNMENT_CONFIRMATION_TOOL = "confirmation_required_advisor_assignment_plan";
+const ADVISOR_ASSIGNMENT_PLAN_TOOL = "advisor_assignment_plan";
+const ADVISOR_ASSIGNMENT_DEFAULT_LIMIT = 3;
+const ADVISOR_ASSIGNMENT_MAX_LIMIT = 10;
+
+type AdvisorAssignmentRequest = {
+  excludedOpportunityIds: string[];
+  limit: number;
+};
+
+type AdvisorAssignmentTraceRecommendation = {
+  currentOwnerId: string | null;
+  opportunityId: string;
+  targetOwnerId: string;
+};
+
+const hasTokenStem = (tokens: string[], stems: string[]) =>
+  tokens.some((token) => stems.some((stem) => token.startsWith(stem)));
+
+const getSignalCount = (tokens: string[], stems: string[]) =>
+  stems.reduce(
+    (count, stem) => count + (tokens.some((token) => token.startsWith(stem)) ? 1 : 0),
+    0,
+  );
+
+const parseAdvisorAssignmentLimit = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+  const numericMatch = normalized.match(/\b([1-9]|10)\b/);
+
+  if (numericMatch) {
+    return Math.min(Number(numericMatch[1]), ADVISOR_ASSIGNMENT_MAX_LIMIT);
+  }
+
+  const wordNumbers: Array<[string, number]> = [
+    ["one", 1],
+    ["two", 2],
+    ["three", 3],
+    ["four", 4],
+    ["five", 5],
+    ["six", 6],
+    ["seven", 7],
+    ["eight", 8],
+    ["nine", 9],
+    ["ten", 10],
+  ];
+  const matchedWord = wordNumbers.find(([word]) => normalized.includes(word));
+
+  if (matchedWord) {
+    return matchedWord[1];
+  }
+
+  return includesAny(normalized, ["all", "every", "everything", "the rest"])
+    ? ADVISOR_ASSIGNMENT_MAX_LIMIT
+    : ADVISOR_ASSIGNMENT_DEFAULT_LIMIT;
+};
+
+const isAdvisorAssignmentContinuationIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+  const tokens = normalized.split(" ").filter(Boolean);
+  const continuationScore = getSignalCount(tokens, [
+    "again",
+    "also",
+    "another",
+    "continue",
+    "more",
+    "next",
+    "other",
+    "remain",
+    "rest",
+    "same",
+    "too",
+    "unassign",
+  ]);
+
+  return (
+    continuationScore > 0 ||
+    normalized === "more" ||
+    normalized === "continue" ||
+    normalized === "again" ||
+    normalized === "carry on" ||
+    normalized === "keep going" ||
+    normalized === "same again" ||
+    normalized.includes("next three") ||
+    normalized.includes("next 3") ||
+    normalized.includes("another three") ||
+    normalized.includes("another 3") ||
+    normalized.includes("another batch") ||
+    normalized.includes("assigned need to be assigned") ||
+    normalized.includes("next batch") ||
+    normalized.includes("next set") ||
+    normalized.includes("next ones") ||
+    normalized.includes("not assigned") ||
+    normalized.includes("not been assigned") ||
+    normalized.includes("the next too") ||
+    normalized.includes("the next ones too") ||
+    normalized.includes("do the rest") ||
+    normalized.includes("the rest") ||
+    normalized.includes("unassigned") ||
+    normalized.includes("remaining ones") ||
+    normalized.includes("remaining") ||
+    normalized.includes("rest too") ||
+    normalized.includes("others too") ||
+    normalized.includes("same for the others") ||
+    normalized.includes("same for the rest") ||
+    normalized.includes("do that for the others") ||
+    normalized.includes("do that for the rest") ||
+    normalized.includes("apply that to the others") ||
+    normalized.includes("apply that to the rest")
+  );
+};
+
+const inferAdvisorAssignmentRequest = (
+  message: string,
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+): AdvisorAssignmentRequest | null => {
+  if (!isManagerRole(workspace.role)) {
+    return null;
+  }
+
+  const normalized = normalizeLookupValue(unwrapAdvisorPromptContent(message));
+  const tokens = normalized.split(" ").filter(Boolean);
+  const hasRecentAssignmentContext = getRecentAdvisorAssignmentOpportunityIds(messages).length > 0;
+  const continuation = hasRecentAssignmentContext && isAdvisorAssignmentContinuationIntent(normalized);
+  const actionScore = getSignalCount(tokens, [
+    "allocat",
+    "assign",
+    "delegat",
+    "distribut",
+    "give",
+    "handl",
+    "move",
+    "own",
+    "reassign",
+    "redistribut",
+    "rout",
+  ]);
+  const objectScore = getSignalCount(tokens, [
+    "account",
+    "client",
+    "deal",
+    "follow",
+    "item",
+    "opportun",
+    "pipeline",
+    "proposal",
+    "responsibil",
+    "task",
+    "work",
+  ]);
+  const rankingScore = getSignalCount(tokens, [
+    "all",
+    "another",
+    "batch",
+    "best",
+    "every",
+    "next",
+    "remain",
+    "rest",
+    "top",
+    "unassign",
+  ]);
+  const delegationScore = getSignalCount(tokens, [
+    "best",
+    "fit",
+    "need",
+    "right",
+    "suitable",
+    "whoever",
+  ]);
+  const hasQuestionToken = hasTokenStem(tokens, ["who", "which", "what"]);
+  const hasOwnershipSignal = hasTokenStem(tokens, [
+    "allocat",
+    "assign",
+    "delegat",
+    "handl",
+    "own",
+    "owner",
+    "reassign",
+    "responsib",
+    "rout",
+  ]);
+  const asksOwnerDecision =
+    hasQuestionToken &&
+    hasOwnershipSignal &&
+    (objectScore > 0 || rankingScore > 0 || delegationScore > 0);
+  const delegatesDecision = actionScore > 0 && delegationScore > 0;
+  const asksForAssignment =
+    actionScore > 0 && (objectScore > 0 || rankingScore > 0 || delegatesDecision);
+
+  if (!continuation && !asksOwnerDecision && !asksForAssignment) {
+    return null;
+  }
+
+  return {
+    excludedOpportunityIds: continuation ? getRecentAdvisorAssignmentOpportunityIds(messages) : [],
+    limit: parseAdvisorAssignmentLimit(normalized),
+  };
+};
+
+const parseAdvisorAssignmentTraceRecommendations = (
+  value: unknown,
+): AdvisorAssignmentTraceRecommendation[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+
+    const candidate = item as {
+      currentOwnerId?: unknown;
+      opportunityId?: unknown;
+      targetOwnerId?: unknown;
+    };
+
+    if (
+      typeof candidate.opportunityId !== "string" ||
+      typeof candidate.targetOwnerId !== "string"
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        currentOwnerId:
+          typeof candidate.currentOwnerId === "string" ? candidate.currentOwnerId : null,
+        opportunityId: candidate.opportunityId,
+        targetOwnerId: candidate.targetOwnerId,
+      },
+    ];
+  });
+};
+
+const getAdvisorAssignmentIdsFromTraceStep = (step: AssistantTraceStep) => {
+  const ids = new Set<string>();
+  const rawOpportunityIds = step.arguments.opportunityIds;
+
+  if (Array.isArray(rawOpportunityIds)) {
+    rawOpportunityIds.forEach((id) => {
+      if (typeof id === "string") {
+        ids.add(id);
+      }
+    });
+  }
+
+  parseAdvisorAssignmentTraceRecommendations(step.arguments.recommendations).forEach(
+    (recommendation) => ids.add(recommendation.opportunityId),
+  );
+
+  return [...ids];
+};
+
+const getRecentAdvisorAssignmentOpportunityIds = (messages: AssistantMessage[]) => {
+  const ids = new Set<string>();
+
+  [...messages].reverse().forEach((message) => {
+    if (message.role !== "assistant") {
+      return;
+    }
+
+    message.trace
+      ?.filter(
+        (step) =>
+          step.tool === ADVISOR_ASSIGNMENT_PLAN_TOOL ||
+          step.tool === ADVISOR_ASSIGNMENT_CONFIRMATION_TOOL,
+      )
+      .forEach((step) => {
+        getAdvisorAssignmentIdsFromTraceStep(step).forEach((id) => ids.add(id));
+      });
+  });
+
+  return [...ids];
+};
+
+const createAdvisorAssignmentPlan = (
+  workspace: IAssistantWorkspace,
+  limit = 3,
+  excludedOpportunityIds: string[] = [],
+): AdvisorAssignmentPlan | null => {
+  const excluded = new Set(excludedOpportunityIds);
+  const recommendations = getOpportunityInsights(workspace.salesData)
+    .filter((insight) => !excluded.has(insight.opportunity.id))
+    .slice(0, limit)
+    .map((insight) => {
+      const opportunity = insight.opportunity;
+      const clientName = insight.client?.name ?? "Unknown client";
+      const targetOwner = getBestOwner(
+        workspace.salesData,
+        opportunity.value ?? opportunity.estimatedValue,
+        insight.client?.industry ?? "General",
+        { pricingRequests: workspace.pricingRequests },
+      );
+
+      return {
+        clientName,
+        currentOwner:
+          workspace.salesData.teamMembers.find((member) => member.id === opportunity.ownerId) ??
+          null,
+        openActivities: workspace.salesData.activities.filter(
+          (activity) =>
+            activity.relatedToId === opportunity.id &&
+            !activity.completed &&
+            String(activity.status) !== "Completed",
+        ),
+        opportunity,
+        pricingRequest:
+          workspace.pricingRequests.find((request) => request.opportunityId === opportunity.id) ??
+          null,
+        proposal:
+          workspace.salesData.proposals.find((proposal) => proposal.opportunityId === opportunity.id) ??
+          null,
+        targetOwner,
+      };
+    })
+    .filter((item) => Boolean(item.targetOwner));
+
+  if (recommendations.length === 0) {
+    return null;
+  }
+
+  return { recommendations };
+};
+
+const createAdvisorAssignmentPlanFromTrace = (
+  workspace: IAssistantWorkspace,
+  recommendations: AdvisorAssignmentTraceRecommendation[],
+): AdvisorAssignmentPlan | null => {
+  const planRecommendations = recommendations.flatMap((recommendation) => {
+    const opportunity =
+      workspace.salesData.opportunities.find(
+        (item) => item.id === recommendation.opportunityId,
+      ) ?? null;
+    const targetOwner =
+      workspace.salesData.teamMembers.find((member) => member.id === recommendation.targetOwnerId) ??
+      null;
+
+    if (!opportunity || !targetOwner) {
+      return [];
+    }
+
+    const client =
+      workspace.salesData.clients.find((item) => item.id === opportunity.clientId) ?? null;
+
+    return [
+      {
+        clientName: client?.name ?? "Unknown client",
+        currentOwner:
+          workspace.salesData.teamMembers.find((member) => member.id === opportunity.ownerId) ??
+          null,
+        openActivities: workspace.salesData.activities.filter(
+          (activity) =>
+            activity.relatedToId === opportunity.id &&
+            !activity.completed &&
+            String(activity.status) !== "Completed",
+        ),
+        opportunity,
+        pricingRequest:
+          workspace.pricingRequests.find((request) => request.opportunityId === opportunity.id) ??
+          null,
+        proposal:
+          workspace.salesData.proposals.find(
+            (proposal) => proposal.opportunityId === opportunity.id,
+          ) ?? null,
+        targetOwner,
+      },
+    ];
+  });
+
+  return planRecommendations.length > 0 ? { recommendations: planRecommendations } : null;
+};
+
+const getRecentAdvisorAssignmentConfirmationPlan = (
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  const confirmationStep = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant")
+    ?.trace?.find((step) => step.tool === ADVISOR_ASSIGNMENT_CONFIRMATION_TOOL);
+
+  if (!confirmationStep) {
+    return null;
+  }
+
+  return createAdvisorAssignmentPlanFromTrace(
+    workspace,
+    parseAdvisorAssignmentTraceRecommendations(confirmationStep.arguments.recommendations),
+  );
+};
+
+const shouldRunAdvisorAssignmentWorkflow = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) =>
+  Boolean(inferAdvisorAssignmentRequest(latestUserMessage, messages, workspace)) ||
+  (isManagerRole(workspace.role) &&
+    isConfirmationMessage(latestUserMessage) &&
+    Boolean(
+      [...messages]
+        .reverse()
+        .find((message) => message.role === "assistant")
+        ?.trace?.some((step) => step.tool === ADVISOR_ASSIGNMENT_CONFIRMATION_TOOL),
+    ));
+
+const createConfirmedDraftFollowUpResult = (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const draft = getRecentDraftFollowUpProposal(messages);
+
+  if (!draft) {
+    return null;
+  }
+
+  const assignee =
+    workspace.salesData.teamMembers.find(
+      (member) => normalizeLookupValue(member.name) === normalizeLookupValue(draft.assigneeName),
+    ) ??
+    workspace.salesData.teamMembers.find((member) =>
+      normalizeLookupValue(draft.assigneeName)
+        .split(" ")
+        .every((token) => normalizeLookupValue(member.name).includes(token)),
+    ) ??
+    null;
+
+  if (!assignee) {
+    return null;
+  }
+
+  const relatedOpportunity = getDefaultOpportunityForOwner(workspace, assignee.id);
+
+  if (!relatedOpportunity) {
+    return null;
+  }
+
+  const actor = createAssistantActor(workspace);
+  const activity = createMockActivity(actor, {
+    assignedToId: assignee.id,
+    assignedToName: assignee.name,
+    completed: false,
+    description: `${draft.subject} for ${assignee.name}.`,
+    dueDate: draft.dueDate,
+    priority: draft.priority,
+    relatedToId: relatedOpportunity.id,
+    relatedToType: 2,
+    status: "Scheduled",
+    subject: draft.subject,
+    title: draft.subject,
+    type: draft.type,
+  });
+  upsertById(workspace.salesData.activities, activity);
+
+  return {
+    message:
+      `Created follow-up ${activity.subject} for ${assignee.name}, due ${draft.dueDate}, linked to ${relatedOpportunity.title}. ` +
+      `Next best action: ${assignee.name} should complete it before ${relatedOpportunity.expectedCloseDate}.`,
+    mode: "workflow" as const,
+    model: "local-sale-workflow",
+    reason: "Confirmed follow-up draft executed locally from recent assistant context.",
+    mutations: [
+      {
+        entityId: activity.id,
+        entityType: "activity" as const,
+        operation: "create" as const,
+        record: activity as unknown as Record<string, unknown>,
+        title: activity.subject,
+      },
+    ] satisfies AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          assigneeId: assignee.id,
+          assigneeName: assignee.name,
+          dueDate: draft.dueDate,
+          opportunityId: relatedOpportunity.id,
+          subject: draft.subject,
+          type: draft.type,
+        },
+        outputPreview: createTracePreview({
+          activity: activity.subject,
+          assignee: assignee.name,
+          dueDate: draft.dueDate,
+          linkedOpportunity: relatedOpportunity.title,
+        }),
+        tool: "confirmed_follow_up_workflow",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
+const createWorkloadBoostConfirmationReply = (
+  latestUserMessage: string,
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  if (isConfirmationMessage(latestUserMessage)) {
+    return null;
+  }
+
+  if (!isWorkloadBoostIntent(latestUserMessage)) {
+    return null;
+  }
+
+  const plan = createWorkloadBoostPlan(latestUserMessage, workspace, messages);
+
+  if (!plan) {
+    return null;
+  }
+
+  return createConfirmationResult(
+    `I can give ${plan.owner.name} more coverage by reassigning ${plan.opportunity.title}` +
+      `${plan.proposal ? ` and its linked proposal ${plan.proposal.title}` : ""}` +
+      `${plan.sourceOwner ? ` from ${plan.sourceOwner.name}` : ""}, moving ${plan.movedActivities.length} open follow-up${plan.movedActivities.length === 1 ? "" : "s"}, and creating 2 fresh tasks. Reply confirm to proceed.`,
+    {
+      opportunityId: plan.opportunity.id,
+      proposalId: plan.proposal?.id ?? null,
+      sourceOwnerId: plan.sourceOwner?.id ?? null,
+      targetOwnerId: plan.owner.id,
+    },
+    "confirmation_required_workload_boost",
+  );
+};
+
+const createAdvisorAssignmentConfirmationReply = (
+  latestUserMessage: string,
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const assignmentRequest = inferAdvisorAssignmentRequest(
+    latestUserMessage,
+    messages,
+    workspace,
+  );
+
+  if (!assignmentRequest) {
+    return null;
+  }
+
+  const plan = createAdvisorAssignmentPlan(
+    workspace,
+    assignmentRequest.limit,
+    assignmentRequest.excludedOpportunityIds,
+  );
+
+  if (!plan) {
+    return null;
+  }
+
+  const changes = plan.recommendations.filter(
+    (item) => item.currentOwner?.id !== item.targetOwner.id,
+  );
+  const planSummary = plan.recommendations
+    .map(
+      (item) =>
+        `${item.opportunity.title} -> ${item.targetOwner.name}` +
+        `${item.currentOwner ? ` (currently ${item.currentOwner.name})` : ""}`,
+    )
+    .join("; ");
+
+  return createConfirmationResult(
+    changes.length > 0
+      ? `I can apply this assignment plan: ${planSummary}. This will reassign ${changes.length} open deal${changes.length === 1 ? "" : "s"} and move linked open follow-ups plus pricing requests. Reply confirm to proceed.`
+      : `The current owners already look like the best assignment plan: ${planSummary}. Reply confirm if you want me to keep it as-is and add no changes.`,
+    {
+      recommendations: plan.recommendations.map((item) => ({
+        currentOwnerId: item.currentOwner?.id ?? null,
+        opportunityId: item.opportunity.id,
+        targetOwnerId: item.targetOwner.id,
+      })),
+    },
+    "confirmation_required_advisor_assignment_plan",
+  );
+};
+
+const createAdvisorAssignmentResult = (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+  latestUserMessage: string,
+) => {
+  const confirmedPlan = isConfirmationMessage(latestUserMessage)
+    ? getRecentAdvisorAssignmentConfirmationPlan(messages, workspace)
+    : null;
+  const assignmentRequest = inferAdvisorAssignmentRequest(
+    latestUserMessage,
+    messages,
+    workspace,
+  );
+  const plan =
+    confirmedPlan ??
+    (assignmentRequest
+      ? createAdvisorAssignmentPlan(
+          workspace,
+          assignmentRequest.limit,
+          assignmentRequest.excludedOpportunityIds,
+        )
+      : null);
+
+  if (!plan) {
+    return null;
+  }
+
+  const mutations: AssistantMutation[] = [];
+  const summaries = plan.recommendations.map((item) => {
+    const shouldReassign = item.currentOwner?.id !== item.targetOwner.id;
+
+    if (!shouldReassign) {
+      return `${item.opportunity.title} stays with ${item.targetOwner.name}`;
+    }
+
+    const updatedOpportunity = updateMockOpportunity(workspace.tenantId, item.opportunity.id, {
+      ownerId: item.targetOwner.id,
+    });
+
+    if (updatedOpportunity) {
+      upsertById(workspace.salesData.opportunities, updatedOpportunity);
+      mutations.push({
+        entityId: updatedOpportunity.id,
+        entityType: "opportunity",
+        operation: "update",
+        record: updatedOpportunity as unknown as Record<string, unknown>,
+        title: updatedOpportunity.title,
+      });
+    }
+
+    item.openActivities.forEach((activity) => {
+      const updatedActivity = updateMockActivity(workspace.tenantId, activity.id, {
+        assignedToId: item.targetOwner.id,
+        assignedToName: item.targetOwner.name,
+      });
+
+      if (!updatedActivity) {
+        return;
+      }
+
+      upsertById(workspace.salesData.activities, updatedActivity);
+      mutations.push({
+        entityId: updatedActivity.id,
+        entityType: "activity",
+        operation: "update",
+        record: updatedActivity as unknown as Record<string, unknown>,
+        title: updatedActivity.subject,
+      });
+    });
+
+    if (item.pricingRequest) {
+      const updatedPricingRequest = updateMockPricingRequest(
+        workspace.tenantId,
+        item.pricingRequest.id,
+        {
+          assignedToId: item.targetOwner.id,
+          assignedToName: item.targetOwner.name,
+        },
+      );
+
+      if (updatedPricingRequest) {
+        workspace.pricingRequests = listMockPricingRequests(workspace.tenantId);
+        mutations.push({
+          entityId: updatedPricingRequest.id,
+          entityType: "pricing_request",
+          operation: "update",
+          record: updatedPricingRequest as unknown as Record<string, unknown>,
+          title: updatedPricingRequest.title,
+        });
+      }
+    }
+
+    return (
+      `${item.opportunity.title} moved to ${item.targetOwner.name}` +
+      `${item.currentOwner ? ` from ${item.currentOwner.name}` : ""}` +
+      `${item.proposal ? ` with proposal ${item.proposal.title}` : ""}`
+    );
+  });
+
+  return {
+    message:
+      `Assignment plan applied. ${summaries.join("; ")}. ` +
+      `Next best action: focus the assigned owners on the highest priority follow-up for each moved deal today.`,
+    mode: "workflow" as const,
+    model: "local-sale-workflow",
+    reason: "Advisor assignment plan executed locally without provider access.",
+    mutations,
+    trace: [
+      {
+        arguments: {
+          opportunityIds: plan.recommendations.map((item) => item.opportunity.id),
+          recommendations: plan.recommendations.map((item) => ({
+            currentOwnerId: item.currentOwner?.id ?? null,
+            opportunityId: item.opportunity.id,
+            targetOwnerId: item.targetOwner.id,
+          })),
+        },
+        outputPreview: createTracePreview({
+          mutations: mutations.length,
+          plan: summaries,
+        }),
+        tool: "advisor_assignment_plan",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
+const createWorkloadBoostResult = (
+  latestUserMessage: string,
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const requestMessage = isConfirmationMessage(latestUserMessage)
+    ? findRecentNonConfirmationUserMessage(messages)?.content ?? latestUserMessage
+    : latestUserMessage;
+  const plan = createWorkloadBoostPlan(requestMessage, workspace, messages);
+
+  if (!plan) {
+    return null;
+  }
+
+  const actor = createAssistantActor(workspace);
+  const updatedOpportunity = updateMockOpportunity(workspace.tenantId, plan.opportunity.id, {
+    ownerId: plan.owner.id,
+  });
+
+  if (updatedOpportunity) {
+    upsertById(workspace.salesData.opportunities, updatedOpportunity);
+  }
+
+  const updatedActivities = plan.movedActivities
+    .map((activity) => {
+      const updated = updateMockActivity(workspace.tenantId, activity.id, {
+        assignedToId: plan.owner.id,
+        assignedToName: plan.owner.name,
+      });
+
+      if (updated) {
+        upsertById(workspace.salesData.activities, updated);
+      }
+
+      return updated;
+    })
+    .filter(Boolean) as IAssistantWorkspace["salesData"]["activities"];
+
+  const updatedPricingRequest = plan.pricingRequest
+    ? updateMockPricingRequest(workspace.tenantId, plan.pricingRequest.id, {
+        assignedToId: plan.owner.id,
+        assignedToName: plan.owner.name,
+      })
+    : null;
+
+  if (updatedPricingRequest) {
+    workspace.pricingRequests = listMockPricingRequests(workspace.tenantId);
+  }
+
+  const client =
+    workspace.salesData.clients.find((item) => item.id === plan.opportunity.clientId) ?? null;
+  const contact =
+    workspace.salesData.contacts.find((item) => item.id === plan.opportunity.contactId) ?? null;
+
+  const taskOne = createMockActivity(actor, {
+    assignedToId: plan.owner.id,
+    assignedToName: plan.owner.name,
+    completed: false,
+    description: `Review ${client?.name ?? "the client"} commercial position and tighten the close plan for ${plan.opportunity.title}.`,
+    dueDate: addDaysClampedToDeadline(plan.opportunity.expectedCloseDate, 1),
+    priority: 1,
+    relatedToId: plan.opportunity.id,
+    relatedToType: 2,
+    status: "Scheduled",
+    subject: `Rework close plan for ${client?.name ?? plan.opportunity.title}`,
+    title: `Rework close plan for ${client?.name ?? plan.opportunity.title}`,
+    type: "Task",
+  });
+  upsertById(workspace.salesData.activities, taskOne);
+
+  const taskTwo = createMockActivity(actor, {
+    assignedToId: plan.owner.id,
+    assignedToName: plan.owner.name,
+    completed: false,
+    description: `Book a client-facing follow-up with ${contact ? `${contact.firstName} ${contact.lastName}` : client?.name ?? "the client"} and walk through the next commercial step.`,
+    dueDate: addDaysClampedToDeadline(plan.opportunity.expectedCloseDate, 2),
+    priority: 1,
+    relatedToId: plan.opportunity.id,
+    relatedToType: 2,
+    status: "Scheduled",
+    subject: `Book follow-up with ${client?.name ?? plan.opportunity.title}`,
+    title: `Book follow-up with ${client?.name ?? plan.opportunity.title}`,
+    type: "Call",
+  });
+  upsertById(workspace.salesData.activities, taskTwo);
+
+  return {
+    message:
+      `Assigned ${plan.opportunity.title} to ${plan.owner.name}` +
+      `${plan.proposal ? ` with proposal context ${plan.proposal.title}` : ""}` +
+      `; moved ${updatedActivities.length} open follow-up${updatedActivities.length === 1 ? "" : "s"}` +
+      `${updatedPricingRequest ? ` and pricing request ${updatedPricingRequest.title}` : ""}; ` +
+      `created tasks ${taskOne.subject} and ${taskTwo.subject}. ` +
+      `Next best action: ${plan.owner.name} should push ${client?.name ?? plan.opportunity.title} forward before ${plan.opportunity.expectedCloseDate}.`,
+    mode: "workflow" as const,
+    model: "local-sale-workflow",
+    reason: "Confirmed workload-boost workflow executed locally from user intent and team-fit scoring.",
+    mutations: [
+      updatedOpportunity
+        ? {
+            entityId: updatedOpportunity.id,
+            entityType: "opportunity" as const,
+            operation: "update" as const,
+            record: updatedOpportunity as unknown as Record<string, unknown>,
+            title: updatedOpportunity.title,
+          }
+        : null,
+      ...updatedActivities.map((activity) => ({
+        entityId: activity.id,
+        entityType: "activity" as const,
+        operation: "update" as const,
+        record: activity as unknown as Record<string, unknown>,
+        title: activity.subject,
+      })),
+      updatedPricingRequest
+        ? {
+            entityId: updatedPricingRequest.id,
+            entityType: "pricing_request" as const,
+            operation: "update" as const,
+            record: updatedPricingRequest as unknown as Record<string, unknown>,
+            title: updatedPricingRequest.title,
+          }
+        : null,
+      {
+        entityId: taskOne.id,
+        entityType: "activity" as const,
+        operation: "create" as const,
+        record: taskOne as unknown as Record<string, unknown>,
+        title: taskOne.subject,
+      },
+      {
+        entityId: taskTwo.id,
+        entityType: "activity" as const,
+        operation: "create" as const,
+        record: taskTwo as unknown as Record<string, unknown>,
+        title: taskTwo.subject,
+      },
+    ].filter(Boolean) as AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          opportunityId: plan.opportunity.id,
+          proposalId: plan.proposal?.id ?? null,
+          sourceOwnerId: plan.sourceOwner?.id ?? null,
+          targetOwnerId: plan.owner.id,
+        },
+        outputPreview: createTracePreview({
+          createdTasks: [taskOne.subject, taskTwo.subject],
+          movedActivities: updatedActivities.length,
+          opportunity: plan.opportunity.title,
+          pricingRequest: updatedPricingRequest?.title ?? null,
+          targetOwner: plan.owner.name,
+        }),
+        tool: "workload_boost_workflow",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
+const shouldRunProposalAcceptanceWorkflow = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+) => {
+  const normalized = normalizeLookupValue(latestUserMessage);
+  const recentUserContext = getRecentUserMessages(messages)
+    .reverse()
+    .slice(0, 3)
+    .map((message) => normalizeLookupValue(message.content))
+    .join(" ");
+  const recentAssistant = normalizeLookupValue(lastAssistantContent(messages));
+  const confirms = ["yes", "do so", "proceed", "do it", "okay", "ok"].includes(normalized);
+  const proposalProgressContext =
+    recentUserContext.includes("proceed with the proposal") ||
+    recentUserContext.includes("proposal accepted") ||
+    recentUserContext.includes("want to proceed") ||
+    recentAssistant.includes("mark the proposal as accepted") ||
+    recentAssistant.includes("update the opportunity status to closed won");
+
+  return confirms && proposalProgressContext;
+};
+
+const getReassignmentTargetFromMessage = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  const recentUserContext = getRecentUserMessages(messages)
+    .reverse()
+    .slice(0, 4)
+    .map((message) => normalizeLookupValue(message.content))
+    .join(" ");
+  const normalizedMessage = normalizeLookupValue(`${latestUserMessage} ${recentUserContext}`);
+  const messageTokens = normalizedMessage.split(" ").filter(Boolean);
+
+  return (
+    workspace.salesData.teamMembers.find((member) => {
+      const normalizedName = normalizeLookupValue(member.name);
+      const nameTokens = normalizedName.split(" ").filter(Boolean);
+
+      return (
+        normalizedMessage.includes(normalizedName) ||
+        nameTokens.some((token) => messageTokens.includes(token)) ||
+        messageTokens.includes(normalizeLookupValue(member.id))
+      );
+    }) ?? null
+  );
+};
+
+const shouldRunReassignmentWorkflow = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+) => {
+  const normalized = normalizeLookupValue(latestUserMessage);
+  const recentAssistant = normalizeLookupValue(lastAssistantContent(messages));
+  const isBulkClarification =
+    normalized === "everything" ||
+    normalized === "both" ||
+    normalized === "all of it" ||
+    normalized === "all";
+  const followsClarifyingQuestion =
+    recentAssistant.includes("which record you d like to re assign") ||
+    recentAssistant.includes("the opportunity the kickoff activity or both") ||
+    recentAssistant.includes("which one or both");
+
+  return (
+    normalized.includes("assign") ||
+    normalized.includes("reassign") ||
+    (isBulkClarification && followsClarifyingQuestion)
+  );
+};
+
+const createConversationalReplyResult = (
+  latestUserMessage: string,
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const normalized = normalizeLookupValue(latestUserMessage);
+  const context = getRecentWorkflowContext(workspace, messages);
+  const lastAssistant = lastAssistantMessage(messages);
+  const recentWorkflowMutation =
+    lastAssistant?.mutations?.some((mutation) =>
+      ["create", "update"].includes(mutation.operation),
+    ) ?? false;
+
+  if (!recentWorkflowMutation || !context.opportunity) {
+    return null;
+  }
+
+  const owner =
+    workspace.salesData.teamMembers.find((member) => member.id === context.opportunity?.ownerId) ??
+    null;
+
+  if (!owner) {
+    return null;
+  }
+
+  const ownerAssignmentCount = getAssignmentCount(workspace.salesData, owner.id);
+  const openActivityCount = workspace.salesData.activities.filter(
+    (activity) =>
+      activity.relatedToId === context.opportunity?.id &&
+      !activity.completed &&
+      String(activity.status) !== "Completed",
+  ).length;
+
+  if (
+    normalized === "what" ||
+    normalized === "huh" ||
+    normalized === "whats that" ||
+    normalized === "what is that" ||
+    normalized === "what do you mean"
+  ) {
+    return {
+      message:
+        `${owner.name} now owns the ${context.opportunity.title} opportunity` +
+        `${openActivityCount > 0 ? `, ${openActivityCount} open linked activities` : ""}` +
+        `${context.pricingRequest ? `, and the pricing request ${context.pricingRequest.title}` : ""}. ` +
+        `I did not reassign the whole workspace.`,
+      mode: "workflow" as const,
+      model: "local-conversation-guard",
+      reason: "Conversational context reply generated from recent workflow state.",
+      mutations: [] satisfies AssistantMutation[],
+      trace: [
+        {
+          arguments: {
+            latestUserMessage,
+            opportunityId: context.opportunity.id,
+            ownerId: owner.id,
+          },
+          outputPreview: createTracePreview({
+            owner: owner.name,
+            openActivityCount,
+            pricingRequest: context.pricingRequest?.title ?? null,
+          }),
+          tool: "conversational_context_reply",
+        },
+      ] satisfies AssistantTraceStep[],
+    };
+  }
+
+  if (
+    normalized.includes("star") ||
+    normalized.includes("owns everything") ||
+    normalized.includes("holds everything") ||
+    normalized.includes("owns it all") ||
+    normalized.includes("he owns everything") ||
+    normalized.includes("he holds everything")
+  ) {
+    return {
+      message:
+        `${owner.name} is carrying the Umzila deal now, but not the entire workspace. ` +
+        `He currently owns ${ownerAssignmentCount} open opportunit${ownerAssignmentCount === 1 ? "y" : "ies"} in this pipeline, including ${context.opportunity.title}.`,
+      mode: "workflow" as const,
+      model: "local-conversation-guard",
+      reason: "Conversational context reply generated from recent workflow state.",
+      mutations: [] satisfies AssistantMutation[],
+      trace: [
+        {
+          arguments: {
+            latestUserMessage,
+            opportunityId: context.opportunity.id,
+            ownerId: owner.id,
+          },
+          outputPreview: createTracePreview({
+            owner: owner.name,
+            ownerAssignmentCount,
+            opportunity: context.opportunity.title,
+          }),
+          tool: "conversational_context_reply",
+        },
+      ] satisfies AssistantTraceStep[],
+    };
+  }
+
+  if (
+    normalized === "yes" ||
+    normalized === "yeah" ||
+    normalized === "yep" ||
+    normalized === "nice" ||
+    normalized === "cool" ||
+    normalized === "thanks"
+  ) {
+    return {
+      message: `${owner.name} is set as the assignee for ${context.opportunity.title}.`,
+      mode: "workflow" as const,
+      model: "local-conversation-guard",
+      reason: "Conversational context reply generated from recent workflow state.",
+      mutations: [] satisfies AssistantMutation[],
+      trace: [
+        {
+          arguments: {
+            latestUserMessage,
+            opportunityId: context.opportunity.id,
+            ownerId: owner.id,
+          },
+          outputPreview: createTracePreview({
+            owner: owner.name,
+            opportunity: context.opportunity.title,
+          }),
+          tool: "conversational_context_reply",
+        },
+      ] satisfies AssistantTraceStep[],
+    };
+  }
+
+  return null;
+};
+
+const createProposalAcceptanceWorkflowResult = (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const actor = createAssistantActor(workspace);
+  const context = getRecentWorkflowContext(workspace, messages);
+
+  if (!context.client || !context.opportunity || !context.proposal) {
+    return null;
+  }
+
+  const owner =
+    workspace.salesData.teamMembers.find((member) => member.id === context.opportunity?.ownerId) ??
+    getBestOwner(
+      workspace.salesData,
+      context.opportunity.value ?? context.opportunity.estimatedValue,
+      context.client.industry ?? "General",
+      { pricingRequests: workspace.pricingRequests },
+    );
+
+  const updatedProposal = updateMockProposal(workspace.tenantId, context.proposal.id, {
+    status: "Approved",
+  });
+  const updatedOpportunity = updateMockOpportunity(workspace.tenantId, context.opportunity.id, {
+    stage: "Won",
+  });
+  const kickoffDueDate = addDays(new Date(), 7);
+  const deadlineDate = new Date(`${context.opportunity.expectedCloseDate}T00:00:00`);
+  const kickoffActivity = createMockActivity(actor, {
+    assignedToId: owner.id,
+    assignedToName: owner.name,
+    completed: false,
+    description: `Kickoff call for ${context.client.name} after proposal acceptance.`,
+    dueDate: toIsoDate(kickoffDueDate > deadlineDate ? deadlineDate : kickoffDueDate),
+    priority: 1,
+    relatedToId: context.opportunity.id,
+    relatedToType: 2,
+    status: "Scheduled",
+    subject: `Kickoff - ${context.client.name}`,
+    title: `Kickoff - ${context.client.name}`,
+    type: "Meeting",
+  });
+  upsertById(workspace.salesData.activities, kickoffActivity);
+
+  const statusNote = createMockNote(actor, {
+    category: "Sales workflow",
+    clientId: context.client.id,
+    content: "Client ready to proceed; proposal accepted. Awaiting contract sign-off.",
+    createdDate: new Date().toISOString(),
+    kind: "general",
+    source: "assistant",
+    title: `${context.client.name} closed-won update`,
+  });
+  workspace.notes = listMockNotes(workspace.tenantId);
+
+  if (updatedProposal) {
+    upsertById(workspace.salesData.proposals, updatedProposal);
+  }
+  if (updatedOpportunity) {
+    upsertById(workspace.salesData.opportunities, updatedOpportunity);
+  }
+
+  return {
+    message:
+      `Updated proposal ${context.proposal.title} to Approved; moved opportunity ${context.opportunity.title} to Closed-Won; ` +
+      `created kickoff activity ${kickoffActivity.subject}; added status note ${statusNote.title}. ` +
+      `Next best action: send the contract pack to ${context.client.name}.`,
+    mode: "workflow" as const,
+    model: "local-sale-workflow",
+    reason: "Autonomous proposal-acceptance workflow executed from recent sale context.",
+    mutations: [
+      updatedProposal
+        ? {
+            entityId: updatedProposal.id,
+            entityType: "proposal" as const,
+            operation: "update" as const,
+            record: updatedProposal as unknown as Record<string, unknown>,
+            title: updatedProposal.title,
+          }
+        : null,
+      updatedOpportunity
+        ? {
+            entityId: updatedOpportunity.id,
+            entityType: "opportunity" as const,
+            operation: "update" as const,
+            record: updatedOpportunity as unknown as Record<string, unknown>,
+            title: updatedOpportunity.title,
+          }
+        : null,
+      {
+        entityId: kickoffActivity.id,
+        entityType: "activity" as const,
+        operation: "create" as const,
+        record: kickoffActivity as unknown as Record<string, unknown>,
+        title: kickoffActivity.subject,
+      },
+      {
+        entityId: statusNote.id,
+        entityType: "note" as const,
+        operation: "create" as const,
+        record: statusNote as unknown as Record<string, unknown>,
+        title: statusNote.title,
+      },
+    ].filter(Boolean) as AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          clientId: context.client.id,
+          opportunityId: context.opportunity.id,
+          proposalId: context.proposal.id,
+        },
+        outputPreview: createTracePreview({
+          kickoffActivity: kickoffActivity.subject,
+          owner: owner.name,
+          proposalStatus: updatedProposal?.status ?? "Approved",
+          opportunityStage: updatedOpportunity?.stage ?? "Won",
+        }),
+        tool: "proposal_acceptance_workflow",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
+const createReassignmentWorkflowResult = (
+  latestUserMessage: string,
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const targetOwner = getReassignmentTargetFromMessage(latestUserMessage, messages, workspace);
+  const context = getRecentWorkflowContext(workspace, messages);
+
+  if (!targetOwner || !context.opportunity) {
+    return null;
+  }
+
+  const updatedOpportunity = updateMockOpportunity(workspace.tenantId, context.opportunity.id, {
+    ownerId: targetOwner.id,
+  });
+
+  if (updatedOpportunity) {
+    upsertById(workspace.salesData.opportunities, updatedOpportunity);
+  }
+
+  const affectedActivities = workspace.salesData.activities
+    .filter(
+      (activity) =>
+        activity.relatedToId === context.opportunity?.id &&
+        !activity.completed &&
+        String(activity.status) !== "Completed",
+    )
+    .map((activity) => {
+      const updated = updateMockActivity(workspace.tenantId, activity.id, {
+        assignedToId: targetOwner.id,
+        assignedToName: targetOwner.name,
+      });
+
+      if (updated) {
+        upsertById(workspace.salesData.activities, updated);
+      }
+
+      return updated;
+    })
+    .filter(Boolean) as IAssistantWorkspace["salesData"]["activities"];
+
+  const updatedPricingRequest = context.pricingRequest
+    ? updateMockPricingRequest(workspace.tenantId, context.pricingRequest.id, {
+        assignedToId: targetOwner.id,
+        assignedToName: targetOwner.name,
+      })
+    : null;
+
+  if (updatedPricingRequest) {
+    workspace.pricingRequests = listMockPricingRequests(workspace.tenantId);
+  }
+
+  return {
+    message:
+      `Reassigned opportunity ${context.opportunity.title} to ${targetOwner.name}; moved ${affectedActivities.length} open activities` +
+      `${updatedPricingRequest ? ` and pricing request ${updatedPricingRequest.title}` : ""}. ` +
+      `Next best action: ${targetOwner.name} should review the deal and confirm the next client-facing step.`,
+    mode: "workflow" as const,
+    model: "local-sale-workflow",
+    reason: "Autonomous reassignment workflow executed from recent sale context.",
+    mutations: [
+      updatedOpportunity
+        ? {
+            entityId: updatedOpportunity.id,
+            entityType: "opportunity" as const,
+            operation: "update" as const,
+            record: updatedOpportunity as unknown as Record<string, unknown>,
+            title: updatedOpportunity.title,
+          }
+        : null,
+      ...affectedActivities.map((activity) => ({
+        entityId: activity.id,
+        entityType: "activity" as const,
+        operation: "update" as const,
+        record: activity as unknown as Record<string, unknown>,
+        title: activity.subject,
+      })),
+      updatedPricingRequest
+        ? {
+            entityId: updatedPricingRequest.id,
+            entityType: "pricing_request" as const,
+            operation: "update" as const,
+            record: updatedPricingRequest as unknown as Record<string, unknown>,
+            title: updatedPricingRequest.title,
+          }
+        : null,
+    ].filter(Boolean) as AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          targetOwnerId: targetOwner.id,
+          targetOwnerName: targetOwner.name,
+        },
+        outputPreview: createTracePreview({
+          affectedActivities: affectedActivities.length,
+          opportunity: context.opportunity.title,
+          pricingRequest: updatedPricingRequest?.title ?? null,
+        }),
+        tool: "reassignment_workflow",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
+const createAutonomousSaleResult = (
+  request: AutonomousSaleRequest,
+  workspace: IAssistantWorkspace,
+) => {
+  const actor = createAssistantActor(workspace);
+  const { salesData } = workspace;
+  const industry = inferIndustryFromClientName(request.clientName);
+  const segment = request.offerValue >= 1_000_000 ? "Enterprise" : "Growth";
+  const [contactFirstName, ...contactLastNameParts] = request.contactName.split(/\s+/);
+  const contactLastName = contactLastNameParts.join(" ") || "Contact";
+  const owner = getBestOwner(salesData, request.offerValue, industry, {
+    pricingRequests: workspace.pricingRequests,
+  });
+  const opportunityTitle = `${request.clientName} ${request.wants[0] ?? "transformation"} program`;
+  const opportunityDescription =
+    request.wants.length > 0
+      ? `Client wants ${request.wants.join(", ")}.`
+      : "Client requested a new commercial sales workflow.";
+  const followUpDueDate = addDaysClampedToDeadline(request.deadline, 2);
+  const pricingDueDate = addDaysClampedToDeadline(request.deadline, 5);
+  const proposalDueDate = addDaysClampedToDeadline(request.deadline, 7);
+
+  const client = createMockClient(actor, {
+    companySize: segment,
+    industry,
+    name: request.clientName,
+    website: `https://${request.contactEmail.split("@")[1] ?? ""}`.replace(/\/$/, ""),
+  });
+  upsertById(workspace.salesData.clients, client);
+
+  const contact = createMockContact(actor, {
+    clientId: client.id,
+    createdAt: new Date().toISOString(),
+    email: request.contactEmail,
+    firstName: contactFirstName,
+    isPrimaryContact: true,
+    lastName: contactLastName,
+    phoneNumber: undefined,
+    position: request.contactRole ?? "Primary contact",
+  });
+  upsertById(workspace.salesData.contacts, contact);
+
+  const opportunity = createMockOpportunity(actor, {
+    clientId: client.id,
+    contactId: contact.id,
+    description: opportunityDescription,
+    estimatedValue: request.offerValue,
+    expectedCloseDate: request.deadline,
+    ownerId: owner.id,
+    probability: 55,
+    stage: "New",
+    title: opportunityTitle,
+  });
+  upsertById(workspace.salesData.opportunities, opportunity);
+
+  const discoveryActivity = createMockActivity(actor, {
+    assignedToId: owner.id,
+    assignedToName: owner.name,
+    completed: false,
+    description: `Run discovery with ${request.contactName} and confirm scope for ${request.clientName}.`,
+    dueDate: followUpDueDate,
+    priority: 1,
+    relatedToId: opportunity.id,
+    relatedToType: 2,
+    status: "Scheduled",
+    subject: `Discovery call for ${request.clientName}`,
+    title: `Discovery call for ${request.clientName}`,
+    type: "Call",
+  });
+  upsertById(workspace.salesData.activities, discoveryActivity);
+
+  const commercialActivity = createMockActivity(actor, {
+    assignedToId: owner.id,
+    assignedToName: owner.name,
+    completed: false,
+    description: `Prepare commercial narrative and implementation plan for ${request.clientName}.`,
+    dueDate: proposalDueDate,
+    priority: 1,
+    relatedToId: opportunity.id,
+    relatedToType: 2,
+    status: "Scheduled",
+    subject: `Prepare proposal for ${request.clientName}`,
+    title: `Prepare proposal for ${request.clientName}`,
+    type: "Task",
+  });
+  upsertById(workspace.salesData.activities, commercialActivity);
+
+  const pricingRequest = createMockPricingRequest(actor, {
+    assignedToId: owner.id,
+    assignedToName: owner.name,
+    description: `Commercial review for ${request.clientName}: ${request.wants.join(", ") || "full rollout scope"}.`,
+    opportunityId: opportunity.id,
+    opportunityTitle: opportunity.title,
+    priority: 1,
+    requestNumber: undefined,
+    requestedById: actor.id,
+    requestedByName: workspace.userDisplayName,
+    requiredByDate: pricingDueDate,
+    status: "Pending",
+    title: `${request.clientName} commercial review`,
+    updatedAt: new Date().toISOString(),
+  });
+  workspace.pricingRequests = listMockPricingRequests(workspace.tenantId);
+
+  const proposal = createMockProposal(actor, {
+    currency: "ZAR",
+    description: `Draft proposal covering ${request.wants.join(", ") || "requested scope"} for ${request.clientName}.`,
+    lineItems: [
+      {
+        description: `Initial scope for ${request.clientName}`,
+        discount: 0,
+        productServiceName: `${request.clientName} rollout package`,
+        quantity: 1,
+        taxRate: 0,
+        unitPrice: request.offerValue,
+      },
+    ],
+    opportunityId: opportunity.id,
+    title: `${request.clientName} implementation proposal`,
+    validUntil: request.deadline,
+  });
+  upsertById(workspace.salesData.proposals, proposal);
+
+  const note = createMockNote(actor, {
+    category: "Sales workflow",
+    clientId: client.id,
+    content: `New sale created automatically for ${request.clientName}. Owner: ${owner.name}. Next action: complete discovery and pricing review before proposal submission.`,
+    createdDate: new Date().toISOString(),
+    kind: "general",
+    source: "assistant",
+    title: `${request.clientName} sale launched`,
+  });
+  workspace.notes = listMockNotes(workspace.tenantId);
+
+  return {
+    message:
+      `Created client ${client.name}; contact ${request.contactName}; opportunity ${opportunity.title}; assigned owner ${owner.name}; ` +
+      `2 activities; pricing request ${pricingRequest.title}; proposal ${proposal.title}; note ${note.title}. ` +
+      `Next best action: ${discoveryActivity.subject} by ${discoveryActivity.dueDate}.`,
+    mode: "workflow" as const,
+    model: "local-sale-workflow",
+    reason: "Autonomous sale workflow executed from a structured sales brief.",
+    mutations: [
+      {
+        entityId: client.id,
+        entityType: "client" as const,
+        operation: "create" as const,
+        record: client as unknown as Record<string, unknown>,
+        title: client.name,
+      },
+      {
+        entityId: opportunity.id,
+        entityType: "opportunity" as const,
+        operation: "create" as const,
+        record: opportunity as unknown as Record<string, unknown>,
+        title: opportunity.title,
+      },
+      {
+        entityId: discoveryActivity.id,
+        entityType: "activity" as const,
+        operation: "create" as const,
+        record: discoveryActivity as unknown as Record<string, unknown>,
+        title: discoveryActivity.subject,
+      },
+      {
+        entityId: commercialActivity.id,
+        entityType: "activity" as const,
+        operation: "create" as const,
+        record: commercialActivity as unknown as Record<string, unknown>,
+        title: commercialActivity.subject,
+      },
+      {
+        entityId: pricingRequest.id,
+        entityType: "pricing_request" as const,
+        operation: "create" as const,
+        record: pricingRequest as unknown as Record<string, unknown>,
+        title: pricingRequest.title,
+      },
+      {
+        entityId: proposal.id,
+        entityType: "proposal" as const,
+        operation: "create" as const,
+        record: proposal as unknown as Record<string, unknown>,
+        title: proposal.title,
+      },
+      {
+        entityId: note.id,
+        entityType: "note" as const,
+        operation: "create" as const,
+        record: note as unknown as Record<string, unknown>,
+        title: note.title,
+      },
+    ] satisfies AssistantMutation[],
+    trace: [
+      {
+        arguments: request,
+        outputPreview: createTracePreview({
+          client: client.name,
+          contact: request.contactName,
+          owner: owner.name,
+          opportunity: opportunity.title,
+          pricingRequest: pricingRequest.title,
+          proposal: proposal.title,
+        }),
+        tool: "autonomous_sale_workflow",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
+};
+
 const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessage[]) => {
   const { salesData } = workspace;
   const opportunityInsights = getOpportunityInsights(salesData);
   const actor = createAssistantActor(workspace);
   const notes = workspace.notes;
   const pricingRequests = workspace.pricingRequests;
+  const isClientScopedActor = isClientScopedUser(workspace.clientIds);
+  const canSendMessages = true;
+  const canMutateWorkspace = !isClientScopedActor;
+  const canDeleteClientRecords = canMutateWorkspace && isManagerRole(workspace.role);
+  const canRebalanceResponsibilities = canMutateWorkspace && isManagerRole(workspace.role);
   const recentMutations = [...messages]
     .reverse()
     .filter((message) => message.role === "assistant")
@@ -218,6 +2825,12 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
 
   const hasValueReference = (value: unknown) =>
     typeof value === "string" && value.trim().length > 0;
+
+  const ensureCapability = (allowed: boolean, message: string) => {
+    if (!allowed) {
+      throw new Error(message);
+    }
+  };
 
   const findClientByReference = (reference: unknown) => {
     if (typeof reference !== "string" || !reference.trim()) {
@@ -773,8 +3386,12 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
         )
           ? 18
           : 0;
-        const leftCapacity = left.availabilityPercent - getAssignmentCount(salesData, left.id) * 9;
-        const rightCapacity = right.availabilityPercent - getAssignmentCount(salesData, right.id) * 9;
+        const leftCapacity = getAvailableCapacity(salesData, left, {
+          pricingRequests: workspace.pricingRequests,
+        });
+        const rightCapacity = getAvailableCapacity(salesData, right, {
+          pricingRequests: workspace.pricingRequests,
+        });
 
         return rightCapacity + rightMatch - (leftCapacity + leftMatch);
       });
@@ -1072,6 +3689,31 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
     },
     {
       description:
+        "Send a message on behalf of the authenticated user to a client account or internal representative, but only when the user explicitly asks to send it. Do not use this for write, draft, or compose requests.",
+      name: "create_message",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          accountName: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          content: { type: "string" },
+          opportunityId: { type: "string" },
+          opportunityTitle: { type: "string" },
+          organizationName: { type: "string" },
+          recipientId: { type: "string" },
+          recipientName: { type: "string" },
+          representativeId: { type: "string" },
+          representativeName: { type: "string" },
+          subject: { type: "string" },
+          title: { type: "string" },
+        },
+        required: ["content", "subject"],
+        type: "object",
+      },
+    },
+    {
+      description:
         "Update an existing note when the user explicitly asks to change its title, content, category, or status.",
       name: "update_note",
       parameters: {
@@ -1102,10 +3744,10 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
         type: "object",
       },
     },
-    {
-      description:
-        "Delete an existing client and its linked mock opportunity and proposal records when the user explicitly asks to remove the account they just created or no longer need.",
-      name: "delete_client",
+      {
+        description:
+          "Delete an existing client and its linked mock opportunity and proposal records when the user explicitly asks to remove the account they just created, no longer need, or refers to as this/them.",
+        name: "delete_client",
       parameters: {
         additionalProperties: false,
         properties: {
@@ -1176,6 +3818,43 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
 
   const runTool = (name: string, rawArguments: string) => {
     const args = rawArguments ? JSON.parse(rawArguments) as Record<string, unknown> : {};
+    const internalMutationTools = new Set([
+      "create_client",
+      "create_opportunity",
+      "create_proposal",
+      "create_activity",
+      "update_activity",
+      "delete_activity",
+      "create_pricing_request",
+      "update_pricing_request",
+      "delete_pricing_request",
+      "create_note",
+      "update_note",
+      "delete_note",
+      "delete_opportunity",
+      "delete_proposal",
+    ]);
+
+    if (internalMutationTools.has(name)) {
+      ensureCapability(
+        canMutateWorkspace,
+        "This signed-in user can ask questions and send messages, but cannot change internal sales records.",
+      );
+    }
+
+    if (name === "delete_client") {
+      ensureCapability(
+        canDeleteClientRecords,
+        "Only admins and sales managers can delete client records.",
+      );
+    }
+
+    if (name === "rebalance_responsibilities") {
+      ensureCapability(
+        canRebalanceResponsibilities,
+        "Only admins and sales managers can rebalance responsibilities.",
+      );
+    }
 
     switch (name) {
       case "get_scope_overview": {
@@ -1397,18 +4076,19 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
 
         upsertById(workspace.salesData.clients, client);
 
-        return {
-          client,
-          mutation: {
-            entityId: client.id,
-            entityType: "client" as const,
-            operation: "create" as const,
-            title: client.name,
-          },
-        };
+      return {
+        client,
+        mutation: {
+          entityId: client.id,
+          entityType: "client" as const,
+          operation: "create" as const,
+          record: client,
+          title: client.name,
+        },
+      };
       }
       case "create_opportunity": {
-        const client = resolveClient(args);
+        const client = resolveClient(args, { allowRecentFallback: true });
         const opportunity = createMockOpportunity(actor, {
           clientId: client.id,
           description: typeof args.description === "string" ? args.description : undefined,
@@ -1437,7 +4117,7 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
         };
       }
       case "create_proposal": {
-        const opportunity = resolveOpportunity(args);
+        const opportunity = resolveOpportunity(args, { allowRecentFallback: true });
         const proposal = createMockProposal(actor, {
           currency: typeof args.currency === "string" ? args.currency : "ZAR",
           description: typeof args.description === "string" ? args.description : undefined,
@@ -1700,6 +4380,74 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
           },
         };
       }
+      case "create_message": {
+        ensureCapability(
+          canSendMessages,
+          "This signed-in user cannot send messages from the assistant.",
+        );
+
+        const directClient =
+          hasValueReference(args.clientId) ||
+          hasValueReference(args.clientName) ||
+          hasValueReference(args.organizationName) ||
+          hasValueReference(args.accountName)
+            ? resolveClient(args, { allowRecentFallback: true })
+            : null;
+        const relatedOpportunity =
+          !directClient &&
+          (hasValueReference(args.opportunityId) || hasValueReference(args.opportunityTitle))
+            ? resolveOpportunity(args, { allowCreateIfMissing: false, allowRecentFallback: true })
+            : null;
+        const client =
+          directClient ??
+          (relatedOpportunity
+            ? salesData.clients.find((item) => item.id === relatedOpportunity.clientId) ?? null
+            : isClientScopedActor && workspace.clientIds?.[0]
+              ? salesData.clients.find((item) => item.id === workspace.clientIds?.[0]) ?? null
+              : null);
+        const recipient =
+          findOwnerByReference(args.recipientId) ??
+          findOwnerByReference(args.recipientName) ??
+          findOwnerByReference(args.representativeId) ??
+          findOwnerByReference(args.representativeName);
+        const note = createMockNote(actor, {
+          category: "Client Message",
+          clientId: client?.id,
+          content: String(args.content ?? ""),
+          createdDate: new Date().toISOString(),
+          kind: "client_message",
+          representativeId: recipient?.id,
+          representativeName: recipient?.name,
+          source: isClientScopedActor ? "client_portal" : "workspace",
+          status: "Sent",
+          submittedBy: workspace.userEmail ?? undefined,
+          title: String(args.subject ?? args.title ?? "Untitled message"),
+        });
+
+        workspace.notes = listMockNotes(workspace.tenantId);
+
+        return {
+          message: note,
+          mutation: {
+            entityId: note.id,
+            entityType: "note" as const,
+            operation: "create" as const,
+            record: note as unknown as Record<string, unknown>,
+            title: note.title,
+          },
+          recipient: recipient
+            ? {
+                id: recipient.id,
+                name: recipient.name,
+              }
+            : client
+              ? {
+                  id: client.id,
+                  name: client.name,
+                }
+              : null,
+        };
+      }
       case "update_note": {
         const existingNote = resolveNote(args, { allowRecentFallback: true });
         const note = updateMockNote(workspace.tenantId, existingNote.id, {
@@ -1780,6 +4528,7 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
             entityId: client.id,
             entityType: "client" as const,
             operation: "delete" as const,
+            record: client,
             title: client.name,
           },
         };
@@ -1833,10 +4582,6 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
         };
       }
       case "rebalance_responsibilities": {
-        if (!isManagerRole(workspace.role)) {
-          throw new Error("Only admins and sales managers can reassign responsibilities.");
-        }
-
         const requestedOwner =
           findOwnerByReference(args.ownerName) ?? findOwnerByReference(args.targetOwnerName);
         const requestedTargetOwner = findOwnerByReference(args.targetOwnerName);
@@ -1876,6 +4621,7 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
               salesData,
               opportunity.value ?? opportunity.estimatedValue,
               salesData.clients.find((client) => client.id === opportunity.clientId)?.industry ?? "General",
+              { pricingRequests: workspace.pricingRequests },
             );
 
           if (!targetOwner || targetOwner.id === opportunity.ownerId) {
@@ -1955,7 +4701,20 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
     }
   };
 
-  return { runTool, toolDefinitions };
+  const visibleToolDefinitions = canMutateWorkspace
+    ? toolDefinitions
+    : toolDefinitions.filter((tool) =>
+        [
+          "get_scope_overview",
+          "list_opportunities",
+          "list_proposals",
+          "list_follow_ups",
+          "search_workspace_records",
+          "create_message",
+        ].includes(tool.name),
+      );
+
+  return { runTool, toolDefinitions: visibleToolDefinitions };
 };
 
 const createTracePreview = (value: unknown) => {
@@ -1996,21 +4755,83 @@ const extractFunctionCalls = (response: ProviderResponse) =>
 
 const createResponsesUrl = (baseUrl: string) => `${baseUrl.replace(/\/$/, "")}/responses`;
 
+const parseProviderError = async (response: Response) => {
+  const raw = await response.text();
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      error?: {
+        code?: string;
+        message?: string;
+      };
+      message?: string;
+    };
+
+    return {
+      code: parsed.error?.code,
+      message: parsed.error?.message ?? parsed.message ?? raw,
+    };
+  } catch {
+    return {
+      code: undefined,
+      message: raw,
+    };
+  }
+};
+
+const logProviderRateLimit = (config: AssistantServerConfig, response: Response) => {
+  const retryAfter = response.headers.get("retry-after");
+  const resetRequests = response.headers.get("x-ratelimit-reset-requests");
+  const resetTokens = response.headers.get("x-ratelimit-reset-tokens");
+  const remainingRequests = response.headers.get("x-ratelimit-remaining-requests");
+  const remainingTokens = response.headers.get("x-ratelimit-remaining-tokens");
+
+  console.warn("Assistant provider rate-limited.", {
+    provider: config.provider,
+    remainingRequests,
+    remainingTokens,
+    resetRequests,
+    resetTokens,
+    retryAfter,
+    status: response.status,
+  });
+};
+
 const callResponsesApi = async (
-  config: ReturnType<typeof getAssistantServerConfig>,
+  config: AssistantServerConfig,
   body: Record<string, unknown>,
 ): Promise<ProviderResponse> => {
-  const response = await fetch(createResponsesUrl(config.baseUrl), {
-    body: JSON.stringify(body),
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    method: "POST",
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(createResponsesUrl(config.baseUrl), {
+      body: JSON.stringify(body),
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    });
+  } catch (error) {
+    throw new AssistantProviderRequestError(
+      error instanceof Error
+        ? error.message
+        : "The live assistant provider could not be reached.",
+      { status: 0 },
+    );
+  }
 
   if (!response.ok) {
-    throw new Error(await response.text());
+    if (response.status === 429) {
+      logProviderRateLimit(config, response);
+    }
+
+    const providerError = await parseProviderError(response);
+
+    throw new AssistantProviderRequestError(providerError.message, {
+      code: providerError.code,
+      status: response.status,
+    });
   }
 
   return response.json() as Promise<ProviderResponse>;
@@ -2030,6 +4851,33 @@ const mapMessagesToInput = (messages: AssistantMessage[]): AssistantInputMessage
     role: message.role,
   }));
 
+const mapMessagesToProviderInput = (
+  messages: AssistantMessage[],
+  confirmedGenericMutationRequest?: string | null,
+): AssistantInputMessage[] => {
+  const input = mapMessagesToInput(messages);
+
+  if (!confirmedGenericMutationRequest || input.length === 0) {
+    return input;
+  }
+
+  const lastMessage = input[input.length - 1];
+
+  if (lastMessage.role !== "user" || !isConfirmationMessage(lastMessage.content)) {
+    return input;
+  }
+
+  return [
+    ...input.slice(0, -1),
+    {
+      content:
+        `The user already confirmed this workspace change. Execute it now without asking for confirmation again: ` +
+        confirmedGenericMutationRequest,
+      role: "user",
+    },
+  ];
+};
+
 const serializeFunctionCallsForInput = (
   calls: ResponseOutputItem[],
 ): AssistantFunctionCallInput[] =>
@@ -2046,53 +4894,500 @@ const serializeFunctionCallsForInput = (
     };
   });
 
-const createOfflineReply = (workspace: IAssistantWorkspace, question: string) => {
-  const { salesData } = workspace;
-  const topOpportunity = getOpportunityInsights(salesData)[0];
-  const lowerQuestion = question.toLowerCase();
+const createOfflineAssistantResult = ({
+  latestUserMessage,
+  reason,
+  workspace,
+}: {
+  latestUserMessage: string;
+  reason?: string;
+  workspace: IAssistantWorkspace;
+}) => {
+  const offlineMessage = createOfflineReply(workspace, latestUserMessage);
 
-  if (workspace.role === "SalesRep") {
-    const proposal = salesData.proposals[0];
-    const renewal = salesData.renewals[0];
+  return {
+    message: reason ? `${reason} ${offlineMessage}` : offlineMessage,
+    mode: "offline" as const,
+    model: "local-secure-fallback",
+    reason: reason ?? "Offline workspace guidance is active.",
+    trace: [
+      {
+        arguments: {
+          latestUserMessage,
+          reason: reason ?? "assistant_not_configured",
+          scopeLabel: workspace.scopeLabel,
+        },
+        outputPreview: createTracePreview({
+          message: offlineMessage,
+          workspace: summarizeWorkspace(workspace),
+        }),
+        tool: "offline_workspace_summary",
+      },
+    ] satisfies AssistantTraceStep[],
+    mutations: [] satisfies AssistantMutation[],
+  };
+};
+
+const createConfirmedGenericMutationUnavailableResult = ({
+  request,
+  reason,
+  workspace,
+}: {
+  request: string;
+  reason: string;
+  workspace: IAssistantWorkspace;
+}) => ({
+  message: `${reason} I kept your confirmed workspace change request "${request}", but I could not complete it safely without live provider access.`,
+  mode: "offline" as const,
+  model: "local-secure-fallback",
+  reason,
+  trace: [
+    {
+      arguments: {
+        request,
+        scopeLabel: workspace.scopeLabel,
+      },
+      outputPreview: createTracePreview({
+        request,
+        workspace: summarizeWorkspace(workspace),
+      }),
+      tool: "confirmed_generic_mutation_pending_live_provider",
+    },
+  ] satisfies AssistantTraceStep[],
+  mutations: [] satisfies AssistantMutation[],
+});
+
+const createLocalAssistantGreetingResult = (workspace: IAssistantWorkspace) => {
+  const message = isClientScopedUser(workspace.clientIds)
+    ? "Hi. I can help with your account workspace, proposals, documents, messages, and the next step with the account team. Tell me what to check or what to do."
+    : isManagerRole(workspace.role)
+      ? "Hi. I can help with pipeline priorities, workload, reassignments, proposals, renewals, workspace search, and record changes. Tell me what to check or what to do."
+      : "Hi. I can help with your assigned work, proposals, pricing requests, follow-ups, workspace search, and record changes. Tell me what to check or what to do.";
+
+  return createLocalAssistantResult({
+    arguments: {
+      role: workspace.role,
+      scopeLabel: workspace.scopeLabel,
+    },
+    message,
+    output: {
+      greeting: true,
+      role: workspace.role,
+      scopeLabel: workspace.scopeLabel,
+    },
+    reason: "Handled locally without calling a live provider.",
+    tool: "local_assistant_greeting",
+  });
+};
+
+const createLocalAssistantAcknowledgementResult = () =>
+  createLocalAssistantResult({
+    arguments: {
+      acknowledgement: true,
+    },
+    message: "Understood. Tell me what you want checked or what you want changed.",
+    output: {
+      acknowledgement: true,
+    },
+    reason: "Handled locally without calling a live provider.",
+    tool: "local_assistant_acknowledgement",
+  });
+
+const createLocalAssistantCapabilitiesResult = (workspace: IAssistantWorkspace) => {
+  const capabilities = isClientScopedUser(workspace.clientIds)
+    ? [
+        "proposal status",
+        "messages with the account team",
+        "documents and contracts",
+        "sending a message to your representative",
+      ]
+    : isManagerRole(workspace.role)
+      ? [
+          "pipeline priorities and renewal risk",
+          "workload pressure and reassignment planning",
+          "workspace search",
+          "creating, updating, and deleting sales records with confirmation",
+        ]
+      : [
+          "assigned work and follow-ups",
+          "proposal and pricing request blockers",
+          "workspace search",
+          "creating, updating, and deleting sales records with confirmation",
+        ];
+
+  return createLocalAssistantResult({
+    arguments: {
+      capabilities,
+      role: workspace.role,
+      scopeLabel: workspace.scopeLabel,
+    },
+    message: `I can help with ${capabilities.join(", ")}. Tell me what to check, or tell me exactly what to create, update, delete, or send.`,
+    output: {
+      capabilities,
+      role: workspace.role,
+    },
+    reason: "Handled locally without calling a live provider.",
+    tool: "local_assistant_capabilities",
+  });
+};
+
+const createLocalAssistantWorkspaceResult = (
+  workspace: IAssistantWorkspace,
+  latestUserMessage: string,
+) =>
+  createLocalAssistantResult({
+    arguments: {
+      latestUserMessage,
+      role: workspace.role,
+      scopeLabel: workspace.scopeLabel,
+    },
+    message: createWorkspaceGuidanceReply(workspace, latestUserMessage, "local"),
+    output: {
+      latestUserMessage,
+      workspace: summarizeWorkspace(workspace),
+    },
+    reason: "Answered from local workspace data without calling a live provider.",
+    tool: "local_assistant_workspace_summary",
+  });
+
+const createLocalAssistantReplyResult = (
+  workspace: IAssistantWorkspace,
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+) => {
+  if (isDashboardAdvisorConversation(messages)) {
+    return null;
+  }
+
+  if (isGreetingMessage(latestUserMessage)) {
+    return createLocalAssistantGreetingResult(workspace);
+  }
+
+  if (isCapabilityQuestion(latestUserMessage)) {
+    return createLocalAssistantCapabilitiesResult(workspace);
+  }
+
+  if (isAcknowledgementMessage(latestUserMessage)) {
+    return createLocalAssistantAcknowledgementResult();
+  }
+
+  if (isReadOnlyWorkspaceQuestion(latestUserMessage)) {
+    return createLocalAssistantWorkspaceResult(workspace, latestUserMessage);
+  }
+
+  return null;
+};
+
+const isDashboardAdvisorConversation = (messages: AssistantMessage[]) => {
+  const latestRawUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user")?.content;
+
+  return /act as the dashboard sales advisor/i.test(latestRawUserMessage ?? "");
+};
+
+const getScopedOpportunityInsights = (workspace: IAssistantWorkspace) => {
+  const insights = getOpportunityInsights(workspace.salesData);
+
+  if (isClientScopedUser(workspace.clientIds)) {
+    const scopedClientIds = new Set(workspace.clientIds ?? []);
+
+    return insights.filter((insight) => scopedClientIds.has(insight.opportunity.clientId));
+  }
+
+  if (workspace.role === "SalesRep" && workspace.userId) {
+    return insights.filter((insight) => insight.opportunity.ownerId === workspace.userId);
+  }
+
+  return insights;
+};
+
+const getScopedActivities = (workspace: IAssistantWorkspace) => {
+  const activities = workspace.salesData.activities.filter(
+    (activity) => !activity.completed && String(activity.status) !== "Completed",
+  );
+
+  if (isClientScopedUser(workspace.clientIds)) {
+    const scopedClientIds = new Set(workspace.clientIds ?? []);
+    const scopedOpportunityIds = new Set(
+      workspace.salesData.opportunities
+        .filter((opportunity) => scopedClientIds.has(opportunity.clientId))
+        .map((opportunity) => opportunity.id),
+    );
+
+    return activities.filter((activity) => scopedOpportunityIds.has(activity.relatedToId));
+  }
+
+  if (workspace.role === "SalesRep" && workspace.userId) {
+    return activities.filter((activity) => activity.assignedToId === workspace.userId);
+  }
+
+  return activities;
+};
+
+const getScopedOpportunityIds = (workspace: IAssistantWorkspace) =>
+  new Set(
+    getScopedOpportunityInsights(workspace).map((insight) => insight.opportunity.id),
+  );
+
+const getScopedClientIds = (workspace: IAssistantWorkspace) =>
+  new Set(
+    getScopedOpportunityInsights(workspace).map((insight) => insight.opportunity.clientId),
+  );
+
+const getScopedProposals = (workspace: IAssistantWorkspace) => {
+  const scopedOpportunityIds = getScopedOpportunityIds(workspace);
+
+  return workspace.salesData.proposals.filter((proposal) =>
+    scopedOpportunityIds.has(proposal.opportunityId),
+  );
+};
+
+const getScopedRenewals = (workspace: IAssistantWorkspace) => {
+  if (isClientScopedUser(workspace.clientIds)) {
+    const scopedClientIds = new Set(workspace.clientIds ?? []);
+    const scopedClientNames = new Set(
+      workspace.salesData.clients
+        .filter((client) => scopedClientIds.has(client.id))
+        .map((client) => normalizeLookupValue(client.name)),
+    );
+
+    return workspace.salesData.renewals.filter((renewal) =>
+      scopedClientNames.has(normalizeLookupValue(renewal.clientName ?? "")),
+    );
+  }
+
+  if (workspace.role === "SalesRep" && workspace.userId) {
+    const scopedClientIds = getScopedClientIds(workspace);
+    const scopedClientNames = new Set(
+      workspace.salesData.clients
+        .filter((client) => scopedClientIds.has(client.id))
+        .map((client) => normalizeLookupValue(client.name)),
+    );
+
+    return workspace.salesData.renewals.filter((renewal) =>
+      scopedClientNames.has(normalizeLookupValue(renewal.clientName ?? "")),
+    );
+  }
+
+  return workspace.salesData.renewals;
+};
+
+const createWorkspaceGuidanceReply = (
+  workspace: IAssistantWorkspace,
+  question: string,
+  mode: "local" | "offline",
+) => {
+  const lowerQuestion = question.toLowerCase();
+  const prefix = mode === "offline" ? "Offline mode: " : "";
+  const topOpportunity = getScopedOpportunityInsights(workspace)[0];
+  const visibleActivities = [...getScopedActivities(workspace)].sort(
+    (left, right) => getDaysUntil(left.dueDate) - getDaysUntil(right.dueDate),
+  );
+  const nextActivity = visibleActivities[0];
+  const proposal = getScopedProposals(workspace)[0];
+  const renewal = getScopedRenewals(workspace)[0];
+
+  if (isClientScopedUser(workspace.clientIds)) {
+    const scopedClientIds = new Set(workspace.clientIds ?? []);
+    const clientMessage = workspace.notes
+      .filter(
+        (note) => note.kind === "client_message" && scopedClientIds.has(note.clientId ?? ""),
+      )
+      .sort((left, right) => right.createdDate.localeCompare(left.createdDate))[0];
+
+    if (lowerQuestion.includes("message") && clientMessage) {
+      return `${prefix}your latest workspace message is "${clientMessage.title}" from ${clientMessage.createdDate}.`;
+    }
 
     if (proposal && lowerQuestion.includes("proposal")) {
-      return `Offline mode: your most visible proposal is "${proposal.title}", currently ${String(proposal.status).toLowerCase()}, valid until ${proposal.validUntil}.`;
+      return `${prefix}your most recent proposal is "${proposal.title}", currently ${String(proposal.status).toLowerCase()}, valid until ${proposal.validUntil}.`;
+    }
+
+    return topOpportunity
+      ? `${prefix}your shared account focus is ${topOpportunity.opportunity.title}. The next practical step is ${topOpportunity.opportunity.nextStep ?? "confirm the next account-team response."}`
+      : `${prefix}your client workspace has no open scoped opportunities right now.`;
+  }
+
+  if (workspace.role === "SalesRep") {
+    if (proposal && lowerQuestion.includes("proposal")) {
+      return `${prefix}your most visible proposal is "${proposal.title}", currently ${String(proposal.status).toLowerCase()}, valid until ${proposal.validUntil}.`;
     }
 
     if (renewal && (lowerQuestion.includes("renewal") || lowerQuestion.includes("contract"))) {
-      return `Offline mode: the next renewal in scope is ${renewal.clientName ?? "your account"} on ${renewal.renewalDate}. ${
+      return `${prefix}the next renewal in scope is ${renewal.clientName ?? "your account"} on ${renewal.renewalDate}. ${
         renewal.value ? `The tracked value is ${formatCurrency(renewal.value)}.` : ""
       }`;
     }
 
+    if (lowerQuestion.includes("follow") || lowerQuestion.includes("next")) {
+      if (nextActivity) {
+        return `${prefix}your next urgent follow-up is "${nextActivity.subject}" due ${nextActivity.dueDate}.`;
+      }
+    }
+
     if (topOpportunity) {
-      return `Offline mode: your main active item is ${topOpportunity.opportunity.title}. ${topOpportunity.summary} The next practical step is ${
+      return `${prefix}your main active item is ${topOpportunity.opportunity.title}. ${topOpportunity.summary} The next practical step is ${
         topOpportunity.opportunity.nextStep ?? "confirm the next client-facing action."
       }`;
     }
 
-    return "Offline mode: no assigned records are available for this sales rep yet.";
+    return `${prefix}no assigned records are available for this sales rep yet.`;
   }
 
   if (lowerQuestion.includes("follow") || lowerQuestion.includes("next")) {
-    const nextActivity = [...salesData.activities].sort(
-      (left, right) => getDaysUntil(left.dueDate) - getDaysUntil(right.dueDate),
-    )[0];
-
     if (nextActivity) {
-      return `Offline mode: the next urgent follow-up is "${nextActivity.subject}" due ${nextActivity.dueDate}, owned by ${
+      return `${prefix}the next urgent follow-up is "${nextActivity.subject}" due ${nextActivity.dueDate}, owned by ${
         nextActivity.assignedToName ?? "an unassigned team member"
       }.`;
     }
   }
 
+  if (proposal && lowerQuestion.includes("proposal")) {
+    return `${prefix}the most visible proposal is "${proposal.title}", currently ${String(proposal.status).toLowerCase()}, valid until ${proposal.validUntil}.`;
+  }
+
+  if (renewal && (lowerQuestion.includes("renewal") || lowerQuestion.includes("contract"))) {
+    return `${prefix}the next renewal in scope is ${renewal.clientName ?? "the client"} on ${renewal.renewalDate}. ${
+      renewal.value ? `The tracked value is ${formatCurrency(renewal.value)}.` : ""
+    }`;
+  }
+
   if (topOpportunity) {
-    return `Offline mode: prioritize ${topOpportunity.opportunity.title}. It is ${topOpportunity.priorityBand.toLowerCase()} priority, worth ${formatCurrency(
+    return `${prefix}prioritize ${topOpportunity.opportunity.title}. It is ${topOpportunity.priorityBand.toLowerCase()} priority, worth ${formatCurrency(
       topOpportunity.opportunity.value ?? topOpportunity.opportunity.estimatedValue,
     )}, and closes on ${topOpportunity.opportunity.expectedCloseDate}.`;
   }
 
-  return "Offline mode: there are no open opportunities in the current workspace scope.";
+  return `${prefix}there are no open opportunities in the current workspace scope.`;
+};
+
+const createOfflineReply = (workspace: IAssistantWorkspace, question: string) =>
+  createWorkspaceGuidanceReply(workspace, question, "offline");
+
+const formatAdvisorDeadline = (date: string) => {
+  const days = getDaysUntil(date);
+
+  if (days < 0) {
+    return "past due";
+  }
+
+  if (days === 0) {
+    return "due today";
+  }
+
+  return `${days} day${days === 1 ? "" : "s"} left`;
+};
+
+const createLocalAdvisorGuidanceResult = (
+  workspace: IAssistantWorkspace,
+  latestUserMessage: string,
+) => {
+  const normalized = normalizeLookupValue(latestUserMessage);
+  const visibleInsights = getScopedOpportunityInsights(workspace);
+  const visibleActivities = getScopedActivities(workspace).sort((left, right) => {
+    const dueDelta = getDaysUntil(left.dueDate) - getDaysUntil(right.dueDate);
+
+    if (dueDelta !== 0) {
+      return dueDelta;
+    }
+
+    return left.priority - right.priority;
+  });
+  const topInsights = visibleInsights.slice(0, 3);
+  const nextActivity = visibleActivities[0];
+
+  if (topInsights.length === 0 && !nextActivity) {
+    return {
+      message: "No open opportunities or follow-ups are available in your current advisor scope.",
+      mode: "workflow" as const,
+      model: "local-sales-advisor",
+      reason: "Answered from local workspace data without calling a live provider.",
+      mutations: [] satisfies AssistantMutation[],
+      trace: [
+        {
+          arguments: {
+            latestUserMessage,
+            role: workspace.role,
+            scopeLabel: workspace.scopeLabel,
+          },
+          outputPreview: createTracePreview({ visibleActivities: 0, visibleOpportunities: 0 }),
+          tool: "local_sales_advisor",
+        },
+      ] satisfies AssistantTraceStep[],
+    };
+  }
+
+  const asksFollowUp = normalized.includes("follow") || normalized.includes("task");
+
+  if (asksFollowUp && nextActivity) {
+    const relatedOpportunity = workspace.salesData.opportunities.find(
+      (opportunity) => opportunity.id === nextActivity.relatedToId,
+    );
+
+    return {
+      message:
+        `Do "${nextActivity.subject}" first. It is ${formatAdvisorDeadline(nextActivity.dueDate)}` +
+        `${relatedOpportunity ? ` and is linked to ${relatedOpportunity.title}` : ""}. ` +
+        `Next action: complete or update that follow-up before moving to lower-risk work.`,
+      mode: "workflow" as const,
+      model: "local-sales-advisor",
+      reason: "Answered from local workspace data without calling a live provider.",
+      mutations: [] satisfies AssistantMutation[],
+      trace: [
+        {
+          arguments: {
+            activityId: nextActivity.id,
+            latestUserMessage,
+            relatedOpportunityId: relatedOpportunity?.id ?? null,
+          },
+          outputPreview: createTracePreview({
+            activity: nextActivity.subject,
+            dueDate: nextActivity.dueDate,
+            relatedOpportunity: relatedOpportunity?.title ?? null,
+          }),
+          tool: "local_sales_advisor",
+        },
+      ] satisfies AssistantTraceStep[],
+    };
+  }
+
+  const rankedSummary = topInsights
+    .map((insight, index) => {
+      const amount = insight.opportunity.value ?? insight.opportunity.estimatedValue;
+
+      return `${index + 1}. ${insight.opportunity.title} (${formatCurrency(amount)}, ${formatAdvisorDeadline(insight.opportunity.expectedCloseDate)}, ${insight.priorityBand.toLowerCase()} score ${insight.score})`;
+    })
+    .join("\n");
+  const nextAction =
+    nextActivity && topInsights.some((insight) => insight.opportunity.id === nextActivity.relatedToId)
+      ? `Next action: ${nextActivity.subject} by ${nextActivity.dueDate}.`
+      : topInsights[0]?.opportunity.nextStep
+        ? `Next action: ${topInsights[0].opportunity.nextStep}`
+        : "Next action: confirm the next client-facing step on the highest ranked opportunity.";
+
+  return {
+    message: `Prioritize:\n${rankedSummary}\n\n${nextAction}`,
+    mode: "workflow" as const,
+    model: "local-sales-advisor",
+    reason: "Answered from local workspace data without calling a live provider.",
+    mutations: [] satisfies AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          latestUserMessage,
+          opportunityIds: topInsights.map((insight) => insight.opportunity.id),
+          role: workspace.role,
+          scopeLabel: workspace.scopeLabel,
+        },
+        outputPreview: createTracePreview({
+          opportunities: topInsights.map((insight) => insight.opportunity.title),
+          nextActivity: nextActivity?.subject ?? null,
+        }),
+        tool: "local_sales_advisor",
+      },
+    ] satisfies AssistantTraceStep[],
+  };
 };
 
 export const runSecureAssistant = async ({
@@ -2102,130 +5397,283 @@ export const runSecureAssistant = async ({
   messages: AssistantMessage[];
   workspace: IAssistantWorkspace;
 }) => {
-  const latestUserMessage = [...messages]
-    .reverse()
-    .find((message) => message.role === "user")?.content;
+  const latestUserMessage = getRecentUserMessages(messages).slice(-1)[0]?.content;
 
   if (!latestUserMessage) {
     throw new Error("The assistant requires a user message.");
   }
 
-  const config = getAssistantServerConfig();
+  const pendingSaleRequest =
+    parseAutonomousSaleRequest(latestUserMessage) ??
+    (isConfirmationMessage(latestUserMessage)
+      ? (() => {
+          const recentRequest = findRecentNonConfirmationUserMessage(messages);
+          return recentRequest ? parseAutonomousSaleRequest(recentRequest.content) : null;
+        })()
+      : null);
 
-  if (!config.isConfigured) {
-    const offlineMessage = createOfflineReply(workspace, latestUserMessage);
+  const mutationConfirmationResult = createMutationConfirmationReply(
+    latestUserMessage,
+    workspace,
+    messages,
+  );
 
-    return {
-      message: offlineMessage,
-      mode: "offline" as const,
-      model: "local-secure-fallback",
-      trace: [
-        {
-          arguments: {
-            latestUserMessage,
-            scopeLabel: workspace.scopeLabel,
-          },
-          outputPreview: createTracePreview({
-            message: offlineMessage,
-            workspace: summarizeWorkspace(workspace),
-          }),
-          tool: "offline_workspace_summary",
-        },
-      ] satisfies AssistantTraceStep[],
-      mutations: [] satisfies AssistantMutation[],
-    };
+  if (mutationConfirmationResult) {
+    return mutationConfirmationResult;
+  }
+
+  const confirmedMessageSendResult = shouldRunConfirmedMessageSendWorkflow(
+    latestUserMessage,
+    messages,
+    workspace,
+  )
+    ? createConfirmedMessageSendResult(workspace, messages)
+    : null;
+
+  if (confirmedMessageSendResult) {
+    return confirmedMessageSendResult;
+  }
+
+  if (pendingSaleRequest) {
+    return createAutonomousSaleResult(pendingSaleRequest, workspace);
+  }
+
+  const confirmedDraftFollowUpResult = shouldRunConfirmedDraftFollowUpWorkflow(
+    latestUserMessage,
+    messages,
+  )
+    ? createConfirmedDraftFollowUpResult(workspace, messages)
+    : null;
+
+  if (confirmedDraftFollowUpResult) {
+    return confirmedDraftFollowUpResult;
+  }
+
+  const advisorAssignmentResult = shouldRunAdvisorAssignmentWorkflow(
+    latestUserMessage,
+    messages,
+    workspace,
+  )
+    ? createAdvisorAssignmentResult(workspace, messages, latestUserMessage)
+    : null;
+
+  if (advisorAssignmentResult) {
+    return advisorAssignmentResult;
+  }
+
+  const workloadBoostResult = shouldRunWorkloadBoostWorkflow(
+    latestUserMessage,
+    messages,
+    workspace,
+  )
+    ? createWorkloadBoostResult(latestUserMessage, workspace, messages)
+    : null;
+
+  if (workloadBoostResult) {
+    return workloadBoostResult;
+  }
+
+  const proposalAcceptanceResult = shouldRunProposalAcceptanceWorkflow(
+    latestUserMessage,
+    messages,
+  )
+    ? createProposalAcceptanceWorkflowResult(workspace, messages)
+    : null;
+
+  if (proposalAcceptanceResult) {
+    return proposalAcceptanceResult;
+  }
+
+  const conversationalReplyResult = createConversationalReplyResult(
+    latestUserMessage,
+    workspace,
+    messages,
+  );
+
+  if (conversationalReplyResult) {
+    return conversationalReplyResult;
+  }
+
+  const reassignmentResult = shouldRunReassignmentWorkflow(latestUserMessage, messages)
+    ? createReassignmentWorkflowResult(latestUserMessage, workspace, messages)
+    : null;
+
+  if (reassignmentResult) {
+    return reassignmentResult;
+  }
+
+  const localAssistantReplyResult = createLocalAssistantReplyResult(
+    workspace,
+    latestUserMessage,
+    messages,
+  );
+
+  if (localAssistantReplyResult) {
+    return localAssistantReplyResult;
+  }
+
+  if (isDashboardAdvisorConversation(messages)) {
+    return createLocalAdvisorGuidanceResult(workspace, latestUserMessage);
+  }
+
+  const primaryConfig = getAssistantServerConfig();
+  const providerConfigs = getAssistantServerConfigs();
+  const configuredProviders = providerConfigs.filter((config) => config.isConfigured);
+  const confirmedGenericMutationRequest = isConfirmationMessage(latestUserMessage)
+    ? getRecentConfirmedGenericMutationRequest(messages)
+    : null;
+
+  if (configuredProviders.length === 0) {
+    if (confirmedGenericMutationRequest) {
+      return createConfirmedGenericMutationUnavailableResult({
+        reason:
+          primaryConfig.reason ??
+          "The live assistant is not configured, so confirmed generic workspace changes cannot run.",
+        request: confirmedGenericMutationRequest,
+        workspace,
+      });
+    }
+
+    return createOfflineAssistantResult({
+      latestUserMessage,
+      reason: primaryConfig.reason ?? undefined,
+      workspace,
+    });
   }
 
   const { runTool, toolDefinitions } = createToolset(workspace, messages);
   const toolMetadata = createToolMetadata(toolDefinitions);
   const trace: AssistantTraceStep[] = [];
   const mutations: AssistantMutation[] = [];
-  const initialInput = mapMessagesToInput(messages);
-  let statelessInput: AssistantResponseInput[] = [...initialInput];
-  let response = await callResponsesApi(config, {
-    input: initialInput,
-    instructions: createSystemPrompt(workspace),
-    model: config.model,
-    reasoning: { effort: isManagerRole(workspace.role) ? "medium" : "low" },
-    tool_choice: "auto",
-    tools: toolMetadata,
-  });
+  const initialInput = mapMessagesToProviderInput(messages, confirmedGenericMutationRequest);
+  const providerErrors: AssistantProviderRequestError[] = [];
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-    const functionCalls = extractFunctionCalls(response);
+  for (const config of configuredProviders) {
+    let statelessInput: AssistantResponseInput[] = [...initialInput];
+    const localTraceStart = trace.length;
+    const localMutationStart = mutations.length;
 
-    if (functionCalls.length === 0) {
-      const message = extractOutputText(response);
-
-      return {
-        message:
-          message ||
-          "The assistant could not produce a final response from the authorized data.",
-        mode: config.provider,
+    try {
+      let response = await callResponsesApi(config, {
+        input: initialInput,
+        instructions: createSystemPrompt(workspace),
         model: config.model,
-        mutations,
-        trace,
-      };
-    }
-
-    const toolOutputs: AssistantFunctionOutputInput[] = functionCalls.map((call) => {
-      if (!call.call_id || !call.name) {
-        throw new Error("The assistant returned an invalid tool call.");
-      }
-
-      const parsedArguments = call.arguments
-        ? (JSON.parse(call.arguments) as Record<string, unknown>)
-        : {};
-      const output = runTool(call.name, call.arguments ?? "{}");
-      const mutation =
-        output && typeof output === "object" && "mutation" in output
-          ? (output as { mutation?: AssistantMutation }).mutation
-          : undefined;
-
-      if (mutation) {
-        mutations.push(mutation);
-      }
-
-      trace.push({
-        arguments: parsedArguments,
-        outputPreview: createTracePreview(output),
-        tool: call.name,
-      });
-
-      return {
-        call_id: call.call_id,
-        output: JSON.stringify(output),
-        type: "function_call_output",
-      };
-    });
-
-    if (config.supportsPreviousResponseId && response.id) {
-      response = await callResponsesApi(config, {
-        input: toolOutputs,
-        model: config.model,
-        previous_response_id: response.id,
+        reasoning: { effort: isManagerRole(workspace.role) ? "medium" : "low" },
         tool_choice: "auto",
         tools: toolMetadata,
       });
 
-      continue;
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+        const functionCalls = extractFunctionCalls(response);
+
+        if (functionCalls.length === 0) {
+          const message = extractOutputText(response);
+
+          return {
+            message:
+              message ||
+              "The assistant could not produce a final response from the authorized data.",
+            mode: config.provider,
+            model: config.model,
+            reason: null,
+            mutations,
+            trace,
+          };
+        }
+
+        const toolOutputs: AssistantFunctionOutputInput[] = functionCalls.map((call) => {
+          if (!call.call_id || !call.name) {
+            throw new Error("The assistant returned an invalid tool call.");
+          }
+
+          const parsedArguments = call.arguments
+            ? (JSON.parse(call.arguments) as Record<string, unknown>)
+            : {};
+          const output = runTool(call.name, call.arguments ?? "{}");
+          const mutation =
+            output && typeof output === "object" && "mutation" in output
+              ? (output as { mutation?: AssistantMutation }).mutation
+              : undefined;
+
+          if (mutation) {
+            mutations.push(mutation);
+          }
+
+          trace.push({
+            arguments: parsedArguments,
+            outputPreview: createTracePreview(output),
+            tool: call.name,
+          });
+
+          return {
+            call_id: call.call_id,
+            output: JSON.stringify(output),
+            type: "function_call_output",
+          };
+        });
+
+        if (config.supportsPreviousResponseId && response.id) {
+          response = await callResponsesApi(config, {
+            input: toolOutputs,
+            model: config.model,
+            previous_response_id: response.id,
+            tool_choice: "auto",
+            tools: toolMetadata,
+          });
+
+          continue;
+        }
+
+        statelessInput = [
+          ...statelessInput,
+          ...serializeFunctionCallsForInput(functionCalls),
+          ...toolOutputs,
+        ];
+
+        response = await callResponsesApi(config, {
+          input: statelessInput,
+          instructions: createSystemPrompt(workspace),
+          model: config.model,
+          reasoning: { effort: isManagerRole(workspace.role) ? "medium" : "low" },
+          tool_choice: "auto",
+          tools: toolMetadata,
+        });
+      }
+
+      throw new Error("The assistant exceeded the maximum number of tool rounds.");
+    } catch (error) {
+      if (error instanceof AssistantProviderRequestError) {
+        providerErrors.push(error);
+        trace.splice(localTraceStart);
+        mutations.splice(localMutationStart);
+        continue;
+      }
+
+      throw error;
     }
+  }
 
-    statelessInput = [
-      ...statelessInput,
-      ...serializeFunctionCallsForInput(functionCalls),
-      ...toolOutputs,
-    ];
+  const hasRateLimit = providerErrors.some((error) => error.code === "rate_limit_exceeded");
+  const reason =
+    configuredProviders.length > 1
+      ? hasRateLimit
+        ? "The live assistant providers are temporarily rate-limited. Tried Groq, then OpenAI, and fell back to offline workspace guidance."
+        : "The live assistant providers are temporarily unavailable. Tried Groq, then OpenAI, and fell back to offline workspace guidance."
+      : hasRateLimit
+        ? "The live assistant is temporarily rate-limited. Using offline workspace guidance."
+        : "The live assistant is temporarily unavailable. Using offline workspace guidance.";
 
-    response = await callResponsesApi(config, {
-      input: statelessInput,
-      instructions: createSystemPrompt(workspace),
-      model: config.model,
-      reasoning: { effort: isManagerRole(workspace.role) ? "medium" : "low" },
-      tool_choice: "auto",
-      tools: toolMetadata,
+  if (confirmedGenericMutationRequest) {
+    return createConfirmedGenericMutationUnavailableResult({
+      reason,
+      request: confirmedGenericMutationRequest,
+      workspace,
     });
   }
 
-  throw new Error("The assistant exceeded the maximum number of tool rounds.");
+  return createOfflineAssistantResult({
+    latestUserMessage,
+    reason,
+    workspace,
+  });
 };
