@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 
 import type { AuthSessionUser } from "@/lib/auth/auth-contract";
 import { getUserFromSessionToken } from "@/lib/auth/session-user";
+import { shouldUseUpstreamAuth } from "@/lib/server/auth-mode";
 import { createBackendUrl } from "@/lib/server/backend-url";
 import { syncMockUserWorkspaceProfile } from "@/lib/server/mock-workspace-store";
+
 import { toAuthPayload, updateMockUser } from "../mock-users";
 import {
   AUTH_COOKIE_NAME,
@@ -14,11 +16,18 @@ import {
 export const GET = async (request: NextRequest) => {
   const authHeader = request.headers.get("authorization");
   const cookieToken = request.cookies.get(AUTH_COOKIE_NAME)?.value;
-  const token = authHeader?.replace(/^Bearer\s+/i, "").trim() || cookieToken || "";
+  const token =
+    authHeader?.replace(/^Bearer\s+/i, "").trim() || cookieToken || "";
   const mockUser = token ? getUserFromSessionToken(token) : null;
 
   if (mockUser && token.startsWith("mock-token::")) {
-    return NextResponse.json(sanitizeAuthPayload(toAuthPayload(mockUser)), { status: 200 });
+    return NextResponse.json(sanitizeAuthPayload(toAuthPayload(mockUser)), {
+      status: 200,
+    });
+  }
+
+  if (!shouldUseUpstreamAuth()) {
+    return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   }
 
   const headers = new Headers();
@@ -34,10 +43,16 @@ export const GET = async (request: NextRequest) => {
     method: "GET",
     redirect: "manual",
   });
-  const payload = upstream.status === 204 ? null : ((await upstream.json()) as AuthSessionUser | null);
-  const response = NextResponse.json(payload ? sanitizeAuthPayload(payload) : null, {
-    status: upstream.status,
-  });
+  const payload =
+    upstream.status === 204
+      ? null
+      : ((await upstream.json()) as AuthSessionUser | null);
+  const response = NextResponse.json(
+    payload ? sanitizeAuthPayload(payload) : null,
+    {
+      status: upstream.status,
+    },
+  );
 
   if (upstream.status === 401) {
     response.cookies.set(AUTH_COOKIE_NAME, "", {
@@ -52,7 +67,8 @@ export const GET = async (request: NextRequest) => {
 export const PATCH = async (request: NextRequest) => {
   const authHeader = request.headers.get("authorization");
   const cookieToken = request.cookies.get(AUTH_COOKIE_NAME)?.value;
-  const token = authHeader?.replace(/^Bearer\s+/i, "").trim() || cookieToken || "";
+  const token =
+    authHeader?.replace(/^Bearer\s+/i, "").trim() || cookieToken || "";
   const mockUser = token ? getUserFromSessionToken(token) : null;
   const body = (await request.json().catch(() => null)) as
     | { firstName?: unknown; lastName?: unknown; organizationName?: unknown }
@@ -82,7 +98,14 @@ export const PATCH = async (request: NextRequest) => {
 
     syncMockUserWorkspaceProfile(updatedUser, { organizationName });
 
-    return NextResponse.json(sanitizeAuthPayload(toAuthPayload(updatedUser)), { status: 200 });
+    return NextResponse.json(
+      sanitizeAuthPayload(toAuthPayload(updatedUser)),
+      { status: 200 },
+    );
+  }
+
+  if (!shouldUseUpstreamAuth()) {
+    return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   }
 
   const headers = new Headers();
@@ -101,10 +124,16 @@ export const PATCH = async (request: NextRequest) => {
     method: "PATCH",
     redirect: "manual",
   });
-  const payload = upstream.status === 204 ? null : ((await upstream.json()) as AuthSessionUser | null);
-  const response = NextResponse.json(payload ? sanitizeAuthPayload(payload) : null, {
-    status: upstream.status,
-  });
+  const payload =
+    upstream.status === 204
+      ? null
+      : ((await upstream.json()) as AuthSessionUser | null);
+  const response = NextResponse.json(
+    payload ? sanitizeAuthPayload(payload) : null,
+    {
+      status: upstream.status,
+    },
+  );
 
   if (upstream.status === 401) {
     response.cookies.set(AUTH_COOKIE_NAME, "", {
