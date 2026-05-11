@@ -80,6 +80,7 @@ export const getBestOwner = (
   state: ISalesData,
   value: number,
   industry: string,
+  _options?: unknown,
 ): ITeamMember => {
   const ranked = [...state.teamMembers].sort((left, right) => {
     const leftMatch = left.skills.some((skill) =>
@@ -187,3 +188,12 @@ export const getTeamCapacity = (state: ISalesData) =>
 
       return left.member.name.localeCompare(right.member.name);
     });
+
+export const getAvailableCapacity = (
+  state: ISalesData,
+  memberOrId: string | ITeamMember,
+  _options?: unknown,
+) =>
+  getTeamCapacity(state).find((entry) =>
+    entry.member.id === (typeof memberOrId === "string" ? memberOrId : memberOrId.id),
+  )?.availableCapacity ?? 0;

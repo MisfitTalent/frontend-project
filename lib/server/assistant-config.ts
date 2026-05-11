@@ -1,6 +1,7 @@
 import "server-only";
 
 export type AssistantProvider = "groq" | "openai";
+export type AssistantServerConfig = ReturnType<typeof getAssistantServerConfig>;
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
@@ -43,3 +44,5 @@ export const getAssistantServerConfig = () => {
     supportsPreviousResponseId: provider === "openai",
   };
 };
+
+export const getAssistantServerConfigs = () => [getAssistantServerConfig()];

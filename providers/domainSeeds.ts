@@ -32,6 +32,7 @@ export interface INoteItem {
   representativeName?: string;
   source?: "assistant" | "client_portal" | "workspace";
   status?: "Acknowledged" | "Sent";
+  submittedBy?: string;
   title: string;
 }
 

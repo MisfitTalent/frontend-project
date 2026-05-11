@@ -7,6 +7,7 @@ import { getUserRoleLabel, normalizeUserRole } from "@/lib/auth/roles";
 import { getMockWorkspaceSnapshot } from "@/lib/server/mock-workspace-store";
 
 export interface IAssistantWorkspace {
+  clientIds?: string[];
   documents: IDocumentItem[];
   isClientScoped: boolean;
   notes: INoteItem[];
@@ -16,6 +17,8 @@ export interface IAssistantWorkspace {
   scopeLabel: string;
   tenantId: string;
   userDisplayName: string;
+  userEmail?: string;
+  userId?: string;
 }
 
 export const getAssistantWorkspaceForUser = (
@@ -28,6 +31,7 @@ export const getAssistantWorkspaceForUser = (
   if (!isClientScoped) {
     return {
       documents: workspace.documents,
+      clientIds: user.clientIds ?? undefined,
       isClientScoped: false,
       notes: workspace.notes,
       pricingRequests: workspace.pricingRequests,
@@ -36,6 +40,8 @@ export const getAssistantWorkspaceForUser = (
       scopeLabel: `${getUserRoleLabel(role)} tenant scope`,
       tenantId: user.tenantId,
       userDisplayName: `${user.firstName} ${user.lastName}`.trim(),
+      userEmail: user.email,
+      userId: user.id,
     };
   }
 
@@ -98,6 +104,7 @@ export const getAssistantWorkspaceForUser = (
 
   return {
     documents: scopedDocuments,
+    clientIds: user.clientIds ?? undefined,
     isClientScoped: true,
     notes: scopedNotes,
     pricingRequests: scopedPricingRequests,
@@ -106,5 +113,7 @@ export const getAssistantWorkspaceForUser = (
     scopeLabel: "Client account scope",
     tenantId: user.tenantId,
     userDisplayName: `${user.firstName} ${user.lastName}`.trim(),
+    userEmail: user.email,
+    userId: user.id,
   };
 };
