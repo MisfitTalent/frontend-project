@@ -4,6 +4,7 @@ import { DatePicker, Form, Input, InputNumber, Modal, Select } from "antd";
 import dayjs from "dayjs";
 import { useEffect } from "react";
 
+import { useMounted } from "@/lib/client/use-mounted";
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { OPPORTUNITY_STAGE_ORDER, type IOpportunity } from "@/providers/salesTypes";
 import { useClientState } from "@/providers/clientProvider";
@@ -43,6 +44,7 @@ export function OpportunityForm({
   onSubmitEnd,
 }: OpportunityFormProps) {
   const [form] = Form.useForm<OpportunityFormValues>();
+  const mounted = useMounted();
   const { clients } = useClientState();
   const { teamMembers } = useDashboardState();
   const { opportunities } = useOpportunityState();
@@ -50,6 +52,10 @@ export function OpportunityForm({
   const draftKey = getOpportunityFormDraftKey(editingId);
 
   useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+
     const savedDraft = readSessionDraft<PersistedOpportunityFormValues>(draftKey);
 
     if (editingId) {
@@ -73,7 +79,7 @@ export function OpportunityForm({
           : undefined,
       });
     }
-  }, [draftKey, editingId, form, isOpen, opportunities]);
+  }, [draftKey, editingId, form, isOpen, mounted, opportunities]);
 
   const handleSubmit = async (values: OpportunityFormValues) => {
     onSubmitStart?.();
@@ -113,9 +119,8 @@ export function OpportunityForm({
     }
   };
 
-  return (
+  return mounted ? (
     <Modal
-      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}
@@ -206,5 +211,5 @@ export function OpportunityForm({
         </Form.Item>
       </Form>
     </Modal>
-  );
+  ) : null;
 }

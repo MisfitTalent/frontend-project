@@ -3,10 +3,15 @@
 import { ArrowLeftOutlined } from "@ant-design/icons";
 import { Card, Col, Descriptions, Empty, Row, Skeleton, Space, Tag, Typography } from "antd";
 import Link from "next/link";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getPrimaryUserRole, isAdminRole, isManagerRole } from "@/lib/auth/roles";
+import {
+  getServiceRequestDetail,
+  listServiceRequests,
+  type ServiceRequestDetail,
+} from "@/lib/client/service-request-api";
 import { useActivityState } from "@/providers/activityProvider";
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
@@ -29,10 +34,33 @@ export function ContactDetailView({ contactId }: ContactDetailViewProps) {
   const { notes } = useNoteState();
   const { opportunities } = useOpportunityState();
   const { teamMembers } = useTeamMembersState();
+  const [serviceRequestDetails, setServiceRequestDetails] = useState<ServiceRequestDetail[]>([]);
 
   const isClientUser = isClientScopedUser(user?.clientIds);
   const canManageContacts = !isClientUser;
   const isPrivileged = isAdminRole(role) || isManagerRole(role);
+
+  useEffect(() => {
+    let isActive = true;
+
+    if (!isClientUser) {
+      return () => {
+        isActive = false;
+      };
+    }
+
+    void listServiceRequests().then(async (requests) => {
+      const details = await Promise.all(requests.map((request) => getServiceRequestDetail(request.id)));
+
+      if (isActive) {
+        setServiceRequestDetails(details);
+      }
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, [isClientUser]);
 
   const rows = useMemo(
     () =>
@@ -45,6 +73,7 @@ export function ContactDetailView({ contactId }: ContactDetailViewProps) {
         isPrivileged,
         notes,
         opportunities,
+        serviceRequestDetails,
         teamMembers,
         userClientIds: user?.clientIds,
         userId: user?.userId,
@@ -58,6 +87,7 @@ export function ContactDetailView({ contactId }: ContactDetailViewProps) {
       isPrivileged,
       notes,
       opportunities,
+      serviceRequestDetails,
       teamMembers,
       user?.clientIds,
       user?.userId,

@@ -9,6 +9,7 @@ import {
   backendRequest,
   mapBackendProposal,
 } from "@/lib/client/backend-api";
+import { useMounted } from "@/lib/client/use-mounted";
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { PROPOSAL_STATUS_COLORS, ProposalStatus, type ILineItem, type IProposal } from "@/providers/salesTypes";
 import { useOpportunityState } from "@/providers/opportunityProvider";
@@ -50,6 +51,7 @@ const getLineItemTotal = (item?: Partial<ILineItem>) => {
 
 export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) {
   const [form] = Form.useForm<ProposalFormValues>();
+  const mounted = useMounted();
   const { proposals } = useProposalState();
   const { opportunities } = useOpportunityState();
   const { addProposal, updateProposal } = useProposalActions();
@@ -75,6 +77,10 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
   );
 
   useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+
     if (!isOpen) {
       return;
     }
@@ -134,7 +140,7 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
     return () => {
       isActive = false;
     };
-  }, [draftKey, editingId, editingProposal, form, isOpen]);
+  }, [draftKey, editingId, editingProposal, form, isOpen, mounted]);
 
   const handleSubmit = async (values: ProposalFormValues) => {
     setIsSaving(true);
@@ -180,9 +186,8 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
     }
   };
 
-  return (
+  return mounted ? (
     <Modal
-      forceRender
       onCancel={() => {
         setFormError(null);
         onClose();
@@ -376,5 +381,5 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
         </Form>
       )}
     </Modal>
-  );
+  ) : null;
 }

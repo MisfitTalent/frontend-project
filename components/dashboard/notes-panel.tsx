@@ -4,6 +4,7 @@ import { Button, Empty, Form, Input, Modal, Space, Table, Tag, Typography } from
 import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 
+import { useMounted } from "@/lib/client/use-mounted";
 import { type INoteItem } from "@/providers/domainSeeds";
 import { useNoteActions, useNoteState } from "@/providers/noteProvider";
 
@@ -14,6 +15,7 @@ type NoteFormValues = {
 };
 
 export function NotesPanel() {
+  const mounted = useMounted();
   const { notes } = useNoteState();
   const { addNote, deleteNote, updateNote } = useNoteActions();
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -21,6 +23,10 @@ export function NotesPanel() {
   const [form] = Form.useForm<NoteFormValues>();
 
   useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+
     if (!editingId) {
       form.resetFields();
       return;
@@ -34,7 +40,7 @@ export function NotesPanel() {
         title: note.title,
       });
     }
-  }, [editingId, form, notes]);
+  }, [editingId, form, mounted, notes]);
 
   const handleSave = (values: NoteFormValues) => {
     if (editingId) {
@@ -106,28 +112,29 @@ export function NotesPanel() {
           rowKey="id"
         />
       )}
-      <Modal
-        forceRender
-        onCancel={() => {
-          setIsModalOpen(false);
-          setEditingId(null);
-        }}
-        onOk={() => form.submit()}
-        open={isModalOpen}
-        title={editingId ? "Edit note" : "Add note"}
-      >
-        <Form className="pt-4" form={form} layout="vertical" onFinish={handleSave}>
-          <Form.Item label="Title" name="title" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item label="Content" name="content" rules={[{ required: true }]}>
-            <Input.TextArea rows={4} />
-          </Form.Item>
-          <Form.Item label="Category" name="category" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-        </Form>
-      </Modal>
+      {mounted ? (
+        <Modal
+          onCancel={() => {
+            setIsModalOpen(false);
+            setEditingId(null);
+          }}
+          onOk={() => form.submit()}
+          open={isModalOpen}
+          title={editingId ? "Edit note" : "Add note"}
+        >
+          <Form className="pt-4" form={form} layout="vertical" onFinish={handleSave}>
+            <Form.Item label="Title" name="title" rules={[{ required: true }]}>
+              <Input />
+            </Form.Item>
+            <Form.Item label="Content" name="content" rules={[{ required: true }]}>
+              <Input.TextArea rows={4} />
+            </Form.Item>
+            <Form.Item label="Category" name="category" rules={[{ required: true }]}>
+              <Input />
+            </Form.Item>
+          </Form>
+        </Modal>
+      ) : null}
     </div>
   );
 }
