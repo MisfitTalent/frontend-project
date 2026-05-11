@@ -16,6 +16,9 @@ import {
   createMockActivity,
   createMockClient,
   createMockNote,
+  listMockActivities,
+  listMockNotes,
+  listMockPricingRequests,
   deleteMockClient,
   deleteMockOpportunity,
   deleteMockProposal,
@@ -200,6 +203,8 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
   const { salesData } = workspace;
   const opportunityInsights = getOpportunityInsights(salesData);
   const actor = createAssistantActor(workspace);
+  const notes = workspace.notes;
+  const pricingRequests = workspace.pricingRequests;
   const recentMutations = [...messages]
     .reverse()
     .filter((message) => message.role === "assistant")
@@ -296,6 +301,77 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
     );
   };
 
+  const findActivityByReference = (reference: unknown) => {
+    if (typeof reference !== "string" || !reference.trim()) {
+      return null;
+    }
+
+    const normalizedReference = normalizeLookupValue(reference);
+
+    return (
+      salesData.activities.find(
+        (activity) => normalizeLookupValue(activity.id) === normalizedReference,
+      ) ??
+      salesData.activities.find(
+        (activity) => normalizeLookupValue(activity.subject) === normalizedReference,
+      ) ??
+      salesData.activities.find(
+        (activity) => normalizeLookupValue(activity.title ?? "") === normalizedReference,
+      ) ??
+      salesData.activities.find((activity) =>
+        [activity.subject, activity.title, activity.description]
+          .filter(Boolean)
+          .some((value) => normalizeLookupValue(String(value)).includes(normalizedReference)),
+      ) ??
+      null
+    );
+  };
+
+  const findPricingRequestByReference = (reference: unknown) => {
+    if (typeof reference !== "string" || !reference.trim()) {
+      return null;
+    }
+
+    const normalizedReference = normalizeLookupValue(reference);
+
+    return (
+      pricingRequests.find(
+        (request) => normalizeLookupValue(request.id) === normalizedReference,
+      ) ??
+      pricingRequests.find(
+        (request) => normalizeLookupValue(request.title) === normalizedReference,
+      ) ??
+      pricingRequests.find(
+        (request) => normalizeLookupValue(request.requestNumber ?? "") === normalizedReference,
+      ) ??
+      pricingRequests.find((request) =>
+        [request.title, request.opportunityTitle, request.description, request.requestNumber]
+          .filter(Boolean)
+          .some((value) => normalizeLookupValue(String(value)).includes(normalizedReference)),
+      ) ??
+      null
+    );
+  };
+
+  const findNoteByReference = (reference: unknown) => {
+    if (typeof reference !== "string" || !reference.trim()) {
+      return null;
+    }
+
+    const normalizedReference = normalizeLookupValue(reference);
+
+    return (
+      notes.find((note) => normalizeLookupValue(note.id) === normalizedReference) ??
+      notes.find((note) => normalizeLookupValue(note.title) === normalizedReference) ??
+      notes.find((note) =>
+        [note.title, note.content, note.category]
+          .filter(Boolean)
+          .some((value) => normalizeLookupValue(String(value)).includes(normalizedReference)),
+      ) ??
+      null
+    );
+  };
+
   const getRecentClient = () => {
     const recentClientMutation = getRecentMutation("client");
 
@@ -324,6 +400,36 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
     }
 
     return findProposalByReference(recentProposalMutation.entityId) ?? null;
+  };
+
+  const getRecentActivity = () => {
+    const recentActivityMutation = getRecentMutation("activity");
+
+    if (!recentActivityMutation) {
+      return null;
+    }
+
+    return findActivityByReference(recentActivityMutation.entityId) ?? null;
+  };
+
+  const getRecentPricingRequest = () => {
+    const recentMutation = getRecentMutation("pricing_request");
+
+    if (!recentMutation) {
+      return null;
+    }
+
+    return findPricingRequestByReference(recentMutation.entityId) ?? null;
+  };
+
+  const getRecentNote = () => {
+    const recentMutation = getRecentMutation("note");
+
+    if (!recentMutation) {
+      return null;
+    }
+
+    return findNoteByReference(recentMutation.entityId) ?? null;
   };
 
   const resolveClient = (
@@ -508,6 +614,105 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
 
     throw new Error(
       "No matching proposal was found in your current workspace. Provide a valid proposal title or id.",
+    );
+  };
+
+  const resolveActivity = (
+    args: Record<string, unknown>,
+    options?: { allowRecentFallback?: boolean },
+  ) => {
+    const directActivity =
+      findActivityByReference(args.activityId) ??
+      findActivityByReference(args.activityTitle) ??
+      findActivityByReference(args.activitySubject);
+
+    if (directActivity) {
+      return directActivity;
+    }
+
+    if (options?.allowRecentFallback) {
+      const hasExplicitReference =
+        hasValueReference(args.activityId) ||
+        hasValueReference(args.activityTitle) ||
+        hasValueReference(args.activitySubject);
+
+      if (!hasExplicitReference) {
+        const recentActivity = getRecentActivity();
+
+        if (recentActivity) {
+          return recentActivity;
+        }
+      }
+    }
+
+    throw new Error(
+      "No matching activity was found in your current workspace. Provide a valid activity title or id.",
+    );
+  };
+
+  const resolvePricingRequest = (
+    args: Record<string, unknown>,
+    options?: { allowRecentFallback?: boolean },
+  ) => {
+    const directRequest =
+      findPricingRequestByReference(args.pricingRequestId) ??
+      findPricingRequestByReference(args.pricingRequestTitle) ??
+      findPricingRequestByReference(args.title);
+
+    if (directRequest) {
+      return directRequest;
+    }
+
+    if (options?.allowRecentFallback) {
+      const hasExplicitReference =
+        hasValueReference(args.pricingRequestId) ||
+        hasValueReference(args.pricingRequestTitle) ||
+        hasValueReference(args.title);
+
+      if (!hasExplicitReference) {
+        const recentRequest = getRecentPricingRequest();
+
+        if (recentRequest) {
+          return recentRequest;
+        }
+      }
+    }
+
+    throw new Error(
+      "No matching pricing request was found in your current workspace. Provide a valid pricing request title or id.",
+    );
+  };
+
+  const resolveNote = (
+    args: Record<string, unknown>,
+    options?: { allowRecentFallback?: boolean },
+  ) => {
+    const directNote =
+      findNoteByReference(args.noteId) ??
+      findNoteByReference(args.noteTitle) ??
+      findNoteByReference(args.title);
+
+    if (directNote) {
+      return directNote;
+    }
+
+    if (options?.allowRecentFallback) {
+      const hasExplicitReference =
+        hasValueReference(args.noteId) ||
+        hasValueReference(args.noteTitle) ||
+        hasValueReference(args.title);
+
+      if (!hasExplicitReference) {
+        const recentNote = getRecentNote();
+
+        if (recentNote) {
+          return recentNote;
+        }
+      }
+    }
+
+    throw new Error(
+      "No matching note was found in your current workspace. Provide a valid note title or id.",
     );
   };
 
@@ -732,6 +937,168 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
           validUntil: { type: "string" },
         },
         required: ["title", "validUntil"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Create a follow-up activity linked to a client, opportunity, or proposal when the user explicitly asks to log a task, call, meeting, or follow-up.",
+      name: "create_activity",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          activityType: { type: "string" },
+          assignedToId: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          description: { type: "string" },
+          dueDate: { type: "string" },
+          opportunityId: { type: "string" },
+          opportunityTitle: { type: "string" },
+          priority: { type: "number" },
+          subject: { type: "string" },
+          title: { type: "string" },
+        },
+        required: ["subject"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Update an existing follow-up activity when the user explicitly asks to change the title, assignee, due date, description, or status.",
+      name: "update_activity",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          activityId: { type: "string" },
+          activitySubject: { type: "string" },
+          activityTitle: { type: "string" },
+          assignedToId: { type: "string" },
+          description: { type: "string" },
+          dueDate: { type: "string" },
+          priority: { type: "number" },
+          status: { type: "string" },
+          subject: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Delete an existing follow-up activity when the user explicitly asks to remove it.",
+      name: "delete_activity",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          activityId: { type: "string" },
+          activitySubject: { type: "string" },
+          activityTitle: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Create a pricing request tied to an opportunity when the user explicitly asks for deal-desk or commercial review support.",
+      name: "create_pricing_request",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          assignedToId: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          description: { type: "string" },
+          opportunityId: { type: "string" },
+          opportunityTitle: { type: "string" },
+          priority: { type: "number" },
+          requiredByDate: { type: "string" },
+          title: { type: "string" },
+        },
+        required: ["title"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Update an existing pricing request when the user explicitly asks to change its title, assignee, deadline, priority, or status.",
+      name: "update_pricing_request",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          assignedToId: { type: "string" },
+          description: { type: "string" },
+          pricingRequestId: { type: "string" },
+          pricingRequestTitle: { type: "string" },
+          priority: { type: "number" },
+          requiredByDate: { type: "string" },
+          status: { type: "string" },
+          title: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Delete an existing pricing request when the user explicitly asks to remove it.",
+      name: "delete_pricing_request",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          pricingRequestId: { type: "string" },
+          pricingRequestTitle: { type: "string" },
+          title: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Create a note in the workspace when the user explicitly asks to record context, client feedback, or an internal note.",
+      name: "create_note",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          category: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          content: { type: "string" },
+          kind: { type: "string" },
+          status: { type: "string" },
+          title: { type: "string" },
+        },
+        required: ["content", "title"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Update an existing note when the user explicitly asks to change its title, content, category, or status.",
+      name: "update_note",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          category: { type: "string" },
+          content: { type: "string" },
+          kind: { type: "string" },
+          noteId: { type: "string" },
+          noteTitle: { type: "string" },
+          status: { type: "string" },
+          title: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Delete an existing note when the user explicitly asks to remove it.",
+      name: "delete_note",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          noteId: { type: "string" },
+          noteTitle: { type: "string" },
+          title: { type: "string" },
+        },
         type: "object",
       },
     },
@@ -1105,6 +1472,286 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
             title: opportunity.title,
           },
           proposal,
+        };
+      }
+      case "create_activity": {
+        const relatedOpportunity =
+          findOpportunityByReference(args.opportunityId) ??
+          findOpportunityByReference(args.opportunityTitle) ??
+          (hasValueReference(args.clientId) ||
+          hasValueReference(args.clientName) ||
+          hasValueReference(args.organizationName) ||
+          hasValueReference(args.accountName)
+            ? resolveOpportunity(args, { allowCreateIfMissing: false })
+            : null);
+        const owner = findOwnerByReference(args.assignedToId);
+        const activity = createMockActivity(actor, {
+          assignedToId: owner?.id ?? (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
+          assignedToName: owner?.name,
+          description: typeof args.description === "string" ? args.description : "",
+          dueDate:
+            typeof args.dueDate === "string" && args.dueDate.trim().length > 0
+              ? args.dueDate
+              : new Date().toISOString().split("T")[0],
+          priority: Number(args.priority ?? 2),
+          relatedToId: relatedOpportunity?.id ?? "",
+          relatedToType: relatedOpportunity ? 2 : 0,
+          status: "Scheduled",
+          subject: String(args.subject ?? args.title ?? "Untitled activity"),
+          title: String(args.subject ?? args.title ?? "Untitled activity"),
+          type: String(args.activityType ?? "Task"),
+        });
+
+        upsertById(workspace.salesData.activities, activity);
+
+        return {
+          activity,
+          mutation: {
+            entityId: activity.id,
+            entityType: "activity" as const,
+            operation: "create" as const,
+            record: activity as unknown as Record<string, unknown>,
+            title: activity.subject,
+          },
+          linkedOpportunity: relatedOpportunity
+            ? {
+                id: relatedOpportunity.id,
+                title: relatedOpportunity.title,
+              }
+            : null,
+        };
+      }
+      case "update_activity": {
+        const existingActivity = resolveActivity(args, { allowRecentFallback: true });
+        const owner = findOwnerByReference(args.assignedToId);
+        const activity = updateMockActivity(workspace.tenantId, existingActivity.id, {
+          assignedToId: owner?.id ?? (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
+          assignedToName: owner?.name,
+          description: typeof args.description === "string" ? args.description : undefined,
+          dueDate: typeof args.dueDate === "string" ? args.dueDate : undefined,
+          priority: typeof args.priority === "number" ? Number(args.priority) : undefined,
+          status: typeof args.status === "string" ? args.status : undefined,
+          subject: typeof args.subject === "string" ? args.subject : typeof args.title === "string" ? args.title : undefined,
+          title: typeof args.subject === "string" ? args.subject : typeof args.title === "string" ? args.title : undefined,
+        });
+
+        if (!activity) {
+          throw new Error("The activity could not be updated.");
+        }
+
+        upsertById(workspace.salesData.activities, activity);
+
+        return {
+          activity,
+          mutation: {
+            entityId: activity.id,
+            entityType: "activity" as const,
+            operation: "update" as const,
+            record: activity as unknown as Record<string, unknown>,
+            title: activity.subject,
+          },
+        };
+      }
+      case "delete_activity": {
+        const activity = resolveActivity(args, { allowRecentFallback: true });
+
+        deleteMockActivity(workspace.tenantId, activity.id);
+        workspace.salesData.activities = workspace.salesData.activities.filter(
+          (item) => item.id !== activity.id,
+        );
+
+        return {
+          deletedActivity: {
+            id: activity.id,
+            title: activity.subject,
+          },
+          mutation: {
+            entityId: activity.id,
+            entityType: "activity" as const,
+            operation: "delete" as const,
+            title: activity.subject,
+          },
+        };
+      }
+      case "create_pricing_request": {
+        const opportunity = resolveOpportunity(args, { allowCreateIfMissing: false });
+        const owner = findOwnerByReference(args.assignedToId);
+        const pricingRequest = createMockPricingRequest(actor, {
+          assignedToId: owner?.id ?? (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
+          assignedToName: owner?.name,
+          description: typeof args.description === "string" ? args.description : undefined,
+          opportunityId: opportunity.id,
+          opportunityTitle: opportunity.title,
+          priority: Number(args.priority ?? 2),
+          requestedById: actor.id,
+          requestedByName: workspace.userDisplayName,
+          requiredByDate: typeof args.requiredByDate === "string" ? args.requiredByDate : undefined,
+          status: "Pending",
+          title: String(args.title ?? "Untitled pricing request"),
+          updatedAt: new Date().toISOString(),
+        });
+
+        workspace.pricingRequests = listMockPricingRequests(workspace.tenantId);
+
+        return {
+          pricingRequest,
+          mutation: {
+            entityId: pricingRequest.id,
+            entityType: "pricing_request" as const,
+            operation: "create" as const,
+            record: pricingRequest as unknown as Record<string, unknown>,
+            title: pricingRequest.title,
+          },
+          linkedOpportunity: {
+            id: opportunity.id,
+            title: opportunity.title,
+          },
+        };
+      }
+      case "update_pricing_request": {
+        const existingRequest = resolvePricingRequest(args, { allowRecentFallback: true });
+        const owner = findOwnerByReference(args.assignedToId);
+        const pricingRequest = updateMockPricingRequest(workspace.tenantId, existingRequest.id, {
+          assignedToId: owner?.id ?? (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
+          assignedToName: owner?.name,
+          description: typeof args.description === "string" ? args.description : undefined,
+          priority: typeof args.priority === "number" ? Number(args.priority) : undefined,
+          requiredByDate: typeof args.requiredByDate === "string" ? args.requiredByDate : undefined,
+          status: typeof args.status === "string" ? args.status : undefined,
+          title: typeof args.title === "string" ? args.title : undefined,
+          updatedAt: new Date().toISOString(),
+        });
+
+        if (!pricingRequest) {
+          throw new Error("The pricing request could not be updated.");
+        }
+
+        workspace.pricingRequests = listMockPricingRequests(workspace.tenantId);
+
+        return {
+          pricingRequest,
+          mutation: {
+            entityId: pricingRequest.id,
+            entityType: "pricing_request" as const,
+            operation: "update" as const,
+            record: pricingRequest as unknown as Record<string, unknown>,
+            title: pricingRequest.title,
+          },
+        };
+      }
+      case "delete_pricing_request": {
+        const pricingRequest = resolvePricingRequest(args, { allowRecentFallback: true });
+
+        deleteMockPricingRequest(workspace.tenantId, pricingRequest.id);
+        workspace.pricingRequests = workspace.pricingRequests.filter(
+          (item) => item.id !== pricingRequest.id,
+        );
+
+        return {
+          deletedPricingRequest: {
+            id: pricingRequest.id,
+            title: pricingRequest.title,
+          },
+          mutation: {
+            entityId: pricingRequest.id,
+            entityType: "pricing_request" as const,
+            operation: "delete" as const,
+            title: pricingRequest.title,
+          },
+        };
+      }
+      case "create_note": {
+        const client =
+          hasValueReference(args.clientId) ||
+          hasValueReference(args.clientName) ||
+          hasValueReference(args.organizationName) ||
+          hasValueReference(args.accountName)
+            ? resolveClient(args, { allowRecentFallback: true })
+            : null;
+        const note = createMockNote(actor, {
+          category: typeof args.category === "string" ? args.category : "General",
+          clientId: client?.id,
+          content: String(args.content ?? ""),
+          createdDate: new Date().toISOString(),
+          kind:
+            typeof args.kind === "string" &&
+            ["client_feedback", "client_message", "general"].includes(args.kind)
+              ? (args.kind as "client_feedback" | "client_message" | "general")
+              : "general",
+          source: "assistant",
+          status:
+            typeof args.status === "string" &&
+            ["Acknowledged", "Sent"].includes(args.status)
+              ? (args.status as "Acknowledged" | "Sent")
+              : undefined,
+          title: String(args.title ?? "Untitled note"),
+        });
+
+        workspace.notes = listMockNotes(workspace.tenantId);
+
+        return {
+          note,
+          mutation: {
+            entityId: note.id,
+            entityType: "note" as const,
+            operation: "create" as const,
+            record: note as unknown as Record<string, unknown>,
+            title: note.title,
+          },
+        };
+      }
+      case "update_note": {
+        const existingNote = resolveNote(args, { allowRecentFallback: true });
+        const note = updateMockNote(workspace.tenantId, existingNote.id, {
+          category: typeof args.category === "string" ? args.category : undefined,
+          content: typeof args.content === "string" ? args.content : undefined,
+          kind:
+            typeof args.kind === "string" &&
+            ["client_feedback", "client_message", "general"].includes(args.kind)
+              ? (args.kind as "client_feedback" | "client_message" | "general")
+              : undefined,
+          status:
+            typeof args.status === "string" &&
+            ["Acknowledged", "Sent"].includes(args.status)
+              ? (args.status as "Acknowledged" | "Sent")
+              : undefined,
+          title: typeof args.title === "string" ? args.title : undefined,
+        });
+
+        if (!note) {
+          throw new Error("The note could not be updated.");
+        }
+
+        workspace.notes = listMockNotes(workspace.tenantId);
+
+        return {
+          note,
+          mutation: {
+            entityId: note.id,
+            entityType: "note" as const,
+            operation: "update" as const,
+            record: note as unknown as Record<string, unknown>,
+            title: note.title,
+          },
+        };
+      }
+      case "delete_note": {
+        const note = resolveNote(args, { allowRecentFallback: true });
+
+        deleteMockNote(workspace.tenantId, note.id);
+        workspace.notes = workspace.notes.filter((item) => item.id !== note.id);
+
+        return {
+          deletedNote: {
+            id: note.id,
+            title: note.title,
+          },
+          mutation: {
+            entityId: note.id,
+            entityType: "note" as const,
+            operation: "delete" as const,
+            title: note.title,
+          },
         };
       }
       case "delete_client": {
