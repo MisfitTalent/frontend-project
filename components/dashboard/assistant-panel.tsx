@@ -59,7 +59,7 @@ const getIntroMessage = (role: UserRole, isScopedClientUser: boolean) =>
   isScopedClientUser
     ? "I can help with your shared client workspace, proposals, documents, messages, and the next best step with the account team."
     : isManagerRole(role)
-      ? "I can help with pipeline risk, next actions, proposal bottlenecks, renewal risk, workload pressure, workspace search, and creating or deleting clients, opportunities, draft proposals, activities, pricing requests, and notes when you ask explicitly."
+      ? "I can help with pipeline risk, next actions, proposal bottlenecks, renewal risk, workload pressure, pending client requests, workspace search, and creating or deleting clients, opportunities, draft proposals, activities, pricing requests, and notes when you ask explicitly."
       : "I can help with your assigned opportunities, proposal progress, pricing requests, activities, workspace search, and creating or deleting clients, opportunities, draft proposals, activities, pricing requests, and notes when you ask explicitly.";
 
 const getModeTag = (mode: AssistantRuntimeMode) => {
@@ -117,6 +117,11 @@ export function AssistantPanel() {
   const [statusLabel, setStatusLabel] = useState("Awaiting your question");
   const storageIdentity = `${draftStorageKey}::${messageStorageKey}`;
   const modeTag = getModeTag(assistantMode);
+  const scopeTagLabel = isScopedClientUser
+    ? "Client scope"
+    : isManagerRole(role)
+      ? "Manager scope"
+      : `${getUserRoleLabel(role)} scope`;
 
   const resetConversation = () => {
     setDraft("");
@@ -162,6 +167,8 @@ export function AssistantPanel() {
             "Which deals need action first this week?",
             "Where is the biggest renewal risk right now?",
             "Who looks overloaded and what should I reassign?",
+            "What client requests are waiting for admin review?",
+            "Review the latest client request and recommend the right reps.",
             "Create a new opportunity for an existing client.",
             "Create a draft proposal for an existing opportunity.",
             "Delete the client or proposal I just created.",
@@ -362,9 +369,7 @@ export function AssistantPanel() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Tag color={modeTag.color}>{modeTag.label}</Tag>
-              <Tag color={isManagerRole(role) ? "#f28c28" : "#4f7cac"}>
-                {isManagerRole(role) ? "Manager scope" : `${getUserRoleLabel(role)} scope`}
-              </Tag>
+              <Tag color={isManagerRole(role) ? "#f28c28" : "#4f7cac"}>{scopeTagLabel}</Tag>
             </div>
           </div>
 

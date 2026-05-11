@@ -11,6 +11,7 @@ import { useActivityState } from "@/providers/activityProvider";
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
 import { useContactState } from "@/providers/contactProvider";
+import { useNoteState } from "@/providers/noteProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
 import { useTeamMembersState } from "@/providers/teamMembersProvider";
 import { buildContactDirectory } from "./contact-directory";
@@ -25,6 +26,7 @@ export function ContactDetailView({ contactId }: ContactDetailViewProps) {
   const { activities } = useActivityState();
   const { clients } = useClientState();
   const { contacts } = useContactState();
+  const { notes } = useNoteState();
   const { opportunities } = useOpportunityState();
   const { teamMembers } = useTeamMembersState();
 
@@ -41,6 +43,7 @@ export function ContactDetailView({ contactId }: ContactDetailViewProps) {
         contacts,
         isClientUser,
         isPrivileged,
+        notes,
         opportunities,
         teamMembers,
         userClientIds: user?.clientIds,
@@ -53,6 +56,7 @@ export function ContactDetailView({ contactId }: ContactDetailViewProps) {
       contacts,
       isClientUser,
       isPrivileged,
+      notes,
       opportunities,
       teamMembers,
       user?.clientIds,

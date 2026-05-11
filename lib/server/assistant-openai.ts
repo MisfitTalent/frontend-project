@@ -173,6 +173,13 @@ type AdvisorAssignmentPlan = {
   recommendations: AdvisorAssignmentRecommendation[];
 };
 
+type ClientRequestAssignmentPlan = {
+  client: IAssistantWorkspace["salesData"]["clients"][number];
+  opportunity: IAssistantWorkspace["salesData"]["opportunities"][number] | null;
+  representatives: IAssistantWorkspace["salesData"]["teamMembers"];
+  request: IAssistantWorkspace["notes"][number];
+};
+
 class AssistantProviderRequestError extends Error {
   code?: string;
   status: number;
@@ -534,6 +541,168 @@ const resolveMessageRecipientReference = (
 
 const buildMessageSubject = (recipientName: string | null) =>
   recipientName ? `Message to ${recipientName}` : "Workspace message";
+
+const CLIENT_REQUEST_ASSIGNMENT_CONFIRMATION_TOOL =
+  "confirmation_required_client_request_assignment";
+const CLIENT_REQUEST_NOTIFICATION_SUMMARY_TOOL = "client_request_notification_summary";
+const CLIENT_REQUEST_ASSIGNMENT_TOOL = "client_request_assignment_workflow";
+
+const isClientFacingRepresentative = (
+  member: IAssistantWorkspace["salesData"]["teamMembers"][number],
+) =>
+  [
+    "account executive",
+    "sales consultant",
+    "client success",
+    "business development",
+    "pipeline director",
+    "proposal manager",
+    "deal desk specialist",
+  ].some((token) => normalizeLookupValue(member.role).includes(token));
+
+const getPendingAdminClientRequests = (workspace: IAssistantWorkspace) =>
+  workspace.notes
+    .filter(
+      (note) =>
+        note.requestType === "client_request" &&
+        note.status === "Pending admin review" &&
+        Boolean(note.clientId),
+    )
+    .sort((left, right) => right.createdDate.localeCompare(left.createdDate));
+
+const getClientRequestOpportunity = (
+  workspace: IAssistantWorkspace,
+  request: IAssistantWorkspace["notes"][number],
+) =>
+  workspace.salesData.opportunities
+    .filter(
+      (opportunity) =>
+        opportunity.clientId === request.clientId && isOpenOpportunityStage(String(opportunity.stage)),
+    )
+    .sort((left, right) => {
+      const rightValue = right.value ?? right.estimatedValue;
+      const leftValue = left.value ?? left.estimatedValue;
+
+      if (rightValue !== leftValue) {
+        return rightValue - leftValue;
+      }
+
+      return left.expectedCloseDate.localeCompare(right.expectedCloseDate);
+    })[0] ?? null;
+
+const pickRepresentativesForClientRequest = (
+  workspace: IAssistantWorkspace,
+  request: IAssistantWorkspace["notes"][number],
+) => {
+  const opportunity = getClientRequestOpportunity(workspace, request);
+  const client = workspace.salesData.clients.find((item) => item.id === request.clientId);
+
+  if (!client) {
+    return null;
+  }
+
+  const clientFacingMembers = workspace.salesData.teamMembers.filter(isClientFacingRepresentative);
+  const primaryRepresentative =
+    (opportunity?.ownerId
+      ? clientFacingMembers.find((member) => member.id === opportunity.ownerId) ?? null
+      : null) ??
+    getBestOwner(
+      {
+        ...workspace.salesData,
+        teamMembers: clientFacingMembers.length > 0 ? clientFacingMembers : workspace.salesData.teamMembers,
+      },
+      opportunity?.value ?? opportunity?.estimatedValue ?? 250_000,
+      client.industry ?? "General",
+      { pricingRequests: workspace.pricingRequests },
+    );
+  const backupRepresentative =
+    clientFacingMembers
+      .filter((member) => member.id !== primaryRepresentative.id)
+      .sort((left, right) => {
+        const rightScore =
+          getAvailableCapacity(workspace.salesData, right, {
+            pricingRequests: workspace.pricingRequests,
+          }) - getAssignmentCount(workspace.salesData, right.id);
+        const leftScore =
+          getAvailableCapacity(workspace.salesData, left, {
+            pricingRequests: workspace.pricingRequests,
+          }) - getAssignmentCount(workspace.salesData, left.id);
+
+        return rightScore - leftScore;
+      })[0] ?? null;
+  const representatives = [primaryRepresentative, backupRepresentative].filter(
+    (
+      member,
+    ): member is IAssistantWorkspace["salesData"]["teamMembers"][number] => Boolean(member),
+  );
+
+  return {
+    client,
+    opportunity,
+    representatives,
+    request,
+  } satisfies ClientRequestAssignmentPlan;
+};
+
+const isClientRequestSummaryIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return (
+    (normalized.includes("client request") &&
+      (normalized.includes("pending") ||
+        normalized.includes("waiting") ||
+        normalized.includes("review") ||
+        normalized.includes("notification"))) ||
+    (normalized.includes("notification") &&
+      (normalized.includes("admin") || normalized.includes("client"))) ||
+    normalized.includes("what client requests are waiting") ||
+    normalized.includes("what requests are waiting")
+  );
+};
+
+const isClientRequestAssignmentIntent = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  return (
+    (normalized.includes("client request") || normalized.includes("notification")) &&
+    [
+      "assign",
+      "handle",
+      "review and assign",
+      "take care of",
+      "work on",
+      "do the work",
+      "process",
+    ].some((token) => normalized.includes(token))
+  );
+};
+
+const getRecentClientRequestAssignmentPlan = (
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  const confirmationStep = [...messages]
+    .reverse()
+    .filter((message) => message.role === "assistant")
+    .flatMap((message) => message.trace ?? [])
+    .find((step) => step.tool === CLIENT_REQUEST_ASSIGNMENT_CONFIRMATION_TOOL);
+
+  if (!confirmationStep) {
+    return null;
+  }
+
+  const requestId =
+    typeof confirmationStep.arguments.requestId === "string"
+      ? confirmationStep.arguments.requestId
+      : null;
+
+  if (!requestId) {
+    return null;
+  }
+
+  const request = workspace.notes.find((note) => note.id === requestId);
+  return request ? pickRepresentativesForClientRequest(workspace, request) : null;
+};
 
 const parseExplicitMessageSendRequest = (
   message: string,
@@ -1005,6 +1174,13 @@ const createMutationConfirmationReply = (
     return workloadBoostConfirmationResult;
   }
 
+  const clientRequestAssignmentConfirmationResult =
+    createClientRequestAssignmentConfirmationReply(latestUserMessage, workspace);
+
+  if (clientRequestAssignmentConfirmationResult) {
+    return clientRequestAssignmentConfirmationResult;
+  }
+
   const advisorAssignmentConfirmationResult = createAdvisorAssignmentConfirmationReply(
     latestUserMessage,
     workspace,
@@ -1043,6 +1219,193 @@ const createMutationConfirmationReply = (
   }
 
   return null;
+};
+
+const createClientRequestNotificationSummaryReply = (
+  latestUserMessage: string,
+  workspace: IAssistantWorkspace,
+) => {
+  if (!isManagerRole(workspace.role) || isClientScopedUser(workspace.clientIds)) {
+    return null;
+  }
+
+  if (!isClientRequestSummaryIntent(latestUserMessage) || isClientRequestAssignmentIntent(latestUserMessage)) {
+    return null;
+  }
+
+  const pendingRequests = getPendingAdminClientRequests(workspace);
+
+  if (pendingRequests.length === 0) {
+    return createLocalAssistantResult({
+      arguments: {
+        pendingRequests: 0,
+      },
+      message: "There are no client requests waiting for admin review right now.",
+      output: { pendingRequests: 0 },
+      reason: "Summarized pending admin-review requests from authorized workspace notes.",
+      tool: CLIENT_REQUEST_NOTIFICATION_SUMMARY_TOOL,
+    });
+  }
+
+  const summary = pendingRequests
+    .slice(0, 3)
+    .map((request, index) => {
+      const client =
+        workspace.salesData.clients.find((item) => item.id === request.clientId) ?? null;
+
+      return `${index + 1}. ${client?.name ?? "Unlinked client"}: ${request.title} (${request.createdDate})`;
+    })
+    .join("\n");
+
+  return createLocalAssistantResult({
+    arguments: {
+      pendingRequestCount: pendingRequests.length,
+    },
+    message:
+      `You have ${pendingRequests.length} client request${pendingRequests.length === 1 ? "" : "s"} waiting for admin review.\n${summary}` +
+      `${pendingRequests.length > 3 ? `\nPlus ${pendingRequests.length - 3} more in the queue.` : ""}`,
+    output: {
+      pendingRequests: pendingRequests.map((request) => ({
+        clientId: request.clientId ?? null,
+        createdDate: request.createdDate,
+        id: request.id,
+        title: request.title,
+      })),
+    },
+    reason: "Summarized pending admin-review requests from authorized workspace notes.",
+    tool: CLIENT_REQUEST_NOTIFICATION_SUMMARY_TOOL,
+  });
+};
+
+const createClientRequestAssignmentConfirmationReply = (
+  latestUserMessage: string,
+  workspace: IAssistantWorkspace,
+) => {
+  if (
+    isConfirmationMessage(latestUserMessage) ||
+    !isManagerRole(workspace.role) ||
+    isClientScopedUser(workspace.clientIds) ||
+    !isClientRequestAssignmentIntent(latestUserMessage)
+  ) {
+    return null;
+  }
+
+  const latestPendingRequest = getPendingAdminClientRequests(workspace)[0];
+
+  if (!latestPendingRequest) {
+    return null;
+  }
+
+  const plan = pickRepresentativesForClientRequest(workspace, latestPendingRequest);
+
+  if (!plan || plan.representatives.length === 0) {
+    return null;
+  }
+
+  return createConfirmationResult(
+    `I can handle ${plan.request.title} for ${plan.client.name} by assigning ${plan.representatives.map((member) => member.name).join(" and ")}. ` +
+      `The client will receive the assignment to accept or reject. Reply confirm to proceed.`,
+    {
+      clientId: plan.client.id,
+      opportunityId: plan.opportunity?.id ?? null,
+      representativeIds: plan.representatives.map((member) => member.id),
+      requestId: plan.request.id,
+    },
+    CLIENT_REQUEST_ASSIGNMENT_CONFIRMATION_TOOL,
+  );
+};
+
+const shouldRunClientRequestAssignmentWorkflow = (
+  latestUserMessage: string,
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) =>
+  isManagerRole(workspace.role) &&
+  !isClientScopedUser(workspace.clientIds) &&
+  isConfirmationMessage(latestUserMessage) &&
+  Boolean(getRecentClientRequestAssignmentPlan(messages, workspace));
+
+const createClientRequestAssignmentResult = (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+) => {
+  const plan = getRecentClientRequestAssignmentPlan(messages, workspace);
+
+  if (!plan || plan.representatives.length === 0) {
+    return null;
+  }
+
+  const actor = createAssistantActor(workspace);
+  const assignedByUserName =
+    `${workspace.userDisplayName}`.trim() || workspace.userEmail || "workspace admin";
+  const createdAssignments = plan.representatives.map((representative) =>
+    createMockNote(actor, {
+      assignedByUserId: workspace.userId ?? undefined,
+      assignedByUserName,
+      category: "Client Message",
+      clientId: plan.client.id,
+      content:
+        `We reviewed your request "${plan.request.title}" and assigned ${representative.name} to help. ` +
+        `${plan.opportunity ? `This is linked to ${plan.opportunity.title}.` : "They will follow up on the requested support."}`,
+      createdDate: new Date().toISOString(),
+      kind: "team_assignment",
+      linkedRequestId: plan.request.id,
+      representativeId: representative.id,
+      representativeName: representative.name,
+      requestType: "team_assignment",
+      source: "assistant",
+      status: "Pending client response",
+      submittedBy: workspace.userEmail ?? undefined,
+      title: `Assigned ${representative.name} to ${plan.request.title}`,
+    }),
+  );
+  const updatedRequest = updateMockNote(workspace.tenantId, plan.request.id, {
+    status: "Acknowledged",
+  });
+
+  workspace.notes = listMockNotes(workspace.tenantId);
+
+  return {
+    message:
+      `Handled ${plan.request.title} for ${plan.client.name}. Assigned ${plan.representatives.map((member) => member.name).join(" and ")} and sent the assignment to the client for acceptance. ` +
+      `Next best action: monitor the client response in messages or contacts.`,
+    mode: "workflow" as const,
+    model: "local-client-request-workflow",
+    reason: "Confirmed client-request assignment workflow executed from authorized admin notifications.",
+    mutations: [
+      ...createdAssignments.map((assignment) => ({
+        entityId: assignment.id,
+        entityType: "note" as const,
+        operation: "create" as const,
+        record: assignment as unknown as Record<string, unknown>,
+        title: assignment.title,
+      })),
+      updatedRequest
+        ? {
+            entityId: updatedRequest.id,
+            entityType: "note" as const,
+            operation: "update" as const,
+            record: updatedRequest as unknown as Record<string, unknown>,
+            title: updatedRequest.title,
+          }
+        : null,
+    ].filter(Boolean) as AssistantMutation[],
+    trace: [
+      {
+        arguments: {
+          clientId: plan.client.id,
+          representativeIds: plan.representatives.map((member) => member.id),
+          requestId: plan.request.id,
+        },
+        outputPreview: createTracePreview({
+          assignedRepresentatives: plan.representatives.map((member) => member.name),
+          client: plan.client.name,
+          request: plan.request.title,
+        }),
+        tool: CLIENT_REQUEST_ASSIGNMENT_TOOL,
+      },
+    ] satisfies AssistantTraceStep[],
+  };
 };
 
 const getRecentWorkflowContext = (
@@ -5432,6 +5795,27 @@ export const runSecureAssistant = async ({
 
   if (confirmedMessageSendResult) {
     return confirmedMessageSendResult;
+  }
+
+  const confirmedClientRequestAssignmentResult = shouldRunClientRequestAssignmentWorkflow(
+    latestUserMessage,
+    messages,
+    workspace,
+  )
+    ? createClientRequestAssignmentResult(workspace, messages)
+    : null;
+
+  if (confirmedClientRequestAssignmentResult) {
+    return confirmedClientRequestAssignmentResult;
+  }
+
+  const clientRequestNotificationSummaryReply = createClientRequestNotificationSummaryReply(
+    latestUserMessage,
+    workspace,
+  );
+
+  if (clientRequestNotificationSummaryReply) {
+    return clientRequestNotificationSummaryReply;
   }
 
   if (pendingSaleRequest) {

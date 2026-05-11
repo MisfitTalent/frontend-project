@@ -675,15 +675,37 @@ const handleMockRequest = async (
 
     if (!id && request.method === "POST" && body) {
       const note = createMockNote(user, {
+        assignedByUserId: body.assignedByUserId ? String(body.assignedByUserId) : undefined,
+        assignedByUserName: body.assignedByUserName ? String(body.assignedByUserName) : undefined,
         category: String(body.category ?? "General"),
         clientId: body.clientId ? String(body.clientId) : undefined,
         content: String(body.content ?? ""),
         createdDate: body.createdDate ? String(body.createdDate) : new Date().toISOString(),
-        kind: body.kind ? String(body.kind) as "client_feedback" | "client_message" | "general" : undefined,
+        kind: body.kind
+          ? (String(body.kind) as
+              | "client_feedback"
+              | "client_message"
+              | "general"
+              | "team_assignment")
+          : undefined,
+        linkedRequestId: body.linkedRequestId ? String(body.linkedRequestId) : undefined,
         representativeId: body.representativeId ? String(body.representativeId) : undefined,
         representativeName: body.representativeName ? String(body.representativeName) : undefined,
-        source: body.source ? String(body.source) as "assistant" | "client_portal" | "workspace" : undefined,
-        status: body.status ? String(body.status) as "Acknowledged" | "Sent" : undefined,
+        requestType: body.requestType
+          ? (String(body.requestType) as "client_request" | "team_assignment")
+          : undefined,
+        source: body.source
+          ? (String(body.source) as "assistant" | "client_portal" | "workspace")
+          : undefined,
+        status: body.status
+          ? (String(body.status) as
+              | "Acknowledged"
+              | "Accepted"
+              | "Pending admin review"
+              | "Pending client response"
+              | "Rejected"
+              | "Sent")
+          : undefined,
         title: String(body.title ?? "Untitled note"),
       });
 
@@ -692,15 +714,37 @@ const handleMockRequest = async (
 
     if (id && request.method === "PUT" && body) {
       const note = updateMockNote(user.tenantId, id, {
+        assignedByUserId: body.assignedByUserId ? String(body.assignedByUserId) : undefined,
+        assignedByUserName: body.assignedByUserName ? String(body.assignedByUserName) : undefined,
         category: body.category ? String(body.category) : undefined,
         clientId: body.clientId ? String(body.clientId) : undefined,
         content: body.content ? String(body.content) : undefined,
         createdDate: body.createdDate ? String(body.createdDate) : undefined,
-        kind: body.kind ? String(body.kind) as "client_feedback" | "client_message" | "general" : undefined,
+        kind: body.kind
+          ? (String(body.kind) as
+              | "client_feedback"
+              | "client_message"
+              | "general"
+              | "team_assignment")
+          : undefined,
+        linkedRequestId: body.linkedRequestId ? String(body.linkedRequestId) : undefined,
         representativeId: body.representativeId ? String(body.representativeId) : undefined,
         representativeName: body.representativeName ? String(body.representativeName) : undefined,
-        source: body.source ? String(body.source) as "assistant" | "client_portal" | "workspace" : undefined,
-        status: body.status ? String(body.status) as "Acknowledged" | "Sent" : undefined,
+        requestType: body.requestType
+          ? (String(body.requestType) as "client_request" | "team_assignment")
+          : undefined,
+        source: body.source
+          ? (String(body.source) as "assistant" | "client_portal" | "workspace")
+          : undefined,
+        status: body.status
+          ? (String(body.status) as
+              | "Acknowledged"
+              | "Accepted"
+              | "Pending admin review"
+              | "Pending client response"
+              | "Rejected"
+              | "Sent")
+          : undefined,
         title: body.title ? String(body.title) : undefined,
       });
 

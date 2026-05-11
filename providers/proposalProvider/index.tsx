@@ -2,6 +2,7 @@
 
 import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import {
   type BackendPagedResult,
   type BackendProposalDto,
@@ -104,6 +105,8 @@ export default function ProposalProvider({
 }: Readonly<{ children: React.ReactNode }>) {
   const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
+  const isScopedClient = isClientScopedUser(user?.clientIds);
   const cacheKey = useMemo(
     () => createProviderCacheKey("proposals", user?.tenantId, user?.userId),
     [user?.tenantId, user?.userId],
@@ -113,13 +116,23 @@ export default function ProposalProvider({
     () => cachedProposals ?? [],
   );
 
+  const scopeProposals = useCallback(
+    (items: IProposal[]) =>
+      isScopedClient
+        ? items.filter((proposal) => scopedClientIds.has(proposal.clientId))
+        : items,
+    [isScopedClient, scopedClientIds],
+  );
+
   const loadProposals = useCallback(async () => {
     const payload = await backendRequest<BackendPagedResult<BackendProposalDto> | BackendProposalDto[]>(
       "/api/Proposals?pageNumber=1&pageSize=100",
     );
 
-    setProposals(writeProviderCache(cacheKey, coerceItems(payload).map(mapBackendProposal)));
-  }, [cacheKey]);
+    setProposals(
+      writeProviderCache(cacheKey, scopeProposals(coerceItems(payload).map(mapBackendProposal))),
+    );
+  }, [cacheKey, scopeProposals]);
 
   useEffect(() => {
     writeProviderCache(cacheKey, proposals);
@@ -138,7 +151,7 @@ export default function ProposalProvider({
           console.error(error);
 
           if (isActive) {
-            setProposals(writeProviderCache(cacheKey, initialProposals()));
+            setProposals(writeProviderCache(cacheKey, scopeProposals(initialProposals())));
           }
         });
       }, 0);
@@ -172,7 +185,7 @@ export default function ProposalProvider({
           return;
         }
 
-        setProposals(coerceItems(payload).map(mapBackendProposal));
+        setProposals(scopeProposals(coerceItems(payload).map(mapBackendProposal)));
       })
       .catch((error) => {
         console.error(error);
@@ -181,7 +194,7 @@ export default function ProposalProvider({
     return () => {
       isActive = false;
     };
-  }, [cacheKey, cachedProposals, isAuthenticated, isDemoMode, loadProposals]);
+  }, [cacheKey, cachedProposals, isAuthenticated, isDemoMode, loadProposals, scopeProposals]);
 
   const replaceProposal = (proposal: IProposal) => {
     setProposals((current) => {

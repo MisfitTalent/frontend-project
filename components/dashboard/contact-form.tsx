@@ -65,7 +65,6 @@ export function ContactForm({
 
   return (
     <Modal
-      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}

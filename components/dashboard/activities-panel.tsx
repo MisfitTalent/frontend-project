@@ -2,10 +2,13 @@
 
 import { Button, Checkbox, Tag, Typography } from "antd";
 import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import { useAuthState } from "@/providers/authProvider";
 import { type IActivity } from "@/providers/salesTypes";
 import { useActivityActions, useActivityState } from "@/providers/activityProvider";
+import { useOpportunityState } from "@/providers/opportunityProvider";
 import ActivityForm from "./activity-form";
 import { AnimatedDashboardTable } from "./animated-dashboard-table";
 
@@ -17,11 +20,25 @@ const typeColors: Record<string, string> = {
 };
 
 export function ActivitiesPanel() {
+  const { user } = useAuthState();
   const { activities } = useActivityState();
+  const { opportunities } = useOpportunityState();
   const { deleteActivity, updateActivity } = useActivityActions();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isScopedClient = isClientScopedUser(user?.clientIds);
+  const scopedOpportunityIds = useMemo(
+    () => new Set(opportunities.map((opportunity) => opportunity.id)),
+    [opportunities],
+  );
+  const visibleActivities = useMemo(
+    () =>
+      isScopedClient
+        ? activities.filter((activity) => scopedOpportunityIds.has(activity.relatedToId))
+        : activities,
+    [activities, isScopedClient, scopedOpportunityIds],
+  );
 
   const columns = [
     {
@@ -45,6 +62,7 @@ export function ActivitiesPanel() {
       render: (completed: boolean, record: IActivity) => (
         <Checkbox
           checked={completed}
+          disabled={isScopedClient}
           onChange={(event) =>
             updateActivity(record.id, {
               completed: event.target.checked,
@@ -59,21 +77,25 @@ export function ActivitiesPanel() {
     {
       key: "actions",
       render: (_: unknown, record: IActivity) => (
-        <div className="space-x-2">
-          <Button
-            icon={<EditOutlined />}
-            onClick={() => setEditingId(record.id)}
-            size="small"
-            type="text"
-          />
-          <Button
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() => deleteActivity(record.id)}
-            size="small"
-            type="text"
-          />
-        </div>
+        isScopedClient ? (
+          <Typography.Text type="secondary">Read only</Typography.Text>
+        ) : (
+          <div className="space-x-2">
+            <Button
+              icon={<EditOutlined />}
+              onClick={() => setEditingId(record.id)}
+              size="small"
+              type="text"
+            />
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => deleteActivity(record.id)}
+              size="small"
+              type="text"
+            />
+          </div>
+        )
       ),
       title: "Actions",
     },
@@ -84,36 +106,42 @@ export function ActivitiesPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">
           <Typography.Title className="!m-0" level={4}>
-            Follow-ups ({activities.length})
+            Follow-ups ({visibleActivities.length})
           </Typography.Title>
           <Typography.Text className="!text-slate-500">
-            Calls, emails, meetings, and tasks tied to live deals.
+            {isScopedClient
+              ? "View the follow-ups tied to your client workspace."
+              : "Calls, emails, meetings, and tasks tied to live deals."}
           </Typography.Text>
         </div>
-        <Button icon={<PlusOutlined />} onClick={() => setIsModalOpen(true)} type="primary">
-          Add follow-up
-        </Button>
+        {!isScopedClient ? (
+          <Button icon={<PlusOutlined />} onClick={() => setIsModalOpen(true)} type="primary">
+            Add follow-up
+          </Button>
+        ) : null}
       </div>
 
       <AnimatedDashboardTable
         columns={columns}
-        dataSource={activities}
+        dataSource={visibleActivities}
         emptyDescription="No follow-ups"
         isBusy={isSubmitting}
         rowKey="id"
       />
 
-      <ActivityForm
-        editingId={editingId}
-        isOpen={isModalOpen || editingId !== null}
-        isSubmitting={isSubmitting}
-        onClose={() => {
-          setIsModalOpen(false);
-          setEditingId(null);
-        }}
-        onSubmitStart={() => setIsSubmitting(true)}
-        onSubmitEnd={() => setIsSubmitting(false)}
-      />
+      {!isScopedClient ? (
+        <ActivityForm
+          editingId={editingId}
+          isOpen={isModalOpen || editingId !== null}
+          isSubmitting={isSubmitting}
+          onClose={() => {
+            setIsModalOpen(false);
+            setEditingId(null);
+          }}
+          onSubmitStart={() => setIsSubmitting(true)}
+          onSubmitEnd={() => setIsSubmitting(false)}
+        />
+      ) : null}
     </div>
   );
 }
