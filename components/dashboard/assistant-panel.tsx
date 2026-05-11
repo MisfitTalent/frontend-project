@@ -46,6 +46,7 @@ type AssistantMessage = {
 };
 
 type AssistantRuntimeMode =
+  | "gemini"
   | "groq"
   | "local"
   | "offline"
@@ -213,7 +214,7 @@ export function AssistantPanel() {
         const payload = (await response.json()) as {
           isConfigured?: boolean;
           message?: string;
-          mode?: "groq" | "offline" | "openai";
+          mode?: "gemini" | "groq" | "offline" | "openai";
           model?: string;
           reason?: string | null;
         };
@@ -441,14 +442,6 @@ export function AssistantPanel() {
           </div>
 
           <div className="mt-5 space-y-4">
-            <div className="flex flex-wrap gap-2">
-              {suggestedPrompts.map((prompt) => (
-                <Button key={prompt} onClick={() => void sendMessage(prompt)}>
-                  {prompt}
-                </Button>
-              ))}
-            </div>
-
             <Input.TextArea
               onChange={(event) => setDraft(event.target.value)}
               onPressEnter={(event) => {
@@ -461,6 +454,12 @@ export function AssistantPanel() {
               rows={4}
               value={draft}
             />
+
+            {assistantMode === "offline" ? (
+              <Typography.Text className="block !text-sm !text-amber-700">
+                Live provider actions are unavailable in offline mode. Workspace summaries still work, but create, update, and delete assistant actions need `OPENAI_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY` configured locally.
+              </Typography.Text>
+            ) : null}
 
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap gap-2">
@@ -482,6 +481,14 @@ export function AssistantPanel() {
               </div>
             </div>
 
+            <div className="flex flex-wrap gap-2">
+              {suggestedPrompts.map((prompt) => (
+                <Button key={prompt} onClick={() => void sendMessage(prompt)}>
+                  {prompt}
+                </Button>
+              ))}
+            </div>
+
             {error ? <Alert description={error} showIcon title="Assistant request failed." type="error" /> : null}
           </div>
         </Card>
@@ -495,7 +502,7 @@ export function AssistantPanel() {
               description={
                 assistantReason
                   ? `${assistantReason} Add it to .env.local and restart the Next.js server.`
-                  : "Add OPENAI_API_KEY or GROQ_API_KEY to .env.local and restart the Next.js server."
+                  : "Add OPENAI_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY to .env.local and restart the Next.js server."
               }
             />
           ) : null}
