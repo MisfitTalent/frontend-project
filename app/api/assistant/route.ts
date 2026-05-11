@@ -91,7 +91,7 @@ const sanitizeMutations = (mutations: AssistantMutation[] | undefined) =>
   Array.isArray(mutations) ? mutations.slice(0, 8) : [];
 
 export async function POST(request: NextRequest) {
-  const user = getAuthorizedUser(request);
+  const user = await getAuthorizedUser(request);
 
   if (!user) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });

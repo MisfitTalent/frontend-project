@@ -1,7 +1,7 @@
 "use client";
 
 import ActivityProvider from "./activityProvider";
-import AuthProvider from "./authProvider";
+import { AuthProvider } from "./authProvider";
 import ClientProvider from "./clientProvider";
 import ContactProvider from "./contactProvider";
 import ContractProvider from "./contractProvider";

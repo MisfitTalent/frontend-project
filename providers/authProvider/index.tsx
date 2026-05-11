@@ -136,3 +136,5 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       </AuthActionContext.Provider>
     </AuthStateContext.Provider>);
 };
+
+export default AuthProvider;
