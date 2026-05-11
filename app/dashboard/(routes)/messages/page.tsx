@@ -3,6 +3,7 @@
 import { MessagesPanel } from "@/components/dashboard/messages-panel";
 import { PageIntro } from "@/components/dashboard/page-intro";
 import { MessageProviderPage } from "@/providers/pageProviders";
+import { Suspense } from "react";
 import { useStyles } from "./style";
 
 function MessagesPageContent() {
@@ -11,7 +12,9 @@ function MessagesPageContent() {
   return (
     <div className={styles.container}>
       <PageIntro />
-      <MessagesPanel />
+      <Suspense fallback={null}>
+        <MessagesPanel />
+      </Suspense>
     </div>
   );
 }

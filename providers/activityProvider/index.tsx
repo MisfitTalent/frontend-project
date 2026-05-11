@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import {
   type BackendActivityDto,
@@ -14,6 +14,7 @@ import {
   isMockSessionToken,
   mapBackendActivity,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import { useAuthState } from "@/providers/authProvider";
 import { initialActivities } from "@/providers/domainSeeds";
@@ -48,9 +49,15 @@ export default function ActivityProvider({
   children,
 }: ActivityProviderProps) {
   const { isAuthenticated, user } = useAuthState();
-  const [activities, setActivities] = useState<IActivity[]>([]);
   const isDemoMode = isMockSessionToken(getSessionToken());
   const role = getPrimaryUserRole(user?.roles);
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("activities", user?.tenantId, user?.userId, role),
+    [role, user?.tenantId, user?.userId],
+  );
+  const [activities, setActivities] = useState<IActivity[]>(
+    () => readProviderCache<IActivity[]>(cacheKey) ?? [],
+  );
 
   const listPath =
     role === "SalesRep"
@@ -62,8 +69,12 @@ export default function ActivityProvider({
       listPath,
     );
 
-    setActivities(coerceItems(payload).map(mapBackendActivity));
-  }, [listPath]);
+    setActivities(writeProviderCache(cacheKey, coerceItems(payload).map(mapBackendActivity)));
+  }, [cacheKey, listPath]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, activities);
+  }, [cacheKey, activities]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -78,7 +89,7 @@ export default function ActivityProvider({
           console.error(error);
 
           if (isActive) {
-            setActivities(initialActivities());
+            setActivities(writeProviderCache(cacheKey, initialActivities()));
           }
         });
       }, 0);
@@ -113,7 +124,7 @@ export default function ActivityProvider({
     return () => {
       isActive = false;
     };
-  }, [isAuthenticated, isDemoMode, listPath, loadActivities, role]);
+  }, [cacheKey, isAuthenticated, isDemoMode, listPath, loadActivities, role]);
 
   return (
     <ActivityStateContext.Provider value={{ activities: isAuthenticated ? activities : [] }}>

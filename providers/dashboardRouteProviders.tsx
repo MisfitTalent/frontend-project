@@ -1,6 +1,7 @@
 "use client";
 
 import { DASHBOARD_HOME_PATH } from "@/lib/auth/dashboard-access";
+import { useAuthState } from "@/providers/authProvider";
 import { usePathname } from "next/navigation";
 
 import ActivityProvider from "./activityProvider";
@@ -15,6 +16,7 @@ import PricingRequestProvider from "./pricingRequestProvider";
 import ProfileProvider from "./profileProvider";
 import ProposalProvider from "./proposalProvider";
 import ReportProvider from "./reportProvider";
+import TeamMembersProvider from "./teamMembersProvider";
 
 type DashboardRouteProvidersProps = Readonly<{
   children: React.ReactNode;
@@ -27,14 +29,20 @@ const matchesPath = (pathname: string, path: string) =>
 
 const composeProvider = (
   children: React.ReactNode,
+  keyPrefix: string,
+  scopeKey: string,
   shouldWrap: boolean,
   Provider: React.ComponentType<Readonly<{ children: React.ReactNode }>>,
-) => (shouldWrap ? <Provider>{children}</Provider> : children);
+) => (shouldWrap ? <Provider key={`${keyPrefix}:${scopeKey}`}>{children}</Provider> : children);
 
 export function DashboardRouteProviders({
   children,
 }: DashboardRouteProvidersProps) {
   const pathname = usePathname();
+  const { user } = useAuthState();
+  const scopeKey =
+    [user?.tenantId, user?.userId, ...(user?.roles ?? [])].filter(Boolean).join("::") ||
+    "anonymous";
 
   const isDashboardHome = matchesPath(pathname, DASHBOARD_HOME_PATH);
   const isActivitiesRoute = matchesPath(pathname, "/dashboard/activities");
@@ -53,25 +61,27 @@ export function DashboardRouteProviders({
 
   const needsDashboard =
     isDashboardHome ||
-    isActivitiesRoute ||
     isClientsRoute ||
-    isMessagesRoute ||
     isOpportunitiesRoute ||
-    isPricingRequestsRoute ||
     isReportsRoute ||
     isTeamMembersRoute;
+  const needsTeamMembersProvider =
+    needsDashboard || isActivitiesRoute || isMessagesRoute || isPricingRequestsRoute;
   const needsClientProvider =
     needsDashboard ||
+    isMessagesRoute ||
     isContactsRoute ||
     isOpportunitiesRoute ||
     isProposalsRoute;
   const needsContactProvider = needsDashboard || isContactsRoute;
   const needsOpportunityProvider =
     needsDashboard ||
+    isActivitiesRoute ||
+    isMessagesRoute ||
     isOpportunitiesRoute ||
     isPricingRequestsRoute ||
     isProposalsRoute;
-  const needsProposalProvider = needsDashboard || isProposalsRoute;
+  const needsProposalProvider = needsDashboard || isActivitiesRoute || isProposalsRoute;
   const needsContractProvider = needsDashboard || isContractsRoute;
   const needsActivityProvider = needsDashboard || isActivitiesRoute;
   const needsDocumentProvider = isDashboardHome || isClientsRoute || isDocumentsRoute;
@@ -83,22 +93,43 @@ export function DashboardRouteProviders({
 
   let content = children;
 
-  content = composeProvider(content, needsProfileProvider, ProfileProvider);
-  content = composeProvider(content, needsReportProvider, ReportProvider);
-  content = composeProvider(content, needsDashboard, DashboardProvider);
+  content = composeProvider(content, "profile", scopeKey, needsProfileProvider, ProfileProvider);
+  content = composeProvider(content, "report", scopeKey, needsReportProvider, ReportProvider);
   content = composeProvider(
     content,
+    "document",
+    scopeKey,
+    needsDocumentProvider,
+    DocumentProvider,
+  );
+  content = composeProvider(content, "note", scopeKey, needsNoteProvider, NoteProvider);
+  content = composeProvider(
+    content,
+    "pricing-request",
+    scopeKey,
     needsPricingRequestProvider,
     PricingRequestProvider,
   );
-  content = composeProvider(content, needsNoteProvider, NoteProvider);
-  content = composeProvider(content, needsDocumentProvider, DocumentProvider);
-  content = composeProvider(content, needsActivityProvider, ActivityProvider);
-  content = composeProvider(content, needsContractProvider, ContractProvider);
-  content = composeProvider(content, needsProposalProvider, ProposalProvider);
-  content = composeProvider(content, needsOpportunityProvider, OpportunityProvider);
-  content = composeProvider(content, needsContactProvider, ContactProvider);
-  content = composeProvider(content, needsClientProvider, ClientProvider);
+  content = composeProvider(content, "dashboard", scopeKey, needsDashboard, DashboardProvider);
+  content = composeProvider(
+    content,
+    "team-members",
+    scopeKey,
+    needsTeamMembersProvider,
+    TeamMembersProvider,
+  );
+  content = composeProvider(content, "activity", scopeKey, needsActivityProvider, ActivityProvider);
+  content = composeProvider(content, "contract", scopeKey, needsContractProvider, ContractProvider);
+  content = composeProvider(content, "proposal", scopeKey, needsProposalProvider, ProposalProvider);
+  content = composeProvider(
+    content,
+    "opportunity",
+    scopeKey,
+    needsOpportunityProvider,
+    OpportunityProvider,
+  );
+  content = composeProvider(content, "contact", scopeKey, needsContactProvider, ContactProvider);
+  content = composeProvider(content, "client", scopeKey, needsClientProvider, ClientProvider);
 
   return content;
 }

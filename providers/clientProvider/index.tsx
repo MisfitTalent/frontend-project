@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import { useAuthState } from "@/providers/authProvider";
 import {
@@ -14,6 +14,7 @@ import {
   isMockSessionToken,
   mapBackendClient,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { initialClients } from "@/providers/domainSeeds";
 import { ClientActionContext, ClientStateContext } from "./context";
 import type { IClient } from "@/providers/salesTypes";
@@ -45,17 +46,27 @@ type ClientProviderProps = Readonly<{
 export default function ClientProvider({
   children,
 }: ClientProviderProps) {
-  const { isAuthenticated } = useAuthState();
-  const [clients, setClients] = useState<IClient[]>([]);
+  const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("clients", user?.tenantId, user?.userId),
+    [user?.tenantId, user?.userId],
+  );
+  const [clients, setClients] = useState<IClient[]>(
+    () => readProviderCache<IClient[]>(cacheKey) ?? [],
+  );
 
   const loadClients = useCallback(async () => {
     const payload = await backendRequest<BackendPagedResult<BackendClientDto> | BackendClientDto[]>(
       "/api/Clients?pageNumber=1&pageSize=100",
     );
 
-    setClients(coerceItems(payload).map(mapBackendClient));
-  }, []);
+    setClients(writeProviderCache(cacheKey, coerceItems(payload).map(mapBackendClient)));
+  }, [cacheKey]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, clients);
+  }, [cacheKey, clients]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -70,7 +81,7 @@ export default function ClientProvider({
           console.error(error);
 
           if (isActive) {
-            setClients(initialClients());
+            setClients(writeProviderCache(cacheKey, initialClients()));
           }
         });
       }, 0);
@@ -100,7 +111,7 @@ export default function ClientProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [isAuthenticated, isDemoMode, loadClients]);
+  }, [cacheKey, isAuthenticated, isDemoMode, loadClients]);
 
   return (
     <ClientStateContext.Provider value={{ clients: isAuthenticated ? clients : [] }}>

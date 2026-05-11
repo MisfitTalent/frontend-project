@@ -18,10 +18,10 @@ import { useMemo, useState } from "react";
 
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
-import { useDashboardState } from "@/providers/dashboardProvider";
 import type { INoteItem } from "@/providers/domainSeeds";
 import { useNoteActions, useNoteState } from "@/providers/noteProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
+import { useTeamMembersState } from "@/providers/teamMembersProvider";
 import { useStyles } from "./client-message-center.styles";
 
 type ClientMessageCenterProps = Readonly<{
@@ -98,7 +98,7 @@ export const ClientMessageCenter = ({
   const { notes } = useNoteState();
   const { addNote } = useNoteActions();
   const { opportunities } = useOpportunityState();
-  const { teamMembers } = useDashboardState();
+  const { teamMembers } = useTeamMembersState();
   const { styles } = useStyles();
   const [messageApi, contextHolder] = message.useMessage();
   const [isModalOpen, setIsModalOpen] = useState(false);
