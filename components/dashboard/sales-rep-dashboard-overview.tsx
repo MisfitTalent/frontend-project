@@ -1,10 +1,10 @@
 "use client";
 
 import { Card, Col, Empty, Row, Tag, Typography } from "antd";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useMemo } from "react";
 
-import { PriorityAdvisor } from "@/components/dashboard/priority-advisor";
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import { getScopedMessageThreads } from "@/lib/dashboard/message-threads";
 import { useActivityState } from "@/providers/activityProvider";
@@ -15,6 +15,21 @@ import { useNoteState } from "@/providers/noteProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
 import { useProposalState } from "@/providers/proposalProvider";
 import { formatCurrency, getOpportunityInsights } from "@/providers/salesSelectors";
+
+const PriorityAdvisor = dynamic(
+  () => import("@/components/dashboard/priority-advisor").then((mod) => mod.PriorityAdvisor),
+  {
+    loading: () => (
+      <Card className="border-slate-200 shadow-sm" title="Sales advisor">
+        <div className="space-y-3">
+          <div className="h-4 w-1/3 rounded bg-slate-200" />
+          <div className="h-4 w-full rounded bg-slate-100" />
+          <div className="h-4 w-5/6 rounded bg-slate-100" />
+        </div>
+      </Card>
+    ),
+  },
+);
 
 export function SalesRepDashboardOverview() {
   const { user } = useAuthState();
@@ -88,16 +103,6 @@ export function SalesRepDashboardOverview() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <Tag color="#4f7cac">Sales rep workspace</Tag>
-        <Typography.Title className="!mb-0 !text-slate-900" level={2}>
-          My portfolio
-        </Typography.Title>
-        <Typography.Paragraph className="!mb-0 max-w-3xl !text-slate-500">
-          Track your live accounts, follow-ups, message load, and the next best action from one workspace.
-        </Typography.Paragraph>
-      </div>
-
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} xl={6}>
           <Link href="/dashboard/opportunities">

@@ -52,8 +52,9 @@ export default function ContactProvider({
     () => createProviderCacheKey("contacts", user?.tenantId, user?.userId),
     [user?.tenantId, user?.userId],
   );
+  const cachedContacts = useMemo(() => readProviderCache<IContact[]>(cacheKey), [cacheKey]);
   const [contacts, setContacts] = useState<IContact[]>(
-    () => readProviderCache<IContact[]>(cacheKey) ?? [],
+    () => cachedContacts ?? [],
   );
 
   const loadContacts = useCallback(async () => {
@@ -101,6 +102,12 @@ export default function ContactProvider({
       };
     }
 
+    if (cachedContacts && cachedContacts.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     const timer = window.setTimeout(() => {
       void loadContacts().catch((error) => {
         console.error(error);
@@ -111,7 +118,7 @@ export default function ContactProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [cacheKey, isAuthenticated, isDemoMode, loadContacts]);
+  }, [cacheKey, cachedContacts, isAuthenticated, isDemoMode, loadContacts]);
 
   return (
     <ContactStateContext.Provider value={{ contacts: isAuthenticated ? contacts : [] }}>

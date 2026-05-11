@@ -108,8 +108,9 @@ export default function ProposalProvider({
     () => createProviderCacheKey("proposals", user?.tenantId, user?.userId),
     [user?.tenantId, user?.userId],
   );
+  const cachedProposals = useMemo(() => readProviderCache<IProposal[]>(cacheKey), [cacheKey]);
   const [proposals, setProposals] = useState<IProposal[]>(
-    () => readProviderCache<IProposal[]>(cacheKey) ?? [],
+    () => cachedProposals ?? [],
   );
 
   const loadProposals = useCallback(async () => {
@@ -157,6 +158,12 @@ export default function ProposalProvider({
       };
     }
 
+    if (cachedProposals && cachedProposals.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     void backendRequest<BackendPagedResult<BackendProposalDto> | BackendProposalDto[]>(
       "/api/Proposals?pageNumber=1&pageSize=100",
     )
@@ -174,7 +181,7 @@ export default function ProposalProvider({
     return () => {
       isActive = false;
     };
-  }, [cacheKey, isAuthenticated, isDemoMode, loadProposals]);
+  }, [cacheKey, cachedProposals, isAuthenticated, isDemoMode, loadProposals]);
 
   const replaceProposal = (proposal: IProposal) => {
     setProposals((current) => {
