@@ -103,7 +103,7 @@ export const DashboardMetrics = () => {
         </Card>
       ) : null}
 
-      <Row gutter={[16, 16]}>
+      <Row className="dashboard-priority-queue-row" gutter={[16, 16]}>
         <Col className="min-w-0" xs={24} xxl={14}>
           <OpportunityPriorityQueue />
         </Col>
