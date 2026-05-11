@@ -24,14 +24,17 @@ import { AnimatedDashboardTable } from "@/components/dashboard/animated-dashboar
 import { ClientMessageCenter } from "@/components/dashboard/client-message-center";
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import {
+  addServiceRequestMessage,
   applyServiceRequestRepresentativeDecision,
   createServiceRequestAssignments,
   getServiceRequestDetail,
   listServiceRequests,
+  type ServiceRequestMessageRecipientType,
   type ServiceRequestAssignmentRecord,
   type ServiceRequestDetail,
   type ServiceRequestRecord,
 } from "@/lib/client/service-request-api";
+import { clearSessionDraft } from "@/lib/client/session-drafts";
 import { useMounted } from "@/lib/client/use-mounted";
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import {
@@ -46,17 +49,23 @@ import type { INoteItem } from "@/providers/domainSeeds";
 import { useNoteActions, useNoteState } from "@/providers/noteProvider";
 import { useOpportunityState } from "@/providers/opportunityProvider";
 import { useTeamMembersState } from "@/providers/teamMembersProvider";
+import {
+  ASSISTANT_PANEL_DRAFT_KEY,
+  ASSISTANT_PANEL_MESSAGES_KEY,
+  getScopedDraftKey,
+} from "./draft-storage";
 import { useStyles } from "./messages-panel.styles";
 
 type MessageFormValues = {
   clientId: string;
   content: string;
   representativeId: string;
+  representativeIds?: string[];
+  recipientType?: ServiceRequestMessageRecipientType;
   subject: string;
 };
 
 type AssignmentFormValues = {
-  assignmentMessage: string;
   representativeIds: string[];
 };
 
@@ -65,6 +74,56 @@ const createMessageId = () =>
 
 const createAssignmentId = () =>
   `team-assignment-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+const summarizeRequestText = (value: string, maxLength = 220) => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  const truncated = normalized.slice(0, maxLength);
+  const lastBoundary = Math.max(
+    truncated.lastIndexOf(". "),
+    truncated.lastIndexOf("! "),
+    truncated.lastIndexOf("? "),
+    truncated.lastIndexOf(", "),
+    truncated.lastIndexOf(" "),
+  );
+
+  return `${truncated.slice(0, lastBoundary > 80 ? lastBoundary : maxLength).trim()}...`;
+};
+
+const isWorkflowInstructionText = (value: string) =>
+  /\breview the (?:latest|client) request\b/i.test(value) &&
+  /\bassign the best reps\b/i.test(value);
+
+const summarizeServiceRequest = (
+  request: ServiceRequestRecord,
+  clientName: string,
+) => {
+  const description = request.description.trim();
+
+  if (description && !isWorkflowInstructionText(description)) {
+    return summarizeRequestText(description);
+  }
+
+  if (request.requestType === "proposal_support") {
+    return `${clientName} needs proposal support.`;
+  }
+
+  if (request.requestType === "pricing_support") {
+    return `${clientName} needs pricing and commercial support.`;
+  }
+
+  const normalizedTitle = request.title.trim().replace(/[.\s]+$/, "");
+
+  if (/support|help|request/i.test(normalizedTitle)) {
+    return `${clientName} needs ${normalizedTitle.toLowerCase()}.`;
+  }
+
+  return `${clientName} needs support with ${normalizedTitle}.`;
+};
 
 const clientFacingRole = (role: string) =>
   [
@@ -76,6 +135,34 @@ const clientFacingRole = (role: string) =>
     "Proposal Manager",
     "Deal Desk Specialist",
   ].some((token) => role.includes(token));
+
+const getServiceRequestMessageRecipientSummary = (payload: Record<string, unknown>) => {
+  const recipientType =
+    payload.recipientType === "client" ||
+    payload.recipientType === "representative" ||
+    payload.recipientType === "both"
+      ? payload.recipientType
+      : "client";
+  const representativeNames = Array.isArray(payload.representativeNames)
+    ? payload.representativeNames.filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      )
+    : [];
+
+  if (recipientType === "both") {
+    return representativeNames.length > 0
+      ? `To client and reps: ${representativeNames.join(", ")}`
+      : "To client and reps";
+  }
+
+  if (recipientType === "representative") {
+    return representativeNames.length > 0
+      ? `To reps: ${representativeNames.join(", ")}`
+      : "To reps";
+  }
+
+  return "To client";
+};
 
 type MessagePanelContentProps = Readonly<{
   initialClientId: string;
@@ -119,6 +206,34 @@ function MessagesPanelContent({
   >({});
   const [replyForm] = Form.useForm<MessageFormValues>();
   const [assignmentForm] = Form.useForm<AssignmentFormValues>();
+  const assistantDraftStorageKey = getScopedDraftKey(ASSISTANT_PANEL_DRAFT_KEY, {
+    tenantId: user?.tenantId,
+    userId: user?.userId,
+  });
+  const assistantMessageStorageKey = getScopedDraftKey(ASSISTANT_PANEL_MESSAGES_KEY, {
+    tenantId: user?.tenantId,
+    userId: user?.userId,
+  });
+  const buildRequestHandlingPrompt = useCallback(
+    (request: ServiceRequestRecord) => {
+      const clientName =
+        clients.find((client) => client.id === request.clientId)?.name ?? "the client";
+
+      return `Review the client request "${request.title}" for ${clientName} (request id ${request.id}), create the right opportunity and proposal if needed, and assign the best reps for this request only.`;
+    },
+    [clients],
+  );
+
+  const openAssistantWithFreshContext = useCallback(
+    (prompt: string) => {
+      clearSessionDraft(assistantDraftStorageKey);
+      clearSessionDraft(assistantMessageStorageKey);
+      router.push(
+        `/dashboard/assistant?prompt=${encodeURIComponent(prompt)}&autorun=1&fresh=1`,
+      );
+    },
+    [assistantDraftStorageKey, assistantMessageStorageKey, router],
+  );
 
   const isScopedClientUser = isClientScopedUser(user?.clientIds);
 
@@ -336,6 +451,21 @@ function MessagesPanelContent({
       ) ?? null
     );
   }, [selectedServiceRequestDetail, user]);
+  const activeServiceRequestSummary = useMemo(() => {
+    if (!activeServiceRequest) {
+      return null;
+    }
+
+    const clientName =
+      clients.find((client) => client.id === activeServiceRequest.clientId)?.name ??
+      "Unlinked client";
+
+    return {
+      clientName,
+      description: summarizeServiceRequest(activeServiceRequest, clientName),
+      title: activeServiceRequest.title,
+    };
+  }, [activeServiceRequest, clients]);
   const selectedConversationMessages = useMemo(() => {
     if (!selectedConversationRoot?.clientId) {
       return [];
@@ -413,46 +543,90 @@ function MessagesPanelContent({
       )?.ownerId;
 
     replyForm.setFieldsValue({
-      clientId: note?.clientId ?? clients[0]?.id ?? "",
+      clientId: note?.clientId ?? undefined,
       content: note ? `Hi, regarding "${note.title}"...` : "",
       representativeId:
         note?.representativeId ??
         accountLeadId ??
         representativeOptions.find((option) => option.value === user?.userId)?.value ??
-        representativeOptions[0]?.value ??
-        "",
+        undefined,
       subject: note ? `Re: ${note.title}` : "Client follow-up",
     });
     setActiveThread(note ?? null);
     setIsReplyModalOpen(true);
   };
 
+  const openServiceRequestReplyComposer = (request: ServiceRequestRecord) => {
+    const requestDetail = serviceRequestDetailsById[request.id];
+    const assignedRepresentativeIds =
+      requestDetail?.assignments.map((assignment) => assignment.representativeUserId) ?? [];
+
+    replyForm.setFieldsValue({
+      clientId: request.clientId,
+      content: "",
+      recipientType: "client",
+      representativeId: "",
+      representativeIds: assignedRepresentativeIds,
+      subject: `Re: ${request.title}`,
+    });
+    setActiveThread(null);
+    setActiveServiceRequest(request);
+    setIsReplyModalOpen(true);
+  };
+
   const closeReplyComposer = () => {
     setIsReplyModalOpen(false);
     setActiveThread(null);
+    setActiveServiceRequest(null);
     replyForm.resetFields();
   };
 
   const handleReplySubmit = async (values: MessageFormValues) => {
-    const representative = teamMembers.find((member) => member.id === values.representativeId);
+    if (activeServiceRequest) {
+      setIsSubmitting(true);
 
-    if (!representative) {
-      messageApi.error("Choose a representative before sending the reply.");
+      try {
+        const detail = await addServiceRequestMessage(activeServiceRequest.id, {
+          content: values.content.trim(),
+          recipientType: values.recipientType ?? "client",
+          representativeUserIds:
+            values.recipientType === "representative" || values.recipientType === "both"
+              ? values.representativeIds ?? []
+              : [],
+        });
+        setServiceRequestDetailsById((current) => ({
+          ...current,
+          [activeServiceRequest.id]: detail,
+        }));
+        await loadServiceRequests();
+        messageApi.success("Reply added to the request conversation.");
+        closeReplyComposer();
+      } catch (error) {
+        console.error(error);
+        messageApi.error("Could not save the request reply.");
+      } finally {
+        setIsSubmitting(false);
+      }
+
       return;
     }
+
+    const representative = values.representativeId
+      ? teamMembers.find((member) => member.id === values.representativeId)
+      : null;
 
     setIsSubmitting(true);
 
     try {
       await addNote({
         category: CLIENT_MESSAGE_CATEGORY,
-        clientId: values.clientId,
+        clientId: values.clientId || undefined,
         content: values.content.trim(),
         createdDate: new Date().toISOString().split("T")[0],
         id: createMessageId(),
         kind: "client_message",
-        representativeId: representative.id,
-        representativeName: representative.name,
+        representativeId: representative?.id,
+        representativeName: representative?.name,
         source: "workspace",
         status: "Acknowledged",
         submittedBy: user?.email ?? undefined,
@@ -477,7 +651,6 @@ function MessagesPanelContent({
 
   const openAssignModal = useCallback((note: INoteItem) => {
     assignmentForm.setFieldsValue({
-      assignmentMessage: `We are assigning the right sales reps to support "${note.title}".`,
       representativeIds: [],
     });
     setActiveThread(note);
@@ -488,7 +661,6 @@ function MessagesPanelContent({
   const openServiceRequestAssignModal = useCallback(
     async (request: ServiceRequestRecord) => {
       assignmentForm.setFieldsValue({
-        assignmentMessage: `We are assigning the right sales reps to support "${request.title}".`,
         representativeIds: [],
       });
       setActiveThread(null);
@@ -537,7 +709,6 @@ function MessagesPanelContent({
 
       try {
         await createServiceRequestAssignments(activeServiceRequest.id, {
-          note: values.assignmentMessage.trim(),
           representativeUserIds: selectedRepresentatives.map((member) => member.id),
         });
         await loadServiceRequests();
@@ -577,7 +748,7 @@ function MessagesPanelContent({
             `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim() || user?.email || undefined,
           category: CLIENT_MESSAGE_CATEGORY,
           clientId: activeThread.clientId,
-          content: values.assignmentMessage.trim(),
+          content: `Assigned ${representative.name} to support "${activeThread.title}".`,
           createdDate: new Date().toISOString().split("T")[0],
           id: createAssignmentId(),
           kind: "team_assignment",
@@ -740,9 +911,19 @@ function MessagesPanelContent({
                   Open request
                 </Button>
               </Link>
-              <Link href="/dashboard/assistant">
-                <Button icon={<MailOutlined />}>Handle with AI</Button>
-              </Link>
+                <Button
+                  icon={<MailOutlined />}
+                  onClick={() =>
+                    pendingAdminRequests[0]
+                      ? openAssistantWithFreshContext(
+                          buildRequestHandlingPrompt(pendingAdminRequests[0]),
+                        )
+                      : undefined
+                  }
+                  disabled={!pendingAdminRequests[0]}
+                >
+                Handle with AI
+              </Button>
             </Space>
           }
           banner
@@ -775,11 +956,17 @@ function MessagesPanelContent({
               <Typography.Text className={styles.metricText}>
                 These are the actual client requests waiting for admin action.
               </Typography.Text>
-              <Link href="/dashboard/assistant">
-                <Button icon={<MailOutlined />} type="default">
-                  Summarize with AI
-                </Button>
-              </Link>
+              <Button
+                icon={<MailOutlined />}
+                onClick={() =>
+                  openAssistantWithFreshContext(
+                    "What client requests are waiting for admin review?",
+                  )
+                }
+                type="default"
+              >
+                Summarize with AI
+              </Button>
             </div>
 
             {pendingAdminRequests.map((request) => (
@@ -808,6 +995,14 @@ function MessagesPanelContent({
                       type="primary"
                     >
                       Assign reps
+                    </Button>
+                    <Button
+                      icon={<MailOutlined />}
+                      onClick={() =>
+                        openAssistantWithFreshContext(buildRequestHandlingPrompt(request))
+                      }
+                    >
+                      Handle with AI
                     </Button>
                     <Button
                       onClick={() =>
@@ -948,17 +1143,7 @@ function MessagesPanelContent({
                 ) : null}
                 <Button
                   icon={<SendOutlined />}
-                  onClick={() =>
-                    openReplyComposer({
-                      category: CLIENT_MESSAGE_CATEGORY,
-                      clientId: selectedServiceRequest.clientId,
-                      content: selectedServiceRequest.description,
-                      createdDate: selectedServiceRequest.createdAt.split("T")[0],
-                      id: selectedServiceRequest.id,
-                      source: selectedServiceRequest.source,
-                      title: selectedServiceRequest.title,
-                    } as INoteItem)
-                  }
+                  onClick={() => openServiceRequestReplyComposer(selectedServiceRequest)}
                 >
                   Reply
                 </Button>
@@ -976,14 +1161,23 @@ function MessagesPanelContent({
 
             {selectedServiceRequestDetail?.events.map((event) => (
               <div
-                className={`${styles.conversationBubble} ${styles.conversationBubbleWorkspace}`}
+                className={`${styles.conversationBubble} ${
+                  event.actorType === "client"
+                    ? styles.conversationBubbleClient
+                    : styles.conversationBubbleWorkspace
+                }`}
                 key={event.id}
               >
                 <Typography.Text className={styles.conversationMeta}>
-                  {event.actorType} · {event.createdAt.split("T")[0]} · {event.eventType}
+                  {event.actorType} · {event.createdAt.split("T")[0]} ·{" "}
+                  {event.eventType === "service_request_message_added"
+                    ? getServiceRequestMessageRecipientSummary(event.payloadJson)
+                    : event.eventType}
                 </Typography.Text>
                 <Typography.Paragraph className={styles.messageText}>
-                  {event.eventType === "service_request_assignments_created"
+                  {event.eventType === "service_request_message_added"
+                    ? String(event.payloadJson.content ?? "")
+                    : event.eventType === "service_request_assignments_created"
                     ? "Assignments were prepared and sent for client review."
                     : event.eventType === "service_request_review_started"
                       ? "Admin review started."
@@ -1238,33 +1432,106 @@ function MessagesPanelContent({
             title="Reply from workspace"
           >
             <Form className={styles.modalForm} form={replyForm} layout="vertical" onFinish={handleReplySubmit}>
+              {activeServiceRequest ? null : (
+                <>
+                  <Form.Item
+                    label="Client"
+                    name="clientId"
+                  >
+                    <Select allowClear options={clientOptions} placeholder="No client selected" />
+                  </Form.Item>
+                  <Form.Item
+                    label="Representative"
+                    name="representativeId"
+                  >
+                    <Select
+                      allowClear
+                      options={representativeOptions}
+                      placeholder="No representative selected"
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    label="Subject"
+                    name="subject"
+                    rules={[{ message: "Add a subject", required: true }]}
+                  >
+                    <Input placeholder="Message subject" />
+                  </Form.Item>
+                </>
+              )}
+              {activeServiceRequest ? (
+                <>
+                  <Form.Item
+                    label="Send to"
+                    name="recipientType"
+                    rules={[{ message: "Choose who should receive the reply", required: true }]}
+                  >
+                    <Select
+                      options={[
+                        { label: "Client", value: "client" },
+                        { label: "Representative", value: "representative" },
+                        { label: "Client and representative", value: "both" },
+                      ]}
+                      placeholder="Choose the message audience"
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    dependencies={["recipientType"]}
+                    label="Representatives"
+                    name="representativeIds"
+                    rules={[
+                      ({ getFieldValue }) => ({
+                        validator(_, value: string[] | undefined) {
+                          const recipientType = getFieldValue("recipientType");
+
+                          if (
+                            recipientType !== "representative" &&
+                            recipientType !== "both"
+                          ) {
+                            return Promise.resolve();
+                          }
+
+                          if (Array.isArray(value) && value.length > 0) {
+                            return Promise.resolve();
+                          }
+
+                          return Promise.reject(
+                            new Error("Choose at least one representative recipient."),
+                          );
+                        },
+                      }),
+                    ]}
+                  >
+                    <Select
+                      mode="multiple"
+                      options={
+                        (
+                          activeServiceRequest
+                            ? serviceRequestDetailsById[activeServiceRequest.id]?.assignments ?? []
+                            : []
+                        ).map((assignment) => ({
+                          label: assignment.representativeName,
+                          value: assignment.representativeUserId,
+                        }))
+                      }
+                      placeholder="Choose one or more assigned representatives"
+                    />
+                  </Form.Item>
+                </>
+              ) : null}
               <Form.Item
-                label="Client"
-                name="clientId"
-                rules={[{ message: "Choose a client", required: true }]}
-              >
-                <Select options={clientOptions} placeholder="Select client" />
-              </Form.Item>
-              <Form.Item
-                label="Representative"
-                name="representativeId"
-                rules={[{ message: "Choose a representative", required: true }]}
-              >
-                <Select options={representativeOptions} placeholder="Select representative" />
-              </Form.Item>
-              <Form.Item
-                label="Subject"
-                name="subject"
-                rules={[{ message: "Add a subject", required: true }]}
-              >
-                <Input placeholder="Message subject" />
-              </Form.Item>
-              <Form.Item
-                label="Message"
+                label={activeServiceRequest ? "Reply" : "Message"}
                 name="content"
                 rules={[{ message: "Enter the message", required: true }]}
               >
-                <Input.TextArea placeholder="Write the reply" rows={5} />
+                <Input.TextArea
+                  placeholder={
+                    activeServiceRequest
+                      ? "Write your response to this request"
+                      : "Write the reply"
+                  }
+                  rows={5}
+                />
               </Form.Item>
             </Form>
           </Modal>
@@ -1278,6 +1545,25 @@ function MessagesPanelContent({
             title="Assign the right sales reps"
           >
             <Form className={styles.modalForm} form={assignmentForm} layout="vertical" onFinish={handleAssignSubmit}>
+              {activeServiceRequestSummary ? (
+                <Alert
+                  className="mb-4"
+                  description={
+                    <Space direction="vertical" size={4}>
+                      <Typography.Text strong>{activeServiceRequestSummary.title}</Typography.Text>
+                      <Typography.Text type="secondary">
+                        {activeServiceRequestSummary.clientName}
+                      </Typography.Text>
+                      <Typography.Paragraph className="!mb-0">
+                        {activeServiceRequestSummary.description}
+                      </Typography.Paragraph>
+                    </Space>
+                  }
+                  message="Request summary"
+                  showIcon
+                  type="info"
+                />
+              ) : null}
               <Form.Item
                 label="Representatives"
                 name="representativeIds"
@@ -1287,16 +1573,6 @@ function MessagesPanelContent({
                   mode="multiple"
                   options={representativeOptions}
                   placeholder="Select one or more representatives"
-                />
-              </Form.Item>
-              <Form.Item
-                label="Client-facing assignment message"
-                name="assignmentMessage"
-                rules={[{ message: "Add the assignment message", required: true }]}
-              >
-                <Input.TextArea
-                  placeholder="Explain who is being assigned and why"
-                  rows={5}
                 />
               </Form.Item>
             </Form>

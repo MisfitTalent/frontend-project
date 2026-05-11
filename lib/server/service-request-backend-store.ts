@@ -720,6 +720,64 @@ export const applyLiveServiceRequestRepDecision = async (
   return clone(updatedRequest);
 };
 
+export const addLiveServiceRequestMessage = async (
+  user: IMockUser,
+  token: string,
+  requestId: string,
+  input: {
+    content: string;
+    recipientType: "client" | "representative" | "both";
+    representativeUserIds?: string[];
+  },
+) => {
+  const content = input.content.trim();
+
+  if (!content) {
+    throw new Error("Message content is required.");
+  }
+
+  const { request, state } = await getVisibleRequestOrThrow(user, token, requestId);
+  const recipientType = input.recipientType;
+  const representativeUserIds = [
+    ...new Set((input.representativeUserIds ?? []).map((value) => value.trim()).filter(Boolean)),
+  ];
+
+  if (!["client", "representative", "both"].includes(recipientType)) {
+    throw new Error("A valid recipientType is required.");
+  }
+
+  if (
+    (recipientType === "representative" || recipientType === "both") &&
+    representativeUserIds.length === 0
+  ) {
+    throw new Error("At least one representative recipient is required.");
+  }
+
+  const representativeNames = state.assignments
+    .filter(
+      (item) =>
+        item.assignment.serviceRequestId === request.request.id &&
+        representativeUserIds.includes(item.assignment.representativeUserId),
+    )
+    .map((item) => item.assignment.representativeName);
+
+  if (
+    (recipientType === "representative" || recipientType === "both") &&
+    representativeNames.length !== representativeUserIds.length
+  ) {
+    throw new Error("Representative recipients must belong to this request.");
+  }
+
+  await appendEvent(token, request.request, user, "service_request_message_added", {
+    content,
+    recipientType,
+    representativeNames,
+    representativeUserIds,
+  });
+
+  return getLiveServiceRequestDetail(user, token, requestId);
+};
+
 export const attachLiveOpportunityToServiceRequest = async (
   user: IMockUser,
   token: string,

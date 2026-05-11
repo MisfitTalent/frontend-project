@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { IMockUser } from "@/app/api/Auth/mock-users";
+import { readLocalStateSnapshot, writeLocalStateSnapshot } from "@/lib/server/local-state-store";
 import {
   createMockOpportunity,
   createMockPricingRequest,
@@ -84,6 +85,8 @@ export type WorkflowEventRecord = {
   tenantId: string;
 };
 
+type MessageRecipientType = "client" | "representative" | "both";
+
 type ServiceRequestState = {
   assignments: ServiceRequestAssignmentRecord[];
   events: WorkflowEventRecord[];
@@ -124,7 +127,13 @@ declare global {
 }
 
 const serviceRequestStore =
-  globalThis.__serviceRequestStore__ ?? new Map<string, ServiceRequestState>();
+  globalThis.__serviceRequestStore__ ??
+  new Map<string, ServiceRequestState>(
+    Object.entries(readLocalStateSnapshot().serviceRequestStore).map(([tenantId, state]) => [
+      tenantId,
+      state as ServiceRequestState,
+    ]),
+  );
 
 globalThis.__serviceRequestStore__ = serviceRequestStore;
 
@@ -132,6 +141,12 @@ const createId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const clone = <T,>(value: T): T => structuredClone(value);
+
+const persistServiceRequestStore = () => {
+  writeLocalStateSnapshot((state) => {
+    state.serviceRequestStore = Object.fromEntries(serviceRequestStore.entries());
+  });
+};
 
 const nowIso = () => new Date().toISOString();
 
@@ -157,6 +172,7 @@ const getTenantState = (tenantId: string) => {
   };
 
   serviceRequestStore.set(tenantId, next);
+  persistServiceRequestStore();
 
   return next;
 };
@@ -210,6 +226,7 @@ const appendEvent = (
     serviceRequestId: request.id,
     tenantId: request.tenantId,
   });
+  persistServiceRequestStore();
 };
 
 const getRequestIndex = (state: ServiceRequestState, requestId: string) =>
@@ -231,6 +248,7 @@ const updateRequestRecord = (
     ...patch,
     updatedAt: nowIso(),
   };
+  persistServiceRequestStore();
 
   return state.requests[index];
 };
@@ -339,6 +357,7 @@ export const createServiceRequest = (
     requestType: request.requestType,
     source: request.source,
   });
+  persistServiceRequestStore();
 
   return clone(request);
 };
@@ -611,6 +630,7 @@ export const createServiceRequestAssignments = (
     (assignment) => assignment.serviceRequestId !== request.id,
   );
   state.assignments.unshift(...nextAssignments);
+  persistServiceRequestStore();
 
   const updated = updateRequestRecord(state, request.id, {
     status: "awaiting_client_assignment_approval",
@@ -668,6 +688,7 @@ export const applyServiceRequestClientDecision = (
       updatedAt: nowIso(),
     };
   });
+  persistServiceRequestStore();
 
   const allAssignments = getAssignmentRecords(state, request.id);
   const approvedAssignments = allAssignments.filter(
@@ -690,6 +711,7 @@ export const applyServiceRequestClientDecision = (
         updatedAt: nowIso(),
       };
     });
+    persistServiceRequestStore();
   }
 
   const updated = updateRequestRecord(state, request.id, {
@@ -744,6 +766,7 @@ export const applyServiceRequestRepDecision = (
         }
       : item,
   );
+  persistServiceRequestStore();
 
   const allAssignments = getAssignmentRecords(state, request.id);
   const hasAccepted = allAssignments.some((item) => item.status === "rep_accepted");
@@ -771,4 +794,58 @@ export const applyServiceRequestRepDecision = (
   });
 
   return clone(updated);
+};
+
+export const addServiceRequestMessage = (
+  user: IMockUser,
+  requestId: string,
+  input: {
+    content: string;
+    recipientType: MessageRecipientType;
+    representativeUserIds?: string[];
+  },
+) => {
+  const content = input.content.trim();
+
+  if (!content) {
+    throw new Error("Message content is required.");
+  }
+
+  const { request, state } = getVisibleRequestOrThrow(user, requestId);
+  const recipientType = input.recipientType;
+  const representativeUserIds = [
+    ...new Set((input.representativeUserIds ?? []).map((value) => value.trim()).filter(Boolean)),
+  ];
+
+  if (!["client", "representative", "both"].includes(recipientType)) {
+    throw new Error("A valid recipientType is required.");
+  }
+
+  if (
+    (recipientType === "representative" || recipientType === "both") &&
+    representativeUserIds.length === 0
+  ) {
+    throw new Error("At least one representative recipient is required.");
+  }
+
+  const assignments = getAssignmentRecords(state, request.id);
+  const representativeNames = assignments
+    .filter((assignment) => representativeUserIds.includes(assignment.representativeUserId))
+    .map((assignment) => assignment.representativeName);
+
+  if (
+    (recipientType === "representative" || recipientType === "both") &&
+    representativeNames.length !== representativeUserIds.length
+  ) {
+    throw new Error("Representative recipients must belong to this request.");
+  }
+
+  appendEvent(state, request, user, "service_request_message_added", {
+    content,
+    recipientType,
+    representativeNames,
+    representativeUserIds,
+  });
+
+  return getServiceRequestDetail(user, requestId);
 };

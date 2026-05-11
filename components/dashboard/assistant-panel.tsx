@@ -7,7 +7,8 @@ import {
   SafetyCertificateOutlined,
   SendOutlined,
 } from "@ant-design/icons";
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
@@ -96,6 +97,7 @@ const getResponseStatusLabel = (mode: AssistantRuntimeMode, scopeLabel?: string)
 };
 
 export function AssistantPanel() {
+  const searchParams = useSearchParams();
   const { user } = useAuthState();
   const role = getPrimaryUserRole(user?.roles);
   const isScopedClientUser = isClientScopedUser(user?.clientIds);
@@ -116,6 +118,10 @@ export function AssistantPanel() {
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [loadedStorageIdentity, setLoadedStorageIdentity] = useState<string | null>(null);
   const [statusLabel, setStatusLabel] = useState("Awaiting your question");
+  const autoPrompt = searchParams.get("prompt")?.trim() ?? "";
+  const shouldAutoRun = searchParams.get("autorun") === "1";
+  const shouldStartFresh = searchParams.get("fresh") === "1";
+  const autoRunKeyRef = useRef<string | null>(null);
   const storageIdentity = `${draftStorageKey}::${messageStorageKey}`;
   const modeTag = getModeTag(assistantMode);
   const scopeTagLabel = isScopedClientUser
@@ -129,14 +135,16 @@ export function AssistantPanel() {
     setMessages([]);
     setError(null);
     setLastResponseReason(null);
-    clearSessionDraft(draftStorageKey);
-    clearSessionDraft(messageStorageKey);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
+    clearSessionDraft(messageStorageKey, { storage: "local" });
   };
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setDraft(readSessionDraft<string>(draftStorageKey) ?? "");
-      setMessages(readSessionDraft<AssistantMessage[]>(messageStorageKey) ?? []);
+      setDraft(readSessionDraft<string>(draftStorageKey, { storage: "local" }) ?? "");
+      setMessages(
+        readSessionDraft<AssistantMessage[]>(messageStorageKey, { storage: "local" }) ?? [],
+      );
       setError(null);
       setLastResponseReason(null);
       setLoadedStorageIdentity(storageIdentity);
@@ -182,11 +190,11 @@ export function AssistantPanel() {
     }
 
     if (draft) {
-      writeSessionDraft(draftStorageKey, draft);
+      writeSessionDraft(draftStorageKey, draft, { storage: "local" });
       return;
     }
 
-    clearSessionDraft(draftStorageKey);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
   }, [draft, draftStorageKey, loadedStorageIdentity, storageIdentity]);
 
   useEffect(() => {
@@ -195,11 +203,11 @@ export function AssistantPanel() {
     }
 
     if (messages.length > 0) {
-      writeSessionDraft(messageStorageKey, messages);
+      writeSessionDraft(messageStorageKey, messages, { storage: "local" });
       return;
     }
 
-    clearSessionDraft(messageStorageKey);
+    clearSessionDraft(messageStorageKey, { storage: "local" });
   }, [loadedStorageIdentity, messageStorageKey, messages, storageIdentity]);
 
   useEffect(() => {
@@ -255,15 +263,16 @@ export function AssistantPanel() {
     };
   }, []);
 
-  const sendMessage = async (content: string) => {
+  const sendMessage = async (content: string, options?: { baseMessages?: AssistantMessage[] }) => {
     const trimmed = content.trim();
 
     if (!trimmed || isSubmitting) {
       return;
     }
 
+    const baseMessages = options?.baseMessages ?? messages;
     const nextMessages = [
-      ...messages,
+      ...baseMessages,
       {
         content: trimmed,
         role: "user" as const,
@@ -272,7 +281,7 @@ export function AssistantPanel() {
 
     setMessages(nextMessages);
     setDraft("");
-    clearSessionDraft(draftStorageKey);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
     setError(null);
     setLastResponseReason(null);
     setIsSubmitting(true);
@@ -351,6 +360,81 @@ export function AssistantPanel() {
       setIsSubmitting(false);
     }
   };
+
+  const runAutoPrompt = useEffectEvent(
+    (prompt: string, fresh: boolean, clearAutorunFlag: () => void) => {
+      const baseMessages = fresh ? [] : messages;
+
+      if (fresh) {
+        setMessages([]);
+        setDraft("");
+        clearSessionDraft(draftStorageKey, { storage: "local" });
+        clearSessionDraft(messageStorageKey, { storage: "local" });
+      }
+
+      void sendMessage(prompt, { baseMessages }).finally(() => {
+        clearAutorunFlag();
+      });
+    },
+  );
+
+  useEffect(() => {
+    if (!shouldAutoRun) {
+      autoRunKeyRef.current = null;
+    }
+  }, [shouldAutoRun]);
+
+  useEffect(() => {
+    if (!autoPrompt || !shouldAutoRun || loadedStorageIdentity !== storageIdentity || isSubmitting) {
+      return;
+    }
+
+    const autoRunKey = `${storageIdentity}::${autoPrompt}`;
+
+    if (autoRunKeyRef.current === autoRunKey) {
+      return;
+    }
+
+    const clearAutorunFlag = () => {
+      if (typeof window === "undefined") {
+        return;
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      params.delete("autorun");
+      params.delete("fresh");
+      const nextUrl = params.toString()
+        ? `/dashboard/assistant?${params.toString()}`
+        : "/dashboard/assistant";
+      window.history.replaceState(null, "", nextUrl);
+    };
+
+    if (!shouldStartFresh && messages.length > 0) {
+      autoRunKeyRef.current = autoRunKey;
+      clearAutorunFlag();
+      return;
+    }
+
+    autoRunKeyRef.current = autoRunKey;
+    const timer = window.setTimeout(() => {
+      runAutoPrompt(autoPrompt, shouldStartFresh, clearAutorunFlag);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    autoPrompt,
+    draftStorageKey,
+    isSubmitting,
+    loadedStorageIdentity,
+    messages,
+    messages.length,
+    messageStorageKey,
+    shouldAutoRun,
+    shouldStartFresh,
+    storageIdentity,
+  ]);
 
   return (
     <div className="space-y-6">

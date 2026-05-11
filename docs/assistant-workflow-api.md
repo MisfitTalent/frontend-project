@@ -21,6 +21,49 @@ endpoint and receive a concrete result.
 
 The assistant should not be the source of truth for workflow state.
 
+## Current persistence gap
+
+The current app still loses important assistant and workflow state after idle
+time, browser session loss, or local server recycle.
+
+What is volatile today:
+
+- assistant conversation history is stored in `sessionStorage`
+- auth session state is stored in `sessionStorage`
+- mock service-request workflow state is stored in an in-memory server `Map`
+
+What this means:
+
+- assistant chats can disappear when the browser session is cleared or reset
+- auth can be cleared if `/api/Auth/me` fails during a later refresh
+- local workflow requests can disappear if the Next.js server recompiles,
+  restarts, or the process is recycled
+
+What needs to change:
+
+1. Move assistant conversation state off browser `sessionStorage` into durable
+   app storage.
+2. Move workflow state off the in-memory server store into a persistent backend
+   store.
+3. Stop treating transient `/api/Auth/me` failures as an immediate reason to
+   wipe the current client auth session.
+
+Until those changes are made, the assistant will remain vulnerable to
+"disappearing state" after periods of idleness even if the workflow logic
+itself is correct.
+
+## Local development persistence status
+
+The local development path now persists:
+
+- assistant chat history and advisor chat history in browser `localStorage`
+- auth session state in browser `localStorage`
+- mock workspace state and mock service-request workflow state in
+  `.local-state/assistant-workflow.json`
+
+The remaining production-grade requirement is still a real backend source of
+truth instead of local browser or local filesystem persistence.
+
 ## Primary workflow
 
 1. Client submits a service request.
@@ -275,9 +318,8 @@ Request body:
 
 ```json
 {
-  "channel": "internal",
-  "recipientUserIds": ["user_10"],
-  "subject": "New request ready for review",
+  "recipientType": "both",
+  "representativeUserIds": ["user_10"],
   "content": "The client approved your assignment. Review the proposal and scope."
 }
 ```

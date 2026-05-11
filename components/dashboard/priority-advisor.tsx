@@ -174,8 +174,8 @@ export function PriorityAdvisor() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setDraft(readSessionDraft<string>(draftStorageKey) ?? "");
-      setMessages(readSessionDraft<AdvisorMessage[]>(messageStorageKey) ?? []);
+      setDraft(readSessionDraft<string>(draftStorageKey, { storage: "local" }) ?? "");
+      setMessages(readSessionDraft<AdvisorMessage[]>(messageStorageKey, { storage: "local" }) ?? []);
       setError(null);
       setAssistantReason(null);
       setLoadedStorageIdentity(storageIdentity);
@@ -211,11 +211,11 @@ export function PriorityAdvisor() {
     }
 
     if (draft) {
-      writeSessionDraft(draftStorageKey, draft);
+      writeSessionDraft(draftStorageKey, draft, { storage: "local" });
       return;
     }
 
-    clearSessionDraft(draftStorageKey);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
   }, [draft, draftStorageKey, loadedStorageIdentity, storageIdentity]);
 
   useEffect(() => {
@@ -224,11 +224,11 @@ export function PriorityAdvisor() {
     }
 
     if (messages.length > 0) {
-      writeSessionDraft(messageStorageKey, messages);
+      writeSessionDraft(messageStorageKey, messages, { storage: "local" });
       return;
     }
 
-    clearSessionDraft(messageStorageKey);
+    clearSessionDraft(messageStorageKey, { storage: "local" });
   }, [loadedStorageIdentity, messageStorageKey, messages, storageIdentity]);
 
   const resetConversation = () => {
@@ -239,8 +239,8 @@ export function PriorityAdvisor() {
     setAssistantReason(null);
     setActiveAction("ask");
     setStatusLabel("Awaiting your question");
-    clearSessionDraft(draftStorageKey);
-    clearSessionDraft(messageStorageKey);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
+    clearSessionDraft(messageStorageKey, { storage: "local" });
   };
 
   const requestAdvisor = async (nextPrompt: string) => {
@@ -261,7 +261,7 @@ export function PriorityAdvisor() {
 
     setMessages(nextMessages);
     setDraft("");
-    clearSessionDraft(draftStorageKey);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
     setError(null);
 
     if (clarification) {
