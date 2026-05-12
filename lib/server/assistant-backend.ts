@@ -329,6 +329,24 @@ const backendActivityStatusToLocal = (value?: number | string | null, name?: str
   }
 };
 
+const localActivityTypeToBackend = (type?: string) => {
+  switch (type) {
+    case ActivityType.Meeting:
+      return 1;
+    case ActivityType.Call:
+      return 2;
+    case ActivityType.Email:
+      return 3;
+    case ActivityType.Task:
+      return 4;
+    case ActivityType.Presentation:
+      return 5;
+    case ActivityType.Other:
+    default:
+      return 6;
+  }
+};
+
 const mapBackendProposalLineItem = (item: BackendProposalLineItemDto): ILineItem => ({
   description: item.description ?? undefined,
   discount: item.discount ?? 0,
@@ -502,6 +520,130 @@ const buildCreateProposalPayload = (proposal: IProposal) => ({
   opportunityId: proposal.opportunityId,
   title: proposal.title,
   validUntil: toDateTimePayload(proposal.validUntil),
+});
+
+const buildCreateClientPayload = (client: IClient) => ({
+  billingAddress: client.billingAddress ?? null,
+  clientType: client.clientType ?? 2,
+  companySize: client.segment ?? client.companySize ?? null,
+  industry: client.industry,
+  name: client.name,
+  taxNumber: client.taxNumber ?? null,
+  website: client.website ?? null,
+});
+
+const buildUpdateClientPayload = (client: IClient) => ({
+  billingAddress: client.billingAddress ?? null,
+  clientType: client.clientType ?? 2,
+  companySize: client.segment ?? client.companySize ?? null,
+  industry: client.industry,
+  isActive: client.isActive,
+  name: client.name,
+  taxNumber: client.taxNumber ?? null,
+  website: client.website ?? null,
+});
+
+const buildCreateContactPayload = (contact: IContact) => ({
+  clientId: contact.clientId,
+  email: contact.email,
+  firstName: contact.firstName,
+  isPrimaryContact: contact.isPrimaryContact,
+  lastName: contact.lastName,
+  phoneNumber: contact.phoneNumber ?? null,
+  position: contact.position,
+});
+
+const buildUpdateContactPayload = (contact: IContact) => ({
+  email: contact.email,
+  firstName: contact.firstName,
+  isActive: true,
+  isPrimaryContact: contact.isPrimaryContact,
+  lastName: contact.lastName,
+  phoneNumber: contact.phoneNumber ?? null,
+  position: contact.position,
+});
+
+const buildCreateActivityPayload = (activity: IActivity) => ({
+  assignedToId: activity.assignedToId ?? null,
+  description: activity.description,
+  dueDate: toDateTimePayload(activity.dueDate),
+  duration: activity.duration ?? null,
+  location: activity.location ?? null,
+  priority: activity.priority,
+  relatedToId: activity.relatedToId,
+  relatedToType: activity.relatedToType,
+  subject: activity.subject,
+  type: localActivityTypeToBackend(String(activity.type)),
+});
+
+const buildUpdateActivityPayload = (activity: IActivity) => ({
+  assignedToId: activity.assignedToId ?? null,
+  description: activity.description,
+  dueDate: toDateTimePayload(activity.dueDate),
+  duration: activity.duration ?? null,
+  location: activity.location ?? null,
+  priority: activity.priority,
+  relatedToId: activity.relatedToId,
+  relatedToType: activity.relatedToType,
+  status: activity.status === ActivityStatus.Cancelled ? 3 : activity.completed ? 2 : 1,
+  subject: activity.subject,
+  type: localActivityTypeToBackend(String(activity.type)),
+});
+
+const buildCompleteActivityPayload = (activity: IActivity) => ({
+  assignedToId: activity.assignedToId ?? null,
+  completedDate: new Date().toISOString(),
+  description: activity.description,
+  dueDate: toDateTimePayload(activity.dueDate),
+  duration: activity.duration ?? null,
+  location: activity.location ?? null,
+  priority: activity.priority,
+  relatedToId: activity.relatedToId,
+  relatedToType: activity.relatedToType,
+  subject: activity.subject,
+  type: localActivityTypeToBackend(String(activity.type)),
+});
+
+const buildCreatePricingRequestPayload = (request: IPricingRequest) => ({
+  assignedToId: request.assignedToId ?? null,
+  description: request.description ?? null,
+  opportunityId: request.opportunityId,
+  opportunityTitle: request.opportunityTitle ?? null,
+  priority: request.priority,
+  requiredByDate: toDateTimePayload(request.requiredByDate),
+  title: request.title,
+});
+
+const buildUpdatePricingRequestPayload = (request: IPricingRequest) => ({
+  assignedToId: request.assignedToId ?? null,
+  description: request.description ?? null,
+  opportunityId: request.opportunityId,
+  opportunityTitle: request.opportunityTitle ?? null,
+  priority: request.priority,
+  requiredByDate: toDateTimePayload(request.requiredByDate),
+  statusName: request.status,
+  title: request.title,
+});
+
+const buildAssignPricingRequestPayload = (userId: string) => ({
+  userId,
+});
+
+const buildCreateNotePayload = (note: INoteItem) => ({
+  assignedByUserId: note.assignedByUserId ?? null,
+  assignedByUserName: note.assignedByUserName ?? null,
+  category: note.category,
+  clientId: note.clientId ?? null,
+  content: note.content,
+  createdDate: note.createdDate,
+  kind: note.kind ?? null,
+  linkedRequestId: note.linkedRequestId ?? null,
+  representativeId: note.representativeId ?? null,
+  representativeName: note.representativeName ?? null,
+  requestType: note.requestType ?? null,
+  source: note.source ?? null,
+  status: note.status ?? null,
+  title: note.title,
 });
 
 const buildUpdateProposalPayload = (proposal: IProposal) => ({
@@ -696,6 +838,50 @@ export const deleteLiveOpportunity = async (token: string, opportunityId: string
   });
 };
 
+export const createLiveClient = async (token: string, payload: IClient) =>
+  mapBackendClient(
+    await fetchBackend<BackendClientDto>(token, "/api/Clients", {
+      body: JSON.stringify(buildCreateClientPayload(payload)),
+      method: "POST",
+    }),
+  );
+
+export const updateLiveClient = async (token: string, payload: IClient) =>
+  mapBackendClient(
+    await fetchBackend<BackendClientDto>(token, `/api/Clients/${payload.id}`, {
+      body: JSON.stringify(buildUpdateClientPayload(payload)),
+      method: "PUT",
+    }),
+  );
+
+export const deleteLiveClient = async (token: string, clientId: string) => {
+  await fetchBackend<void>(token, `/api/Clients/${clientId}`, {
+    method: "DELETE",
+  });
+};
+
+export const createLiveContact = async (token: string, payload: IContact) =>
+  mapBackendContact(
+    await fetchBackend<BackendContactDto>(token, "/api/Contacts", {
+      body: JSON.stringify(buildCreateContactPayload(payload)),
+      method: "POST",
+    }),
+  );
+
+export const updateLiveContact = async (token: string, payload: IContact) =>
+  mapBackendContact(
+    await fetchBackend<BackendContactDto>(token, `/api/Contacts/${payload.id}`, {
+      body: JSON.stringify(buildUpdateContactPayload(payload)),
+      method: "PUT",
+    }),
+  );
+
+export const deleteLiveContact = async (token: string, contactId: string) => {
+  await fetchBackend<void>(token, `/api/Contacts/${contactId}`, {
+    method: "DELETE",
+  });
+};
+
 export const createLiveProposal = async (token: string, payload: IProposal) =>
   mapBackendProposal(
     await fetchBackend<BackendProposalDto>(token, "/api/Proposals", {
@@ -714,6 +900,122 @@ export const updateLiveProposal = async (token: string, payload: IProposal) =>
 
 export const deleteLiveProposal = async (token: string, proposalId: string) => {
   await fetchBackend<void>(token, `/api/Proposals/${proposalId}`, {
+    method: "DELETE",
+  });
+};
+
+export const createLiveActivity = async (token: string, payload: IActivity) =>
+  mapBackendActivity(
+    await fetchBackend<BackendActivityDto>(token, "/api/Activities", {
+      body: JSON.stringify(buildCreateActivityPayload(payload)),
+      method: "POST",
+    }),
+  );
+
+export const updateLiveActivity = async (token: string, payload: IActivity) => {
+  if (!payload.id) {
+    throw new Error("Activity id is required.");
+  }
+
+  if (payload.completed) {
+    return mapBackendActivity(
+      await fetchBackend<BackendActivityDto>(token, `/api/Activities/${payload.id}/complete`, {
+        body: JSON.stringify(buildCompleteActivityPayload(payload)),
+        method: "PUT",
+      }),
+    );
+  }
+
+  if (String(payload.status) === ActivityStatus.Cancelled) {
+    return mapBackendActivity(
+      await fetchBackend<BackendActivityDto>(token, `/api/Activities/${payload.id}/cancel`, {
+        method: "PUT",
+      }),
+    );
+  }
+
+  return mapBackendActivity(
+    await fetchBackend<BackendActivityDto>(token, `/api/Activities/${payload.id}`, {
+      body: JSON.stringify(buildUpdateActivityPayload(payload)),
+      method: "PUT",
+    }),
+  );
+};
+
+export const deleteLiveActivity = async (token: string, activityId: string) => {
+  await fetchBackend<void>(token, `/api/Activities/${activityId}`, {
+    method: "DELETE",
+  });
+};
+
+export const createLivePricingRequest = async (token: string, payload: IPricingRequest) =>
+  mapBackendPricingRequest(
+    await fetchBackend<BackendPricingRequestDto>(token, "/api/PricingRequests", {
+      body: JSON.stringify(buildCreatePricingRequestPayload(payload)),
+      method: "POST",
+    }),
+  );
+
+export const updateLivePricingRequest = async (token: string, payload: IPricingRequest) => {
+  if (!payload.id) {
+    throw new Error("Pricing request id is required.");
+  }
+
+  let request = mapBackendPricingRequest(
+    await fetchBackend<BackendPricingRequestDto>(token, `/api/PricingRequests/${payload.id}`, {
+      body: JSON.stringify(buildUpdatePricingRequestPayload(payload)),
+      method: "PUT",
+    }),
+  );
+
+  if (payload.assignedToId) {
+    request = mapBackendPricingRequest(
+      await fetchBackend<BackendPricingRequestDto>(
+        token,
+        `/api/PricingRequests/${payload.id}/assign`,
+        {
+          body: JSON.stringify(buildAssignPricingRequestPayload(payload.assignedToId)),
+          method: "POST",
+        },
+      ),
+    );
+  }
+
+  if (String(payload.status) === "Completed") {
+    request = mapBackendPricingRequest(
+      await fetchBackend<BackendPricingRequestDto>(
+        token,
+        `/api/PricingRequests/${payload.id}/complete`,
+        {
+          method: "PUT",
+        },
+      ),
+    );
+  }
+
+  return request;
+};
+
+export const deleteLivePricingRequest = async (token: string, pricingRequestId: string) => {
+  await fetchBackend<void>(token, `/api/PricingRequests/${pricingRequestId}`, {
+    method: "DELETE",
+  });
+};
+
+export const createLiveNote = async (token: string, payload: INoteItem) =>
+  fetchBackend<INoteItem>(token, "/api/Notes", {
+    body: JSON.stringify(buildCreateNotePayload(payload)),
+    method: "POST",
+  });
+
+export const updateLiveNote = async (token: string, payload: INoteItem) =>
+  fetchBackend<INoteItem>(token, `/api/Notes/${payload.id}`, {
+    body: JSON.stringify(buildCreateNotePayload(payload)),
+    method: "PUT",
+  });
+
+export const deleteLiveNote = async (token: string, noteId: string) => {
+  await fetchBackend<void>(token, `/api/Notes/${noteId}`, {
     method: "DELETE",
   });
 };

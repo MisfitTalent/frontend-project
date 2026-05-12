@@ -27,11 +27,26 @@ import type { IAssistantWorkspace } from "./assistant-workspace";
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { isManagerRole } from "@/lib/auth/roles";
 import {
+  createLiveActivity,
+  createLiveClient,
+  createLiveContact,
+  createLiveNote,
   createLiveOpportunity,
+  createLivePricingRequest,
   createLiveProposal,
+  deleteLiveActivity,
+  deleteLiveClient,
+  deleteLiveContact,
+  deleteLiveNote,
   deleteLiveOpportunity,
+  deleteLivePricingRequest,
   deleteLiveProposal,
+  updateLiveActivity,
+  updateLiveClient,
+  updateLiveContact,
+  updateLiveNote,
   updateLiveOpportunity,
+  updateLivePricingRequest,
   updateLiveProposal,
 } from "@/lib/server/assistant-backend";
 import {
@@ -41,6 +56,7 @@ import {
   createMockNote,
   deleteMockActivity,
   deleteMockClient,
+  deleteMockContact,
   deleteMockNote,
   deleteMockOpportunity,
   deleteMockPricingRequest,
@@ -51,6 +67,8 @@ import {
   listMockNotes,
   listMockPricingRequests,
   updateMockActivity,
+  updateMockClient,
+  updateMockContact,
   updateMockNote,
   updateMockOpportunity,
   updateMockPricingRequest,
@@ -92,7 +110,14 @@ export type AssistantTraceStep = {
 
 export type AssistantMutation = {
   entityId: string;
-  entityType: "activity" | "client" | "note" | "opportunity" | "pricing_request" | "proposal";
+  entityType:
+    | "activity"
+    | "client"
+    | "contact"
+    | "note"
+    | "opportunity"
+    | "pricing_request"
+    | "proposal";
   operation: "create" | "delete" | "update";
   record?: Record<string, unknown>;
   title: string;
@@ -360,8 +385,10 @@ class AssistantProviderRequestError extends Error {
   }
 }
 
-const MAX_TOOL_ROUNDS = 5;
+const MAX_TOOL_ROUNDS = 3;
+const MAX_CONFIRMED_TOOL_ROUNDS = 8;
 const MAX_TRACE_PREVIEW_LENGTH = 320;
+const MAX_PROVIDER_MESSAGE_COUNT = 10;
 
 const summarizeWorkspace = (workspace: IAssistantWorkspace) => {
   const { salesData } = workspace;
@@ -1577,6 +1604,44 @@ const findBestReferenceMatch = <T>(
   return bestScore >= minimumScore ? bestItem : null;
 };
 
+const getOpportunityLookupCandidates = (
+  workspace: IAssistantWorkspace,
+  opportunity: IOpportunity,
+) => {
+  const clientName =
+    workspace.salesData.clients.find((client) => client.id === opportunity.clientId)?.name ?? null;
+
+  return [
+    opportunity.id,
+    opportunity.title,
+    opportunity.name ?? null,
+    opportunity.description ?? null,
+    clientName,
+    clientName ? `${clientName} ${opportunity.title}` : null,
+    clientName && opportunity.name ? `${clientName} ${opportunity.name}` : null,
+  ];
+};
+
+const getProposalLookupCandidates = (
+  workspace: IAssistantWorkspace,
+  proposal: IProposal,
+) => {
+  const opportunity =
+    workspace.salesData.opportunities.find((item) => item.id === proposal.opportunityId) ?? null;
+  const clientName =
+    workspace.salesData.clients.find((client) => client.id === proposal.clientId)?.name ?? null;
+
+  return [
+    proposal.id,
+    proposal.title,
+    opportunity?.title ?? null,
+    opportunity?.name ?? null,
+    clientName,
+    clientName ? `${clientName} ${proposal.title}` : null,
+    opportunity?.title ? `${opportunity.title} proposal` : null,
+  ];
+};
+
 const extractOwnerPreferenceHints = (message: string) => {
   const normalized = normalizeLookupValue(message);
   const hints = new Set<string>();
@@ -2256,12 +2321,7 @@ const findOpportunityByReferenceInWorkspace = (
     findBestReferenceMatch<IOpportunity>(
       workspace.salesData.opportunities,
       reference,
-      (opportunity) => [
-        opportunity.id,
-        opportunity.title,
-        opportunity.name ?? null,
-        opportunity.description ?? null,
-      ],
+      (opportunity) => getOpportunityLookupCandidates(workspace, opportunity),
       52,
     ) ??
     null
@@ -2276,7 +2336,7 @@ const findProposalByReferenceInWorkspace = (
     findBestReferenceMatch<IProposal>(
       workspace.salesData.proposals,
       reference,
-      (proposal) => [proposal.id, proposal.title],
+      (proposal) => getProposalLookupCandidates(workspace, proposal),
       52,
     ) ??
     null
@@ -2290,8 +2350,8 @@ const extractOpportunityReference = (
   const opportunity = findBestReferenceMatch<IOpportunity>(
     workspace.salesData.opportunities,
     message,
-    (item) => [item.id, item.title, item.name ?? null],
-    72,
+    (item) => getOpportunityLookupCandidates(workspace, item),
+    52,
   );
 
   return opportunity ? opportunity.title : null;
@@ -5130,7 +5190,12 @@ const getRecentConfirmedGenericMutationRequest = (messages: AssistantMessage[]) 
       ? confirmationStep.arguments.priorUserRequest
       : null;
 
-  return latestUserMessage ?? priorUserRequest ?? null;
+  if (latestUserMessage || priorUserRequest) {
+    return latestUserMessage ?? priorUserRequest ?? null;
+  }
+
+  const recentRequest = findRecentNonConfirmationUserMessage(messages);
+  return recentRequest?.content ?? null;
 };
 
 type ConfirmedGenericToolRequest = {
@@ -7176,8 +7241,14 @@ const createToolset = (
   const isConfirmedTurn = isConfirmationMessage(latestUserMessage);
   const mutatingToolNames = new Set([
     "create_client",
+    "update_client",
+    "create_contact",
+    "update_contact",
+    "delete_contact",
     "create_opportunity",
+    "update_opportunity",
     "create_proposal",
+    "update_proposal",
     "create_activity",
     "update_activity",
     "delete_activity",
@@ -7187,7 +7258,9 @@ const createToolset = (
     "create_note",
     "create_message",
     "update_note",
+    "update_message",
     "delete_note",
+    "delete_message",
     "delete_client",
     "delete_opportunity",
     "delete_proposal",
@@ -7198,6 +7271,21 @@ const createToolset = (
     confirmationRequired: true,
     message:
       "This action changes workspace data. First propose the action clearly, then wait for the user to confirm before executing it.",
+    pendingAction: {
+      arguments: args,
+      tool: name,
+    },
+  });
+
+  const createMissingActionRequirementsOutput = (
+    name: string,
+    args: Record<string, unknown>,
+    message: string,
+    missingRequiredFields: string[],
+  ) => ({
+    confirmationRequired: false,
+    message,
+    missingRequiredFields,
     pendingAction: {
       arguments: args,
       tool: name,
@@ -7220,12 +7308,7 @@ const createToolset = (
       ? findBestReferenceMatch<IOpportunity>(
           salesData.opportunities,
           reference,
-          (opportunity) => [
-            opportunity.id,
-            opportunity.title,
-            opportunity.name ?? null,
-            opportunity.description ?? null,
-          ],
+          (opportunity) => getOpportunityLookupCandidates(workspace, opportunity),
           52,
         )
       : null;
@@ -7247,7 +7330,7 @@ const createToolset = (
       ? findBestReferenceMatch<IProposal>(
           salesData.proposals,
           reference,
-          (proposal) => [proposal.id, proposal.title],
+          (proposal) => getProposalLookupCandidates(workspace, proposal),
           52,
         )
       : null;
@@ -7298,6 +7381,36 @@ const createToolset = (
       ) ??
       pricingRequests.find((request) =>
         [request.title, request.opportunityTitle, request.description, request.requestNumber]
+          .filter(Boolean)
+          .some((value) => normalizeLookupValue(String(value)).includes(normalizedReference)),
+      ) ??
+      null
+    );
+  };
+
+  const findContactByReference = (reference: unknown) => {
+    if (typeof reference !== "string" || !reference.trim()) {
+      return null;
+    }
+
+    const normalizedReference = normalizeLookupValue(reference);
+
+    return (
+      salesData.contacts.find((contact) => normalizeLookupValue(contact.id) === normalizedReference) ??
+      salesData.contacts.find(
+        (contact) =>
+          normalizeLookupValue(`${contact.firstName} ${contact.lastName}`) === normalizedReference,
+      ) ??
+      salesData.contacts.find((contact) => normalizeLookupValue(contact.email) === normalizedReference) ??
+      salesData.contacts.find((contact) =>
+        [
+          contact.firstName,
+          contact.lastName,
+          `${contact.firstName} ${contact.lastName}`,
+          contact.email,
+          contact.position,
+          salesData.clients.find((client) => client.id === contact.clientId)?.name ?? "",
+        ]
           .filter(Boolean)
           .some((value) => normalizeLookupValue(String(value)).includes(normalizedReference)),
       ) ??
@@ -7364,6 +7477,16 @@ const createToolset = (
     return findActivityByReference(recentActivityMutation.entityId) ?? null;
   };
 
+  const getRecentContact = () => {
+    const recentContactMutation = getRecentMutation("contact");
+
+    if (!recentContactMutation) {
+      return null;
+    }
+
+    return findContactByReference(recentContactMutation.entityId) ?? null;
+  };
+
   const getRecentPricingRequest = () => {
     const recentMutation = getRecentMutation("pricing_request");
 
@@ -7384,20 +7507,121 @@ const createToolset = (
     return findNoteByReference(recentMutation.entityId) ?? null;
   };
 
+  const canResolveClientForArgs = (args: Record<string, unknown>) => {
+    const directClient =
+      findClientByReference(args.clientId) ??
+      findClientByReference(args.clientName) ??
+      findClientByReference(args.organizationName) ??
+      findClientByReference(args.accountName);
+
+    if (directClient) {
+      return true;
+    }
+
+    return Boolean(getRecentClient());
+  };
+
+  const getExplicitClientReference = (args: Record<string, unknown>) =>
+    typeof args.clientId === "string" && args.clientId.trim()
+      ? args.clientId
+      : typeof args.clientName === "string" && args.clientName.trim()
+        ? args.clientName
+        : typeof args.organizationName === "string" && args.organizationName.trim()
+          ? args.organizationName
+          : typeof args.accountName === "string" && args.accountName.trim()
+            ? args.accountName
+            : null;
+
+  const getExplicitOpportunityReference = (args: Record<string, unknown>) =>
+    typeof args.opportunityId === "string" && args.opportunityId.trim()
+      ? args.opportunityId
+      : typeof args.opportunityTitle === "string" && args.opportunityTitle.trim()
+        ? args.opportunityTitle
+        : null;
+
+  const getExplicitProposalReference = (args: Record<string, unknown>) =>
+    typeof args.proposalId === "string" && args.proposalId.trim()
+      ? args.proposalId
+      : typeof args.proposalTitle === "string" && args.proposalTitle.trim()
+        ? args.proposalTitle
+        : typeof args.title === "string" && args.title.trim()
+          ? args.title
+          : null;
+
+  const canResolveDeleteClientForArgs = (args: Record<string, unknown>) => {
+    const explicitReference = getExplicitClientReference(args);
+
+    if (explicitReference) {
+      return Boolean(findClientByReference(explicitReference));
+    }
+
+    return Boolean(getRecentClient());
+  };
+
+  const canResolveDeleteOpportunityForArgs = (args: Record<string, unknown>) => {
+    const explicitOpportunityReference = getExplicitOpportunityReference(args);
+
+    if (explicitOpportunityReference) {
+      return Boolean(findOpportunityByReference(explicitOpportunityReference));
+    }
+
+    const explicitClientReference = getExplicitClientReference(args);
+
+    if (explicitClientReference) {
+      const client = findClientByReference(explicitClientReference);
+
+      if (!client) {
+        return false;
+      }
+
+      const clientOpportunities = salesData.opportunities.filter(
+        (opportunity) => opportunity.clientId === client.id,
+      );
+      const openClientOpportunities = clientOpportunities.filter((opportunity) =>
+        isOpenOpportunityStage(String(opportunity.stage)),
+      );
+
+      return openClientOpportunities.length === 1 || clientOpportunities.length === 1;
+    }
+
+    return Boolean(getRecentOpportunity());
+  };
+
+  const canResolveDeleteProposalForArgs = (args: Record<string, unknown>) => {
+    const explicitProposalReference = getExplicitProposalReference(args);
+
+    if (explicitProposalReference) {
+      return Boolean(findProposalByReference(explicitProposalReference));
+    }
+
+    const explicitOpportunityReference = getExplicitOpportunityReference(args);
+
+    if (explicitOpportunityReference) {
+      return Boolean(findOpportunityByReference(explicitOpportunityReference));
+    }
+
+    const explicitClientReference = getExplicitClientReference(args);
+
+    if (explicitClientReference) {
+      const client = findClientByReference(explicitClientReference);
+
+      if (!client) {
+        return false;
+      }
+
+      const scopedProposals = salesData.proposals.filter((proposal) => proposal.clientId === client.id);
+
+      return scopedProposals.length === 1;
+    }
+
+    return Boolean(getRecentProposal());
+  };
+
   const resolveClient = (
     args: Record<string, unknown>,
     options?: { allowRecentFallback?: boolean },
   ) => {
-    const explicitClientReference =
-      typeof args.clientId === "string" && args.clientId.trim()
-        ? args.clientId
-        : typeof args.clientName === "string" && args.clientName.trim()
-          ? args.clientName
-          : typeof args.organizationName === "string" && args.organizationName.trim()
-            ? args.organizationName
-            : typeof args.accountName === "string" && args.accountName.trim()
-              ? args.accountName
-              : null;
+    const explicitClientReference = getExplicitClientReference(args);
     const directClient =
       findClientByReference(args.clientId) ??
       findClientByReference(args.clientName) ??
@@ -7434,6 +7658,39 @@ const createToolset = (
 
     throw new Error(
       "No matching client was found in your current workspace. Provide a valid client name or create the client first.",
+    );
+  };
+
+  const resolveContact = (
+    args: Record<string, unknown>,
+    options?: { allowRecentFallback?: boolean },
+  ) => {
+    const directContact =
+      findContactByReference(args.contactId) ??
+      findContactByReference(args.contactName) ??
+      findContactByReference(args.email);
+
+    if (directContact) {
+      return directContact;
+    }
+
+    if (options?.allowRecentFallback) {
+      const hasExplicitReference =
+        hasValueReference(args.contactId) ||
+        hasValueReference(args.contactName) ||
+        hasValueReference(args.email);
+
+      if (!hasExplicitReference) {
+        const recentContact = getRecentContact();
+
+        if (recentContact) {
+          return recentContact;
+        }
+      }
+    }
+
+    throw new Error(
+      "No matching contact was found in your current workspace. Provide a valid contact name, email, or id first.",
     );
   };
 
@@ -7849,7 +8106,84 @@ const createToolset = (
     },
     {
       description:
-        "Create a new opportunity in the current tenant when the user explicitly asks to add a deal to the pipeline.",
+        "Update an existing client account when the user asks to change the name, industry, website, billing address, tax number, company size, or active state.",
+      name: "update_client",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          accountName: { type: "string" },
+          billingAddress: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          companySize: { type: "string" },
+          industry: { type: "string" },
+          isActive: { type: "boolean" },
+          name: { type: "string" },
+          organizationName: { type: "string" },
+          taxNumber: { type: "string" },
+          website: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Create a contact for an existing client when the user asks to add a contact person.",
+      name: "create_contact",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          accountName: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          email: { type: "string" },
+          firstName: { type: "string" },
+          isPrimaryContact: { type: "boolean" },
+          lastName: { type: "string" },
+          organizationName: { type: "string" },
+          phoneNumber: { type: "string" },
+          position: { type: "string" },
+        },
+        required: ["email", "firstName", "lastName"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Update an existing contact when the user asks to change the name, email, phone number, position, or primary-contact status.",
+      name: "update_contact",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          contactId: { type: "string" },
+          contactName: { type: "string" },
+          email: { type: "string" },
+          firstName: { type: "string" },
+          isPrimaryContact: { type: "boolean" },
+          lastName: { type: "string" },
+          phoneNumber: { type: "string" },
+          position: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Delete an existing contact when the user explicitly asks to remove it.",
+      name: "delete_contact",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          contactId: { type: "string" },
+          contactName: { type: "string" },
+          email: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Create a new opportunity in the current tenant when the user explicitly asks to add a deal to the pipeline. Every opportunity must belong to an existing client. Do not propose or confirm this action unless you have a real client reference from the conversation or recent workspace context.",
       name: "create_opportunity",
       parameters: {
         additionalProperties: false,
@@ -7867,6 +8201,30 @@ const createToolset = (
           title: { type: "string" },
         },
         required: ["estimatedValue", "expectedCloseDate", "title"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Update an existing opportunity when the user asks to change the title, value, stage, close date, owner, probability, or description.",
+      name: "update_opportunity",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          accountName: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          description: { type: "string" },
+          estimatedValue: { type: "number" },
+          expectedCloseDate: { type: "string" },
+          opportunityId: { type: "string" },
+          opportunityTitle: { type: "string" },
+          organizationName: { type: "string" },
+          ownerId: { type: "string" },
+          probability: { type: "number" },
+          stage: { type: "string" },
+          title: { type: "string" },
+        },
         type: "object",
       },
     },
@@ -7911,6 +8269,30 @@ const createToolset = (
           validUntil: { type: "string" },
         },
         required: ["title", "validUntil"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Update an existing proposal when the user asks to change the title, description, expiry date, status, or core commercial details.",
+      name: "update_proposal",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          accountName: { type: "string" },
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          currency: { type: "string" },
+          description: { type: "string" },
+          opportunityId: { type: "string" },
+          opportunityTitle: { type: "string" },
+          organizationName: { type: "string" },
+          proposalId: { type: "string" },
+          proposalTitle: { type: "string" },
+          status: { type: "string" },
+          title: { type: "string" },
+          validUntil: { type: "string" },
+        },
         type: "object",
       },
     },
@@ -8089,6 +8471,24 @@ const createToolset = (
     },
     {
       description:
+        "Update an existing message when the user explicitly asks to edit a sent workspace message.",
+      name: "update_message",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          content: { type: "string" },
+          messageId: { type: "string" },
+          messageTitle: { type: "string" },
+          noteId: { type: "string" },
+          status: { type: "string" },
+          subject: { type: "string" },
+          title: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
         "Delete an existing note when the user explicitly asks to remove it.",
       name: "delete_note",
       parameters: {
@@ -8101,9 +8501,24 @@ const createToolset = (
         type: "object",
       },
     },
+    {
+      description:
+        "Delete an existing message when the user explicitly asks to remove it.",
+      name: "delete_message",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          messageId: { type: "string" },
+          messageTitle: { type: "string" },
+          noteId: { type: "string" },
+          title: { type: "string" },
+        },
+        type: "object",
+      },
+    },
       {
         description:
-          "Delete an existing client and its linked mock opportunity and proposal records when the user explicitly asks to remove the account they just created, no longer need, or refers to as this/them.",
+          "Delete an existing client and its linked mock opportunity and proposal records when the user explicitly asks to remove the account they just created, no longer need, or refers to as this/them. Do not invent record names. Only propose deletion when you can ground the target in a real matching client from the workspace or clear recent context.",
         name: "delete_client",
       parameters: {
         additionalProperties: false,
@@ -8118,7 +8533,7 @@ const createToolset = (
     },
     {
       description:
-        "Delete an existing opportunity when the user explicitly asks you to remove it from the pipeline.",
+        "Delete an existing opportunity when the user explicitly asks you to remove it from the pipeline. Do not invent record names. Only propose deletion when you can ground the target in a real matching opportunity from the workspace or clear recent context.",
       name: "delete_opportunity",
       parameters: {
         additionalProperties: false,
@@ -8135,7 +8550,7 @@ const createToolset = (
     },
     {
       description:
-        "Delete an existing proposal when the user explicitly asks you to remove it.",
+        "Delete an existing proposal when the user explicitly asks you to remove it. Do not invent record names. Only propose deletion when you can ground the target in a real matching proposal from the workspace or clear recent context.",
       name: "delete_proposal",
       parameters: {
         additionalProperties: false,
@@ -8173,7 +8588,7 @@ const createToolset = (
     },
   ];
 
-  const runTool = async (name: string, rawArguments: string) => {
+  const runTool = async (name: string, rawArguments: string): Promise<unknown> => {
     const args = rawArguments ? JSON.parse(rawArguments) as Record<string, unknown> : {};
 
     if (
@@ -8181,13 +8596,100 @@ const createToolset = (
       mutatingToolNames.has(name) &&
       !isConfirmedTurn
     ) {
+      if (name === "delete_contact") {
+        const hasGroundedContact =
+          hasValueReference(args.contactId) ||
+          hasValueReference(args.contactName) ||
+          hasValueReference(args.email)
+            ? Boolean(
+                findContactByReference(args.contactId) ??
+                  findContactByReference(args.contactName) ??
+                  findContactByReference(args.email),
+              )
+            : Boolean(getRecentContact());
+
+        if (!hasGroundedContact) {
+          return createMissingActionRequirementsOutput(
+            name,
+            args,
+            "No matching contact was found for that delete request. Ask for a real contact name, email, or id, or use clear recent context. Do not invent a target.",
+            ["contact"],
+          );
+        }
+      }
+
+      if (name === "delete_client" && !canResolveDeleteClientForArgs(args)) {
+        return createMissingActionRequirementsOutput(
+          name,
+          args,
+          "No matching client was found for that delete request. Ask for a real client name, list the matching clients, or use recent context like 'the client I just created'. Do not invent a target.",
+          ["client"],
+        );
+      }
+
+      if (name === "delete_opportunity" && !canResolveDeleteOpportunityForArgs(args)) {
+        return createMissingActionRequirementsOutput(
+          name,
+          args,
+          "No matching opportunity was found for that delete request. Ask for the real opportunity title or id, or use clear recent context. Do not invent a target.",
+          ["opportunity"],
+        );
+      }
+
+      if (name === "delete_proposal" && !canResolveDeleteProposalForArgs(args)) {
+        return createMissingActionRequirementsOutput(
+          name,
+          args,
+          "No matching proposal was found for that delete request. Ask for the real proposal title or id, or use clear recent context. Do not invent a target.",
+          ["proposal"],
+        );
+      }
+
+      if (name === "create_opportunity" && !canResolveClientForArgs(args)) {
+        return createMissingActionRequirementsOutput(
+          name,
+          args,
+          "An opportunity must belong to an existing client. Ask which client this deal is for, or offer to create the client first.",
+          ["client"],
+        );
+      }
+
+      if (name === "create_contact" && !canResolveClientForArgs(args)) {
+        return createMissingActionRequirementsOutput(
+          name,
+          args,
+          "A contact must belong to an existing client. Ask which client this contact is for before proposing confirmation.",
+          ["client"],
+        );
+      }
+
+      if (name === "create_proposal") {
+        const hasOpportunityReference =
+          hasValueReference(args.opportunityId) || hasValueReference(args.opportunityTitle);
+
+        if (!hasOpportunityReference && !getRecentOpportunity()) {
+          return createMissingActionRequirementsOutput(
+            name,
+            args,
+            "A proposal must be linked to an existing opportunity. Ask which opportunity this proposal is for before proposing confirmation.",
+            ["opportunity"],
+          );
+        }
+      }
+
       return createConfirmationGuardOutput(name, args);
     }
 
     const internalMutationTools = new Set([
       "create_client",
+      "update_client",
+      "create_contact",
+      "update_contact",
+      "delete_contact",
       "create_opportunity",
+      "update_opportunity",
       "create_proposal",
+      "update_proposal",
       "create_activity",
       "update_activity",
       "delete_activity",
@@ -8195,8 +8697,12 @@ const createToolset = (
       "update_pricing_request",
       "delete_pricing_request",
       "create_note",
+      "create_message",
       "update_note",
+      "update_message",
       "delete_note",
+      "delete_message",
+      "delete_client",
       "delete_opportunity",
       "delete_proposal",
     ]);
@@ -8431,27 +8937,235 @@ const createToolset = (
           }));
       }
       case "create_client": {
-        const client = createMockClient(actor, {
-            billingAddress: typeof args.billingAddress === "string" ? args.billingAddress : undefined,
-            companySize: typeof args.companySize === "string" ? args.companySize : undefined,
-            industry: String(args.industry ?? "General"),
-            name: String(args.name ?? "Unnamed client"),
-            taxNumber: typeof args.taxNumber === "string" ? args.taxNumber : undefined,
-            website: typeof args.website === "string" ? args.website : undefined,
-          });
+        const client =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await createLiveClient(workspace.sessionToken, {
+                billingAddress:
+                  typeof args.billingAddress === "string" ? args.billingAddress : undefined,
+                clientType: 2,
+                companySize:
+                  typeof args.companySize === "string" ? args.companySize : undefined,
+                createdAt: new Date().toISOString(),
+                id: "",
+                industry: String(args.industry ?? "General"),
+                isActive: true,
+                name: String(args.name ?? "Unnamed client"),
+                taxNumber: typeof args.taxNumber === "string" ? args.taxNumber : undefined,
+                website: typeof args.website === "string" ? args.website : undefined,
+              })
+            : createMockClient(actor, {
+                billingAddress:
+                  typeof args.billingAddress === "string" ? args.billingAddress : undefined,
+                companySize:
+                  typeof args.companySize === "string" ? args.companySize : undefined,
+                industry: String(args.industry ?? "General"),
+                name: String(args.name ?? "Unnamed client"),
+                taxNumber: typeof args.taxNumber === "string" ? args.taxNumber : undefined,
+                website: typeof args.website === "string" ? args.website : undefined,
+              });
 
         upsertById(workspace.salesData.clients, client);
 
-      return {
-        client,
-        mutation: {
-          entityId: client.id,
-          entityType: "client" as const,
-          operation: "create" as const,
-          record: client,
-          title: client.name,
-        },
-      };
+        return {
+          client,
+          mutation: {
+            entityId: client.id,
+            entityType: "client" as const,
+            operation: "create" as const,
+            record: client,
+            title: client.name,
+          },
+        };
+      }
+      case "update_client": {
+        const existingClient = resolveClient(args, { allowRecentFallback: true });
+        const client =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await updateLiveClient(workspace.sessionToken, {
+                ...existingClient,
+                billingAddress:
+                  typeof args.billingAddress === "string"
+                    ? args.billingAddress
+                    : existingClient.billingAddress,
+                companySize:
+                  typeof args.companySize === "string"
+                    ? args.companySize
+                    : existingClient.companySize,
+                industry:
+                  typeof args.industry === "string" ? args.industry : existingClient.industry,
+                isActive:
+                  typeof args.isActive === "boolean" ? args.isActive : existingClient.isActive,
+                name:
+                  typeof args.name === "string"
+                    ? args.name
+                    : typeof args.clientName === "string"
+                      ? args.clientName
+                      : existingClient.name,
+                taxNumber:
+                  typeof args.taxNumber === "string"
+                    ? args.taxNumber
+                    : existingClient.taxNumber,
+                website:
+                  typeof args.website === "string" ? args.website : existingClient.website,
+              })
+            : updateMockClient(workspace.tenantId, existingClient.id, {
+                billingAddress:
+                  typeof args.billingAddress === "string" ? args.billingAddress : undefined,
+                companySize:
+                  typeof args.companySize === "string" ? args.companySize : undefined,
+                industry: typeof args.industry === "string" ? args.industry : undefined,
+                isActive: typeof args.isActive === "boolean" ? args.isActive : undefined,
+                name:
+                  typeof args.name === "string"
+                    ? args.name
+                    : typeof args.clientName === "string"
+                      ? args.clientName
+                      : undefined,
+                taxNumber:
+                  typeof args.taxNumber === "string" ? args.taxNumber : undefined,
+                website: typeof args.website === "string" ? args.website : undefined,
+              });
+
+        if (!client) {
+          throw new Error("The client could not be updated.");
+        }
+
+        upsertById(workspace.salesData.clients, client);
+
+        return {
+          client,
+          mutation: {
+            entityId: client.id,
+            entityType: "client" as const,
+            operation: "update" as const,
+            record: client,
+            title: client.name,
+          },
+        };
+      }
+      case "create_contact": {
+        const client = resolveClient(args, { allowRecentFallback: true });
+        const contact =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await createLiveContact(workspace.sessionToken, {
+                clientId: client.id,
+                createdAt: new Date().toISOString(),
+                email: String(args.email ?? ""),
+                firstName: String(args.firstName ?? ""),
+                id: "",
+                isPrimaryContact: args.isPrimaryContact === true,
+                lastName: String(args.lastName ?? ""),
+                phoneNumber: typeof args.phoneNumber === "string" ? args.phoneNumber : undefined,
+                position: String(args.position ?? "Contact"),
+              })
+            : createMockContact(actor, {
+                clientId: client.id,
+                createdAt: new Date().toISOString(),
+                email: String(args.email ?? ""),
+                firstName: String(args.firstName ?? ""),
+                isPrimaryContact: args.isPrimaryContact === true,
+                lastName: String(args.lastName ?? ""),
+                phoneNumber: typeof args.phoneNumber === "string" ? args.phoneNumber : undefined,
+                position: String(args.position ?? "Contact"),
+              });
+
+        upsertById(workspace.salesData.contacts, contact);
+
+        return {
+          contact,
+          client: {
+            id: client.id,
+            name: client.name,
+          },
+          mutation: {
+            entityId: contact.id,
+            entityType: "contact" as const,
+            operation: "create" as const,
+            record: contact as unknown as Record<string, unknown>,
+            title: `${contact.firstName} ${contact.lastName}`.trim(),
+          },
+        };
+      }
+      case "update_contact": {
+        const existingContact = resolveContact(args, { allowRecentFallback: true });
+        const contact =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await updateLiveContact(workspace.sessionToken, {
+                ...existingContact,
+                email: typeof args.email === "string" ? args.email : existingContact.email,
+                firstName:
+                  typeof args.firstName === "string"
+                    ? args.firstName
+                    : existingContact.firstName,
+                isPrimaryContact:
+                  typeof args.isPrimaryContact === "boolean"
+                    ? args.isPrimaryContact
+                    : existingContact.isPrimaryContact,
+                lastName:
+                  typeof args.lastName === "string"
+                    ? args.lastName
+                    : existingContact.lastName,
+                phoneNumber:
+                  typeof args.phoneNumber === "string"
+                    ? args.phoneNumber
+                    : existingContact.phoneNumber,
+                position:
+                  typeof args.position === "string" ? args.position : existingContact.position,
+              })
+            : updateMockContact(workspace.tenantId, existingContact.id, {
+                email: typeof args.email === "string" ? args.email : undefined,
+                firstName: typeof args.firstName === "string" ? args.firstName : undefined,
+                isPrimaryContact:
+                  typeof args.isPrimaryContact === "boolean"
+                    ? args.isPrimaryContact
+                    : undefined,
+                lastName: typeof args.lastName === "string" ? args.lastName : undefined,
+                phoneNumber:
+                  typeof args.phoneNumber === "string" ? args.phoneNumber : undefined,
+                position: typeof args.position === "string" ? args.position : undefined,
+              });
+
+        if (!contact) {
+          throw new Error("The contact could not be updated.");
+        }
+
+        upsertById(workspace.salesData.contacts, contact);
+
+        return {
+          contact,
+          mutation: {
+            entityId: contact.id,
+            entityType: "contact" as const,
+            operation: "update" as const,
+            record: contact as unknown as Record<string, unknown>,
+            title: `${contact.firstName} ${contact.lastName}`.trim(),
+          },
+        };
+      }
+      case "delete_contact": {
+        const contact = resolveContact(args, { allowRecentFallback: true });
+
+        if (workspace.isLiveBackend && workspace.sessionToken) {
+          await deleteLiveContact(workspace.sessionToken, contact.id);
+        } else {
+          deleteMockContact(workspace.tenantId, contact.id);
+        }
+        workspace.salesData.contacts = workspace.salesData.contacts.filter(
+          (item) => item.id !== contact.id,
+        );
+
+        return {
+          deletedContact: {
+            id: contact.id,
+            title: `${contact.firstName} ${contact.lastName}`.trim(),
+          },
+          mutation: {
+            entityId: contact.id,
+            entityType: "contact" as const,
+            operation: "delete" as const,
+            title: `${contact.firstName} ${contact.lastName}`.trim(),
+          },
+        };
       }
       case "create_opportunity": {
         const client = resolveClient(args, { allowRecentFallback: true });
@@ -8494,6 +9208,74 @@ const createToolset = (
             entityId: opportunity.id,
             entityType: "opportunity" as const,
             operation: "create" as const,
+            title: opportunity.title,
+          },
+          opportunity,
+        };
+      }
+      case "update_opportunity": {
+        const existingOpportunity = resolveOpportunity(args, {
+          allowCreateIfMissing: false,
+          allowRecentFallback: true,
+        });
+        const opportunity =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await updateLiveOpportunity(workspace.sessionToken, {
+                ...existingOpportunity,
+                description:
+                  typeof args.description === "string"
+                    ? args.description
+                    : existingOpportunity.description,
+                expectedCloseDate:
+                  typeof args.expectedCloseDate === "string"
+                    ? args.expectedCloseDate
+                    : existingOpportunity.expectedCloseDate,
+                ownerId:
+                  typeof args.ownerId === "string" ? args.ownerId : existingOpportunity.ownerId,
+                probability:
+                  typeof args.probability === "number"
+                    ? args.probability
+                    : existingOpportunity.probability,
+                stage: typeof args.stage === "string" ? args.stage : existingOpportunity.stage,
+                title:
+                  typeof args.title === "string"
+                    ? args.title
+                    : existingOpportunity.title,
+                value:
+                  typeof args.estimatedValue === "number"
+                    ? args.estimatedValue
+                    : existingOpportunity.value ?? existingOpportunity.estimatedValue,
+                estimatedValue:
+                  typeof args.estimatedValue === "number"
+                    ? args.estimatedValue
+                    : existingOpportunity.estimatedValue,
+              })
+            : updateMockOpportunity(workspace.tenantId, existingOpportunity.id, {
+                description: typeof args.description === "string" ? args.description : undefined,
+                estimatedValue:
+                  typeof args.estimatedValue === "number" ? args.estimatedValue : undefined,
+                expectedCloseDate:
+                  typeof args.expectedCloseDate === "string"
+                    ? args.expectedCloseDate
+                    : undefined,
+                ownerId: typeof args.ownerId === "string" ? args.ownerId : undefined,
+                probability:
+                  typeof args.probability === "number" ? args.probability : undefined,
+                stage: typeof args.stage === "string" ? args.stage : undefined,
+                title: typeof args.title === "string" ? args.title : undefined,
+              });
+
+        if (!opportunity) {
+          throw new Error("The opportunity could not be updated.");
+        }
+
+        upsertById(workspace.salesData.opportunities, opportunity);
+
+        return {
+          mutation: {
+            entityId: opportunity.id,
+            entityType: "opportunity" as const,
+            operation: "update" as const,
             title: opportunity.title,
           },
           opportunity,
@@ -8551,6 +9333,49 @@ const createToolset = (
           proposal,
         };
       }
+      case "update_proposal": {
+        const existingProposal = resolveProposal(args, { allowRecentFallback: true });
+        const proposal =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await updateLiveProposal(workspace.sessionToken, {
+                ...existingProposal,
+                currency:
+                  typeof args.currency === "string" ? args.currency : existingProposal.currency,
+                description:
+                  typeof args.description === "string"
+                    ? args.description
+                    : existingProposal.description,
+                title:
+                  typeof args.title === "string" ? args.title : existingProposal.title,
+                validUntil:
+                  typeof args.validUntil === "string"
+                    ? args.validUntil
+                    : existingProposal.validUntil,
+              })
+            : updateMockProposal(workspace.tenantId, existingProposal.id, {
+                currency: typeof args.currency === "string" ? args.currency : undefined,
+                description: typeof args.description === "string" ? args.description : undefined,
+                title: typeof args.title === "string" ? args.title : undefined,
+                validUntil:
+                  typeof args.validUntil === "string" ? args.validUntil : undefined,
+              });
+
+        if (!proposal) {
+          throw new Error("The proposal could not be updated.");
+        }
+
+        upsertById(workspace.salesData.proposals, proposal);
+
+        return {
+          mutation: {
+            entityId: proposal.id,
+            entityType: "proposal" as const,
+            operation: "update" as const,
+            title: proposal.title,
+          },
+          proposal,
+        };
+      }
       case "create_activity": {
         const relatedOpportunity =
           findOpportunityByReference(args.opportunityId) ??
@@ -8562,22 +9387,47 @@ const createToolset = (
             ? resolveOpportunity(args, { allowCreateIfMissing: false })
             : null);
         const owner = findOwnerByReference(args.assignedToId);
-        const activity = createMockActivity(actor, {
-          assignedToId: owner?.id ?? (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
-          assignedToName: owner?.name,
-          description: typeof args.description === "string" ? args.description : "",
-          dueDate:
-            typeof args.dueDate === "string" && args.dueDate.trim().length > 0
-              ? args.dueDate
-              : new Date().toISOString().split("T")[0],
-          priority: Number(args.priority ?? 2),
-          relatedToId: relatedOpportunity?.id ?? "",
-          relatedToType: relatedOpportunity ? 2 : 0,
-          status: "Scheduled",
-          subject: String(args.subject ?? args.title ?? "Untitled activity"),
-          title: String(args.subject ?? args.title ?? "Untitled activity"),
-          type: String(args.activityType ?? "Task"),
-        });
+        const activity =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await createLiveActivity(workspace.sessionToken, {
+                assignedToId:
+                  owner?.id ??
+                  (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
+                assignedToName: owner?.name,
+                completed: false,
+                createdAt: new Date().toISOString(),
+                description: typeof args.description === "string" ? args.description : "",
+                dueDate:
+                  typeof args.dueDate === "string" && args.dueDate.trim().length > 0
+                    ? args.dueDate
+                    : new Date().toISOString().split("T")[0],
+                id: "",
+                priority: Number(args.priority ?? 2),
+                relatedToId: relatedOpportunity?.id ?? "",
+                relatedToType: relatedOpportunity ? 2 : 0,
+                status: "Scheduled",
+                subject: String(args.subject ?? args.title ?? "Untitled activity"),
+                title: String(args.subject ?? args.title ?? "Untitled activity"),
+                type: String(args.activityType ?? "Task"),
+              })
+            : createMockActivity(actor, {
+                assignedToId:
+                  owner?.id ??
+                  (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
+                assignedToName: owner?.name,
+                description: typeof args.description === "string" ? args.description : "",
+                dueDate:
+                  typeof args.dueDate === "string" && args.dueDate.trim().length > 0
+                    ? args.dueDate
+                    : new Date().toISOString().split("T")[0],
+                priority: Number(args.priority ?? 2),
+                relatedToId: relatedOpportunity?.id ?? "",
+                relatedToType: relatedOpportunity ? 2 : 0,
+                status: "Scheduled",
+                subject: String(args.subject ?? args.title ?? "Untitled activity"),
+                title: String(args.subject ?? args.title ?? "Untitled activity"),
+                type: String(args.activityType ?? "Task"),
+              });
 
         upsertById(workspace.salesData.activities, activity);
 
@@ -8601,16 +9451,67 @@ const createToolset = (
       case "update_activity": {
         const existingActivity = resolveActivity(args, { allowRecentFallback: true });
         const owner = findOwnerByReference(args.assignedToId);
-        const activity = updateMockActivity(workspace.tenantId, existingActivity.id, {
-          assignedToId: owner?.id ?? (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
-          assignedToName: owner?.name,
-          description: typeof args.description === "string" ? args.description : undefined,
-          dueDate: typeof args.dueDate === "string" ? args.dueDate : undefined,
-          priority: typeof args.priority === "number" ? Number(args.priority) : undefined,
-          status: typeof args.status === "string" ? args.status : undefined,
-          subject: typeof args.subject === "string" ? args.subject : typeof args.title === "string" ? args.title : undefined,
-          title: typeof args.subject === "string" ? args.subject : typeof args.title === "string" ? args.title : undefined,
-        });
+        const activity =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await updateLiveActivity(workspace.sessionToken, {
+                ...existingActivity,
+                assignedToId:
+                  owner?.id ??
+                  (typeof args.assignedToId === "string"
+                    ? args.assignedToId
+                    : existingActivity.assignedToId),
+                assignedToName: owner?.name ?? existingActivity.assignedToName,
+                completed:
+                  typeof args.status === "string"
+                    ? normalizeLookupValue(args.status) === "completed"
+                    : existingActivity.completed,
+                description:
+                  typeof args.description === "string"
+                    ? args.description
+                    : existingActivity.description,
+                dueDate:
+                  typeof args.dueDate === "string" ? args.dueDate : existingActivity.dueDate,
+                priority:
+                  typeof args.priority === "number"
+                    ? Number(args.priority)
+                    : existingActivity.priority,
+                status:
+                  typeof args.status === "string" ? args.status : existingActivity.status,
+                subject:
+                  typeof args.subject === "string"
+                    ? args.subject
+                    : typeof args.title === "string"
+                      ? args.title
+                      : existingActivity.subject,
+                title:
+                  typeof args.subject === "string"
+                    ? args.subject
+                    : typeof args.title === "string"
+                      ? args.title
+                      : existingActivity.title,
+              })
+            : updateMockActivity(workspace.tenantId, existingActivity.id, {
+                assignedToId:
+                  owner?.id ??
+                  (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
+                assignedToName: owner?.name,
+                description: typeof args.description === "string" ? args.description : undefined,
+                dueDate: typeof args.dueDate === "string" ? args.dueDate : undefined,
+                priority: typeof args.priority === "number" ? Number(args.priority) : undefined,
+                status: typeof args.status === "string" ? args.status : undefined,
+                subject:
+                  typeof args.subject === "string"
+                    ? args.subject
+                    : typeof args.title === "string"
+                      ? args.title
+                      : undefined,
+                title:
+                  typeof args.subject === "string"
+                    ? args.subject
+                    : typeof args.title === "string"
+                      ? args.title
+                      : undefined,
+              });
 
         if (!activity) {
           throw new Error("The activity could not be updated.");
@@ -8632,7 +9533,11 @@ const createToolset = (
       case "delete_activity": {
         const activity = resolveActivity(args, { allowRecentFallback: true });
 
-        deleteMockActivity(workspace.tenantId, activity.id);
+        if (workspace.isLiveBackend && workspace.sessionToken) {
+          await deleteLiveActivity(workspace.sessionToken, activity.id);
+        } else {
+          deleteMockActivity(workspace.tenantId, activity.id);
+        }
         workspace.salesData.activities = workspace.salesData.activities.filter(
           (item) => item.id !== activity.id,
         );
@@ -8653,22 +9558,48 @@ const createToolset = (
       case "create_pricing_request": {
         const opportunity = resolveOpportunity(args, { allowCreateIfMissing: false });
         const owner = findOwnerByReference(args.assignedToId);
-        const pricingRequest = createMockPricingRequest(actor, {
-          assignedToId: owner?.id ?? (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
-          assignedToName: owner?.name,
-          description: typeof args.description === "string" ? args.description : undefined,
-          opportunityId: opportunity.id,
-          opportunityTitle: opportunity.title,
-          priority: Number(args.priority ?? 2),
-          requestedById: actor.id,
-          requestedByName: workspace.userDisplayName,
-          requiredByDate: typeof args.requiredByDate === "string" ? args.requiredByDate : undefined,
-          status: "Pending",
-          title: String(args.title ?? "Untitled pricing request"),
-          updatedAt: new Date().toISOString(),
-        });
+        const pricingRequest =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await createLivePricingRequest(workspace.sessionToken, {
+                assignedToId:
+                  owner?.id ??
+                  (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
+                assignedToName: owner?.name,
+                createdAt: new Date().toISOString(),
+                description: typeof args.description === "string" ? args.description : undefined,
+                id: "",
+                opportunityId: opportunity.id,
+                opportunityTitle: opportunity.title,
+                priority: Number(args.priority ?? 2),
+                requestedById: actor.id,
+                requestedByName: workspace.userDisplayName,
+                requiredByDate:
+                  typeof args.requiredByDate === "string" ? args.requiredByDate : undefined,
+                status: "Pending",
+                title: String(args.title ?? "Untitled pricing request"),
+                updatedAt: new Date().toISOString(),
+              })
+            : createMockPricingRequest(actor, {
+                assignedToId:
+                  owner?.id ??
+                  (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
+                assignedToName: owner?.name,
+                description: typeof args.description === "string" ? args.description : undefined,
+                opportunityId: opportunity.id,
+                opportunityTitle: opportunity.title,
+                priority: Number(args.priority ?? 2),
+                requestedById: actor.id,
+                requestedByName: workspace.userDisplayName,
+                requiredByDate:
+                  typeof args.requiredByDate === "string" ? args.requiredByDate : undefined,
+                status: "Pending",
+                title: String(args.title ?? "Untitled pricing request"),
+                updatedAt: new Date().toISOString(),
+              });
 
-        workspace.pricingRequests = listMockPricingRequests(workspace.tenantId);
+        workspace.pricingRequests = workspace.isLiveBackend
+          ? workspace.pricingRequests.filter((item) => item.id !== pricingRequest.id).concat(pricingRequest)
+          : listMockPricingRequests(workspace.tenantId);
 
         return {
           pricingRequest,
@@ -8688,22 +9619,54 @@ const createToolset = (
       case "update_pricing_request": {
         const existingRequest = resolvePricingRequest(args, { allowRecentFallback: true });
         const owner = findOwnerByReference(args.assignedToId);
-        const pricingRequest = updateMockPricingRequest(workspace.tenantId, existingRequest.id, {
-          assignedToId: owner?.id ?? (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
-          assignedToName: owner?.name,
-          description: typeof args.description === "string" ? args.description : undefined,
-          priority: typeof args.priority === "number" ? Number(args.priority) : undefined,
-          requiredByDate: typeof args.requiredByDate === "string" ? args.requiredByDate : undefined,
-          status: typeof args.status === "string" ? args.status : undefined,
-          title: typeof args.title === "string" ? args.title : undefined,
-          updatedAt: new Date().toISOString(),
-        });
+        const pricingRequest =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await updateLivePricingRequest(workspace.sessionToken, {
+                ...existingRequest,
+                assignedToId:
+                  owner?.id ??
+                  (typeof args.assignedToId === "string"
+                    ? args.assignedToId
+                    : existingRequest.assignedToId),
+                assignedToName: owner?.name ?? existingRequest.assignedToName,
+                description:
+                  typeof args.description === "string"
+                    ? args.description
+                    : existingRequest.description,
+                priority:
+                  typeof args.priority === "number"
+                    ? Number(args.priority)
+                    : existingRequest.priority,
+                requiredByDate:
+                  typeof args.requiredByDate === "string"
+                    ? args.requiredByDate
+                    : existingRequest.requiredByDate,
+                status:
+                  typeof args.status === "string" ? args.status : existingRequest.status,
+                title: typeof args.title === "string" ? args.title : existingRequest.title,
+                updatedAt: new Date().toISOString(),
+              })
+            : updateMockPricingRequest(workspace.tenantId, existingRequest.id, {
+                assignedToId:
+                  owner?.id ??
+                  (typeof args.assignedToId === "string" ? args.assignedToId : undefined),
+                assignedToName: owner?.name,
+                description: typeof args.description === "string" ? args.description : undefined,
+                priority: typeof args.priority === "number" ? Number(args.priority) : undefined,
+                requiredByDate:
+                  typeof args.requiredByDate === "string" ? args.requiredByDate : undefined,
+                status: typeof args.status === "string" ? args.status : undefined,
+                title: typeof args.title === "string" ? args.title : undefined,
+                updatedAt: new Date().toISOString(),
+              });
 
         if (!pricingRequest) {
           throw new Error("The pricing request could not be updated.");
         }
 
-        workspace.pricingRequests = listMockPricingRequests(workspace.tenantId);
+        workspace.pricingRequests = workspace.isLiveBackend
+          ? workspace.pricingRequests.filter((item) => item.id !== pricingRequest.id).concat(pricingRequest)
+          : listMockPricingRequests(workspace.tenantId);
 
         return {
           pricingRequest,
@@ -8719,7 +9682,11 @@ const createToolset = (
       case "delete_pricing_request": {
         const pricingRequest = resolvePricingRequest(args, { allowRecentFallback: true });
 
-        deleteMockPricingRequest(workspace.tenantId, pricingRequest.id);
+        if (workspace.isLiveBackend && workspace.sessionToken) {
+          await deleteLivePricingRequest(workspace.sessionToken, pricingRequest.id);
+        } else {
+          deleteMockPricingRequest(workspace.tenantId, pricingRequest.id);
+        }
         workspace.pricingRequests = workspace.pricingRequests.filter(
           (item) => item.id !== pricingRequest.id,
         );
@@ -8745,26 +9712,33 @@ const createToolset = (
           hasValueReference(args.accountName)
             ? resolveClient(args, { allowRecentFallback: true })
             : null;
-        const note = createMockNote(actor, {
+        const notePayload = {
           category: typeof args.category === "string" ? args.category : "General",
           clientId: client?.id,
           content: String(args.content ?? ""),
           createdDate: new Date().toISOString(),
+          id: "",
           kind:
             typeof args.kind === "string" &&
             ["client_feedback", "client_message", "general"].includes(args.kind)
               ? (args.kind as "client_feedback" | "client_message" | "general")
               : "general",
-          source: "assistant",
+          source: "assistant" as const,
           status:
             typeof args.status === "string" &&
             ["Acknowledged", "Sent"].includes(args.status)
               ? (args.status as "Acknowledged" | "Sent")
               : undefined,
           title: String(args.title ?? "Untitled note"),
-        });
+        };
+        const note =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await createLiveNote(workspace.sessionToken, notePayload)
+            : createMockNote(actor, notePayload);
 
-        workspace.notes = listMockNotes(workspace.tenantId);
+        workspace.notes = workspace.isLiveBackend
+          ? workspace.notes.filter((item) => item.id !== note.id).concat(note)
+          : listMockNotes(workspace.tenantId);
 
         return {
           note,
@@ -8807,21 +9781,30 @@ const createToolset = (
           findOwnerByReference(args.recipientName) ??
           findOwnerByReference(args.representativeId) ??
           findOwnerByReference(args.representativeName);
-        const note = createMockNote(actor, {
+        const messagePayload = {
           category: "Client Message",
           clientId: client?.id,
           content: String(args.content ?? ""),
           createdDate: new Date().toISOString(),
-          kind: "client_message",
+          id: "",
+          kind: "client_message" as const,
           representativeId: recipient?.id,
           representativeName: recipient?.name,
-          source: isClientScopedActor ? "client_portal" : "workspace",
-          status: "Sent",
+          source: (isClientScopedActor ? "client_portal" : "workspace") as
+            | "client_portal"
+            | "workspace",
+          status: "Sent" as const,
           submittedBy: workspace.userEmail ?? undefined,
           title: String(args.subject ?? args.title ?? "Untitled message"),
-        });
+        };
+        const note =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await createLiveNote(workspace.sessionToken, messagePayload)
+            : createMockNote(actor, messagePayload);
 
-        workspace.notes = listMockNotes(workspace.tenantId);
+        workspace.notes = workspace.isLiveBackend
+          ? workspace.notes.filter((item) => item.id !== note.id).concat(note)
+          : listMockNotes(workspace.tenantId);
 
         return {
           message: note,
@@ -8847,27 +9830,49 @@ const createToolset = (
       }
       case "update_note": {
         const existingNote = resolveNote(args, { allowRecentFallback: true });
-        const note = updateMockNote(workspace.tenantId, existingNote.id, {
-          category: typeof args.category === "string" ? args.category : undefined,
-          content: typeof args.content === "string" ? args.content : undefined,
-          kind:
-            typeof args.kind === "string" &&
-            ["client_feedback", "client_message", "general"].includes(args.kind)
-              ? (args.kind as "client_feedback" | "client_message" | "general")
-              : undefined,
-          status:
-            typeof args.status === "string" &&
-            ["Acknowledged", "Sent"].includes(args.status)
-              ? (args.status as "Acknowledged" | "Sent")
-              : undefined,
-          title: typeof args.title === "string" ? args.title : undefined,
-        });
+        const note =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await updateLiveNote(workspace.sessionToken, {
+                ...existingNote,
+                category:
+                  typeof args.category === "string" ? args.category : existingNote.category,
+                content:
+                  typeof args.content === "string" ? args.content : existingNote.content,
+                kind:
+                  typeof args.kind === "string" &&
+                  ["client_feedback", "client_message", "general"].includes(args.kind)
+                    ? (args.kind as "client_feedback" | "client_message" | "general")
+                    : existingNote.kind,
+                status:
+                  typeof args.status === "string" &&
+                  ["Acknowledged", "Sent"].includes(args.status)
+                    ? (args.status as "Acknowledged" | "Sent")
+                    : existingNote.status,
+                title: typeof args.title === "string" ? args.title : existingNote.title,
+              })
+            : updateMockNote(workspace.tenantId, existingNote.id, {
+                category: typeof args.category === "string" ? args.category : undefined,
+                content: typeof args.content === "string" ? args.content : undefined,
+                kind:
+                  typeof args.kind === "string" &&
+                  ["client_feedback", "client_message", "general"].includes(args.kind)
+                    ? (args.kind as "client_feedback" | "client_message" | "general")
+                    : undefined,
+                status:
+                  typeof args.status === "string" &&
+                  ["Acknowledged", "Sent"].includes(args.status)
+                    ? (args.status as "Acknowledged" | "Sent")
+                    : undefined,
+                title: typeof args.title === "string" ? args.title : undefined,
+              });
 
         if (!note) {
           throw new Error("The note could not be updated.");
         }
 
-        workspace.notes = listMockNotes(workspace.tenantId);
+        workspace.notes = workspace.isLiveBackend
+          ? workspace.notes.filter((item) => item.id !== note.id).concat(note)
+          : listMockNotes(workspace.tenantId);
 
         return {
           note,
@@ -8883,7 +9888,11 @@ const createToolset = (
       case "delete_note": {
         const note = resolveNote(args, { allowRecentFallback: true });
 
-        deleteMockNote(workspace.tenantId, note.id);
+        if (workspace.isLiveBackend && workspace.sessionToken) {
+          await deleteLiveNote(workspace.sessionToken, note.id);
+        } else {
+          deleteMockNote(workspace.tenantId, note.id);
+        }
         workspace.notes = workspace.notes.filter((item) => item.id !== note.id);
 
         return {
@@ -8902,7 +9911,11 @@ const createToolset = (
       case "delete_client": {
         const client = resolveClient(args, { allowRecentFallback: true });
 
-        deleteMockClient(workspace.tenantId, client.id);
+        if (workspace.isLiveBackend && workspace.sessionToken) {
+          await deleteLiveClient(workspace.sessionToken, client.id);
+        } else {
+          deleteMockClient(workspace.tenantId, client.id);
+        }
         workspace.salesData.clients = workspace.salesData.clients.filter(
           (item) => item.id !== client.id,
         );
@@ -8929,6 +9942,31 @@ const createToolset = (
             title: client.name,
           },
         };
+      }
+      case "update_message": {
+        const message = await runTool(
+          "update_note",
+          JSON.stringify({
+            ...args,
+            noteId: args.noteId ?? args.messageId,
+            noteTitle: args.noteTitle ?? args.messageTitle ?? args.title,
+            title: args.subject ?? args.title,
+          }),
+        );
+
+        return message;
+      }
+      case "delete_message": {
+        const message = await runTool(
+          "delete_note",
+          JSON.stringify({
+            ...args,
+            noteId: args.noteId ?? args.messageId,
+            noteTitle: args.noteTitle ?? args.messageTitle ?? args.title,
+          }),
+        );
+
+        return message;
       }
       case "delete_opportunity": {
         const opportunity = resolveOpportunity(args, {
@@ -9398,6 +10436,8 @@ const filterGeminiToolDefinitions = (
     normalized.includes("send ")
   ) {
     selected.add("create_message");
+    selected.add("update_message");
+    selected.add("delete_message");
   }
 
   if (
@@ -9406,11 +10446,13 @@ const filterGeminiToolDefinitions = (
     normalized.includes("pipeline")
   ) {
     selected.add("create_opportunity");
+    selected.add("update_opportunity");
     selected.add("delete_opportunity");
   }
 
   if (normalized.includes("proposal")) {
     selected.add("create_proposal");
+    selected.add("update_proposal");
     selected.add("delete_proposal");
   }
 
@@ -9441,6 +10483,7 @@ const filterGeminiToolDefinitions = (
     normalized.includes("log this")
   ) {
     selected.add("create_note");
+    selected.add("update_note");
     selected.add("delete_note");
   }
 
@@ -9450,7 +10493,14 @@ const filterGeminiToolDefinitions = (
     normalized.includes("organization")
   ) {
     selected.add("create_client");
+    selected.add("update_client");
     selected.add("delete_client");
+  }
+
+  if (normalized.includes("contact")) {
+    selected.add("create_contact");
+    selected.add("update_contact");
+    selected.add("delete_contact");
   }
 
   if (
@@ -9465,10 +10515,38 @@ const filterGeminiToolDefinitions = (
 };
 
 const mapMessagesToInput = (messages: AssistantMessage[]): AssistantInputMessage[] =>
-  messages.map((message) => ({
+  messages.slice(-MAX_PROVIDER_MESSAGE_COUNT).map((message) => ({
     content: message.content,
     role: message.role,
   }));
+
+const getProviderReasoningEffort = (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+): "low" | "medium" => {
+  if (isDashboardAdvisorConversation(messages)) {
+    return "medium";
+  }
+
+  const latestUserMessage = getRecentUserMessages(messages).slice(-1)[0]?.content ?? "";
+  const normalized = normalizeLookupValue(latestUserMessage);
+
+  if (
+    isManagerRole(workspace.role) &&
+    (
+      normalized.includes("priority") ||
+      normalized.includes("renewal risk") ||
+      normalized.includes("biggest risk") ||
+      normalized.includes("overloaded") ||
+      normalized.includes("reassign") ||
+      normalized.includes("rebalance")
+    )
+  ) {
+    return "medium";
+  }
+
+  return "low";
+};
 
 const mapMessagesToProviderInput = (
   messages: AssistantMessage[],
@@ -9511,6 +10589,13 @@ const mapMessagesToChatInput = (
     role: message.role,
   })),
 ];
+
+const getMaxProviderToolRounds = (messages: AssistantMessage[]) => {
+  const latestUserMessage = getRecentUserMessages(messages).slice(-1)[0]?.content ?? "";
+  return isConfirmationMessage(latestUserMessage)
+    ? MAX_CONFIRMED_TOOL_ROUNDS
+    : MAX_TOOL_ROUNDS;
+};
 
 const serializeFunctionCallsForInput = (
   calls: ResponseOutputItem[],
@@ -9692,8 +10777,9 @@ const runGeminiWithTools = async ({
   trace: AssistantTraceStep[];
 }) => {
   const chatMessages = mapMessagesToChatInput(systemPrompt, messages);
+  const maxToolRounds = getMaxProviderToolRounds(messages);
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+  for (let round = 0; round < maxToolRounds; round += 1) {
     const response = await callChatCompletionsApi(config, {
       messages: chatMessages,
       model: config.model,
@@ -10540,6 +11626,12 @@ export const runSecureAssistant = async ({
   const initialInput = mapMessagesToProviderInput(messages, confirmedGenericMutationRequest);
   const providerErrors: AssistantProviderRequestError[] = [];
   const systemPrompt = createSystemPrompt(workspace);
+  const selectedToolDefinitions =
+    isConfirmationMessage(latestUserMessage)
+      ? toolDefinitions
+      : filterGeminiToolDefinitions(toolDefinitions, latestUserMessage);
+  const reasoningEffort = getProviderReasoningEffort(workspace, messages);
+  const maxToolRounds = getMaxProviderToolRounds(messages);
 
   for (const config of configuredProviders) {
     const localTraceStart = trace.length;
@@ -10548,7 +11640,7 @@ export const runSecureAssistant = async ({
     try {
       if (config.provider === "gemini") {
         const geminiToolMetadata = createChatCompletionToolMetadata(
-          filterGeminiToolDefinitions(toolDefinitions, latestUserMessage),
+          selectedToolDefinitions,
         );
         return await runGeminiWithTools({
           config,
@@ -10561,18 +11653,18 @@ export const runSecureAssistant = async ({
         });
       }
 
-      const toolMetadata = createToolMetadata(toolDefinitions);
+      const toolMetadata = createToolMetadata(selectedToolDefinitions);
       let statelessInput: AssistantResponseInput[] = [...initialInput];
       let response = await callResponsesApi(config, {
         input: initialInput,
         instructions: systemPrompt,
         model: config.model,
-        reasoning: { effort: isManagerRole(workspace.role) ? "medium" : "low" },
+        reasoning: { effort: reasoningEffort },
         tool_choice: "auto",
         tools: toolMetadata,
       });
 
-      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      for (let round = 0; round < maxToolRounds; round += 1) {
         const functionCalls = extractFunctionCalls(response);
 
         if (functionCalls.length === 0) {
@@ -10645,7 +11737,7 @@ export const runSecureAssistant = async ({
           input: statelessInput,
           instructions: systemPrompt,
           model: config.model,
-          reasoning: { effort: isManagerRole(workspace.role) ? "medium" : "low" },
+          reasoning: { effort: reasoningEffort },
           tool_choice: "auto",
           tools: toolMetadata,
         });
