@@ -712,4 +712,4 @@ const ownedSpec = {
 fs.mkdirSync(path.dirname(targetPath), { recursive: true });
 fs.writeFileSync(targetPath, `${JSON.stringify(ownedSpec, null, 2)}\n`);
 
-console.log(`Wrote ${targetPath}`);
+process.stdout.write(`Wrote ${targetPath}\n`);
