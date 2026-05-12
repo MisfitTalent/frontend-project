@@ -386,7 +386,9 @@ class AssistantProviderRequestError extends Error {
 }
 
 const MAX_TOOL_ROUNDS = 3;
+const MAX_CONFIRMED_TOOL_ROUNDS = 8;
 const MAX_TRACE_PREVIEW_LENGTH = 320;
+const MAX_PROVIDER_MESSAGE_COUNT = 10;
 
 const summarizeWorkspace = (workspace: IAssistantWorkspace) => {
   const { salesData } = workspace;
@@ -5188,7 +5190,12 @@ const getRecentConfirmedGenericMutationRequest = (messages: AssistantMessage[]) 
       ? confirmationStep.arguments.priorUserRequest
       : null;
 
-  return latestUserMessage ?? priorUserRequest ?? null;
+  if (latestUserMessage || priorUserRequest) {
+    return latestUserMessage ?? priorUserRequest ?? null;
+  }
+
+  const recentRequest = findRecentNonConfirmationUserMessage(messages);
+  return recentRequest?.content ?? null;
 };
 
 type ConfirmedGenericToolRequest = {
@@ -10508,7 +10515,7 @@ const filterGeminiToolDefinitions = (
 };
 
 const mapMessagesToInput = (messages: AssistantMessage[]): AssistantInputMessage[] =>
-  messages.map((message) => ({
+  messages.slice(-MAX_PROVIDER_MESSAGE_COUNT).map((message) => ({
     content: message.content,
     role: message.role,
   }));
@@ -10582,6 +10589,13 @@ const mapMessagesToChatInput = (
     role: message.role,
   })),
 ];
+
+const getMaxProviderToolRounds = (messages: AssistantMessage[]) => {
+  const latestUserMessage = getRecentUserMessages(messages).slice(-1)[0]?.content ?? "";
+  return isConfirmationMessage(latestUserMessage)
+    ? MAX_CONFIRMED_TOOL_ROUNDS
+    : MAX_TOOL_ROUNDS;
+};
 
 const serializeFunctionCallsForInput = (
   calls: ResponseOutputItem[],
@@ -10763,8 +10777,9 @@ const runGeminiWithTools = async ({
   trace: AssistantTraceStep[];
 }) => {
   const chatMessages = mapMessagesToChatInput(systemPrompt, messages);
+  const maxToolRounds = getMaxProviderToolRounds(messages);
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+  for (let round = 0; round < maxToolRounds; round += 1) {
     const response = await callChatCompletionsApi(config, {
       messages: chatMessages,
       model: config.model,
@@ -11611,8 +11626,12 @@ export const runSecureAssistant = async ({
   const initialInput = mapMessagesToProviderInput(messages, confirmedGenericMutationRequest);
   const providerErrors: AssistantProviderRequestError[] = [];
   const systemPrompt = createSystemPrompt(workspace);
-  const selectedToolDefinitions = filterGeminiToolDefinitions(toolDefinitions, latestUserMessage);
+  const selectedToolDefinitions =
+    isConfirmationMessage(latestUserMessage)
+      ? toolDefinitions
+      : filterGeminiToolDefinitions(toolDefinitions, latestUserMessage);
   const reasoningEffort = getProviderReasoningEffort(workspace, messages);
+  const maxToolRounds = getMaxProviderToolRounds(messages);
 
   for (const config of configuredProviders) {
     const localTraceStart = trace.length;
@@ -11645,7 +11664,7 @@ export const runSecureAssistant = async ({
         tools: toolMetadata,
       });
 
-      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      for (let round = 0; round < maxToolRounds; round += 1) {
         const functionCalls = extractFunctionCalls(response);
 
         if (functionCalls.length === 0) {
