@@ -1602,6 +1602,44 @@ const findBestReferenceMatch = <T>(
   return bestScore >= minimumScore ? bestItem : null;
 };
 
+const getOpportunityLookupCandidates = (
+  workspace: IAssistantWorkspace,
+  opportunity: IOpportunity,
+) => {
+  const clientName =
+    workspace.salesData.clients.find((client) => client.id === opportunity.clientId)?.name ?? null;
+
+  return [
+    opportunity.id,
+    opportunity.title,
+    opportunity.name ?? null,
+    opportunity.description ?? null,
+    clientName,
+    clientName ? `${clientName} ${opportunity.title}` : null,
+    clientName && opportunity.name ? `${clientName} ${opportunity.name}` : null,
+  ];
+};
+
+const getProposalLookupCandidates = (
+  workspace: IAssistantWorkspace,
+  proposal: IProposal,
+) => {
+  const opportunity =
+    workspace.salesData.opportunities.find((item) => item.id === proposal.opportunityId) ?? null;
+  const clientName =
+    workspace.salesData.clients.find((client) => client.id === proposal.clientId)?.name ?? null;
+
+  return [
+    proposal.id,
+    proposal.title,
+    opportunity?.title ?? null,
+    opportunity?.name ?? null,
+    clientName,
+    clientName ? `${clientName} ${proposal.title}` : null,
+    opportunity?.title ? `${opportunity.title} proposal` : null,
+  ];
+};
+
 const extractOwnerPreferenceHints = (message: string) => {
   const normalized = normalizeLookupValue(message);
   const hints = new Set<string>();
@@ -2281,12 +2319,8 @@ const findOpportunityByReferenceInWorkspace = (
     findBestReferenceMatch<IOpportunity>(
       workspace.salesData.opportunities,
       reference,
-      (opportunity) => [
-        opportunity.id,
-        opportunity.title,
-        opportunity.name ?? null,
-        opportunity.description ?? null,
-      ],
+      (opportunity) => getOpportunityLookupCandidates(workspace, opportunity),
+      52,
     ) ??
     null
   );
@@ -2300,7 +2334,8 @@ const findProposalByReferenceInWorkspace = (
     findBestReferenceMatch<IProposal>(
       workspace.salesData.proposals,
       reference,
-      (proposal) => [proposal.id, proposal.title, proposal.description ?? null],
+      (proposal) => getProposalLookupCandidates(workspace, proposal),
+      52,
     ) ??
     null
   );
@@ -2313,7 +2348,8 @@ const extractOpportunityReference = (
   const opportunity = findBestReferenceMatch<IOpportunity>(
     workspace.salesData.opportunities,
     message,
-    (item) => [item.id, item.title, item.name ?? null, item.description ?? null],
+    (item) => getOpportunityLookupCandidates(workspace, item),
+    52,
   );
 
   return opportunity ? opportunity.title : null;
@@ -7265,12 +7301,8 @@ const createToolset = (
       ? findBestReferenceMatch<IOpportunity>(
           salesData.opportunities,
           reference,
-          (opportunity) => [
-            opportunity.id,
-            opportunity.title,
-            opportunity.name ?? null,
-            opportunity.description ?? null,
-          ],
+          (opportunity) => getOpportunityLookupCandidates(workspace, opportunity),
+          52,
         )
       : null;
   };
@@ -7291,7 +7323,8 @@ const createToolset = (
       ? findBestReferenceMatch<IProposal>(
           salesData.proposals,
           reference,
-          (proposal) => [proposal.id, proposal.title, proposal.description ?? null],
+          (proposal) => getProposalLookupCandidates(workspace, proposal),
+          52,
         )
       : null;
   };
@@ -7507,6 +7540,75 @@ const createToolset = (
         : typeof args.title === "string" && args.title.trim()
           ? args.title
           : null;
+
+  const canResolveDeleteClientForArgs = (args: Record<string, unknown>) => {
+    const explicitReference = getExplicitClientReference(args);
+
+    if (explicitReference) {
+      return Boolean(findClientByReference(explicitReference));
+    }
+
+    return Boolean(getRecentClient());
+  };
+
+  const canResolveDeleteOpportunityForArgs = (args: Record<string, unknown>) => {
+    const explicitOpportunityReference = getExplicitOpportunityReference(args);
+
+    if (explicitOpportunityReference) {
+      return Boolean(findOpportunityByReference(explicitOpportunityReference));
+    }
+
+    const explicitClientReference = getExplicitClientReference(args);
+
+    if (explicitClientReference) {
+      const client = findClientByReference(explicitClientReference);
+
+      if (!client) {
+        return false;
+      }
+
+      const clientOpportunities = salesData.opportunities.filter(
+        (opportunity) => opportunity.clientId === client.id,
+      );
+      const openClientOpportunities = clientOpportunities.filter((opportunity) =>
+        isOpenOpportunityStage(String(opportunity.stage)),
+      );
+
+      return openClientOpportunities.length === 1 || clientOpportunities.length === 1;
+    }
+
+    return Boolean(getRecentOpportunity());
+  };
+
+  const canResolveDeleteProposalForArgs = (args: Record<string, unknown>) => {
+    const explicitProposalReference = getExplicitProposalReference(args);
+
+    if (explicitProposalReference) {
+      return Boolean(findProposalByReference(explicitProposalReference));
+    }
+
+    const explicitOpportunityReference = getExplicitOpportunityReference(args);
+
+    if (explicitOpportunityReference) {
+      return Boolean(findOpportunityByReference(explicitOpportunityReference));
+    }
+
+    const explicitClientReference = getExplicitClientReference(args);
+
+    if (explicitClientReference) {
+      const client = findClientByReference(explicitClientReference);
+
+      if (!client) {
+        return false;
+      }
+
+      const scopedProposals = salesData.proposals.filter((proposal) => proposal.clientId === client.id);
+
+      return scopedProposals.length === 1;
+    }
+
+    return Boolean(getRecentProposal());
+  };
 
   const resolveClient = (
     args: Record<string, unknown>,
@@ -8487,6 +8589,87 @@ const createToolset = (
       mutatingToolNames.has(name) &&
       !isConfirmedTurn
     ) {
+      if (name === "delete_contact") {
+        const hasGroundedContact =
+          hasValueReference(args.contactId) ||
+          hasValueReference(args.contactName) ||
+          hasValueReference(args.email)
+            ? Boolean(
+                findContactByReference(args.contactId) ??
+                  findContactByReference(args.contactName) ??
+                  findContactByReference(args.email),
+              )
+            : Boolean(getRecentContact());
+
+        if (!hasGroundedContact) {
+          return createMissingActionRequirementsOutput(
+            name,
+            args,
+            "No matching contact was found for that delete request. Ask for a real contact name, email, or id, or use clear recent context. Do not invent a target.",
+            ["contact"],
+          );
+        }
+      }
+
+      if (name === "delete_client" && !canResolveDeleteClientForArgs(args)) {
+        return createMissingActionRequirementsOutput(
+          name,
+          args,
+          "No matching client was found for that delete request. Ask for a real client name, list the matching clients, or use recent context like 'the client I just created'. Do not invent a target.",
+          ["client"],
+        );
+      }
+
+      if (name === "delete_opportunity" && !canResolveDeleteOpportunityForArgs(args)) {
+        return createMissingActionRequirementsOutput(
+          name,
+          args,
+          "No matching opportunity was found for that delete request. Ask for the real opportunity title or id, or use clear recent context. Do not invent a target.",
+          ["opportunity"],
+        );
+      }
+
+      if (name === "delete_proposal" && !canResolveDeleteProposalForArgs(args)) {
+        return createMissingActionRequirementsOutput(
+          name,
+          args,
+          "No matching proposal was found for that delete request. Ask for the real proposal title or id, or use clear recent context. Do not invent a target.",
+          ["proposal"],
+        );
+      }
+
+      if (name === "create_opportunity" && !canResolveClientForArgs(args)) {
+        return createMissingActionRequirementsOutput(
+          name,
+          args,
+          "An opportunity must belong to an existing client. Ask which client this deal is for, or offer to create the client first.",
+          ["client"],
+        );
+      }
+
+      if (name === "create_contact" && !canResolveClientForArgs(args)) {
+        return createMissingActionRequirementsOutput(
+          name,
+          args,
+          "A contact must belong to an existing client. Ask which client this contact is for before proposing confirmation.",
+          ["client"],
+        );
+      }
+
+      if (name === "create_proposal") {
+        const hasOpportunityReference =
+          hasValueReference(args.opportunityId) || hasValueReference(args.opportunityTitle);
+
+        if (!hasOpportunityReference && !getRecentOpportunity()) {
+          return createMissingActionRequirementsOutput(
+            name,
+            args,
+            "A proposal must be linked to an existing opportunity. Ask which opportunity this proposal is for before proposing confirmation.",
+            ["opportunity"],
+          );
+        }
+      }
+
       return createConfirmationGuardOutput(name, args);
     }
 
