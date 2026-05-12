@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import {
@@ -15,6 +15,7 @@ import {
   isMockSessionToken,
   mapBackendPricingRequest,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { useAuthState } from "@/providers/authProvider";
 import { initialPricingRequests } from "@/providers/domainSeeds";
 import type { IPricingRequest } from "@/providers/salesTypes";
@@ -49,9 +50,38 @@ export default function PricingRequestProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const { isAuthenticated, user } = useAuthState();
-  const [pricingRequests, setPricingRequests] = useState<IPricingRequest[]>([]);
   const isDemoMode = isMockSessionToken(getSessionToken());
   const role = getPrimaryUserRole(user?.roles);
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("pricing-requests", user?.tenantId, user?.userId, role),
+    [role, user?.tenantId, user?.userId],
+  );
+  const cachedPricingRequests = useMemo(
+    () => readProviderCache<IPricingRequest[]>(cacheKey),
+    [cacheKey],
+  );
+  const [pricingRequests, setPricingRequests] = useState<IPricingRequest[]>(
+    () => cachedPricingRequests ?? [],
+  );
+
+  const listPath =
+    role === "SalesRep"
+      ? "/api/pricingrequests/my-requests?pageNumber=1&pageSize=100"
+      : "/api/PricingRequests?pageNumber=1&pageSize=100";
+
+  const loadPricingRequests = useCallback(async () => {
+    const payload = await backendRequest<BackendPagedResult<BackendPricingRequestDto> | BackendPricingRequestDto[]>(
+      listPath,
+    );
+
+    setPricingRequests(
+      writeProviderCache(cacheKey, coerceItems(payload).map(mapBackendPricingRequest)),
+    );
+  }, [cacheKey, listPath]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, pricingRequests);
+  }, [cacheKey, pricingRequests]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -61,37 +91,48 @@ export default function PricingRequestProvider({
     let isActive = true;
 
     if (isDemoMode) {
-      Promise.resolve().then(() => {
-        if (isActive) {
-          setPricingRequests(initialPricingRequests());
-        }
-      });
+      const timer = window.setTimeout(() => {
+        void loadPricingRequests().catch((error) => {
+          console.error(error);
 
+          if (isActive) {
+            setPricingRequests(writeProviderCache(cacheKey, initialPricingRequests()));
+          }
+        });
+      }, 0);
+
+      const handleWorkspaceUpdate = () => {
+        void loadPricingRequests().catch((error) => {
+          console.error(error);
+        });
+      };
+
+      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+
+      return () => {
+        isActive = false;
+        window.clearTimeout(timer);
+        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+      };
+    }
+
+    if (cachedPricingRequests && cachedPricingRequests.length > 0) {
       return () => {
         isActive = false;
       };
     }
 
-    void backendRequest<BackendPagedResult<BackendPricingRequestDto> | BackendPricingRequestDto[]>(
-      role === "SalesRep"
-        ? "/api/pricingrequests/my-requests?pageNumber=1&pageSize=100"
-        : "/api/PricingRequests?pageNumber=1&pageSize=100",
-    )
-      .then((payload) => {
-        if (!isActive) {
-          return;
-        }
-
-        setPricingRequests(coerceItems(payload).map(mapBackendPricingRequest));
-      })
-      .catch((error) => {
+    const timer = window.setTimeout(() => {
+      void loadPricingRequests().catch((error) => {
         console.error(error);
       });
+    }, 0);
 
     return () => {
       isActive = false;
+      window.clearTimeout(timer);
     };
-  }, [isAuthenticated, isDemoMode, role]);
+  }, [cacheKey, cachedPricingRequests, isAuthenticated, isDemoMode, loadPricingRequests]);
 
   const replacePricingRequest = (request: IPricingRequest) => {
     setPricingRequests((current) => {

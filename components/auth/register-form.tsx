@@ -3,6 +3,7 @@
 import { Alert, Button, Card, Form, Input, Select, Typography } from "antd";
 
 import { useAuthActions, useAuthState } from "@/providers/authProvider";
+import { useStyles } from "./register-form.styles";
 
 type RegistrationScenario = "existing-tenant" | "new-tenant" | "shared-tenant";
 type RegistrationRole = "SalesRep" | "SalesManager" | "BusinessDevelopmentManager";
@@ -19,7 +20,8 @@ type RegisterValues = {
   tenantName?: string;
 };
 
-export function RegisterForm() {
+export const RegisterForm = () => {
+  const { styles } = useStyles();
   const [form] = Form.useForm<RegisterValues>();
   const { register } = useAuthActions();
   const { isError, isPending } = useAuthState();
@@ -57,19 +59,19 @@ export function RegisterForm() {
   };
 
   return (
-    <Card className="w-full max-w-2xl border-0 shadow-2xl shadow-slate-200/80">
-      <div className="mb-8 space-y-2">
-        <Typography.Title level={2} className="!mb-0">
+    <Card className={styles.card}>
+      <div className={styles.intro}>
+        <Typography.Title level={2} className={styles.title}>
           Create your workspace
         </Typography.Title>
-        <Typography.Paragraph className="!mb-0 !text-slate-500">
+        <Typography.Paragraph className={styles.mutedText}>
           Create a new organisation, join an existing tenant, or use the shared test workspace.
         </Typography.Paragraph>
       </div>
 
       {isError ? (
         <Alert
-          className="mb-6"
+          className={styles.alert}
           message="We could not create your account right now."
           type="error"
         />
@@ -97,7 +99,7 @@ export function RegisterForm() {
           />
         </Form.Item>
 
-        <div className="grid gap-5 md:grid-cols-2">
+        <div className={styles.fieldsGrid}>
           <Form.Item
             label="First name"
             name="firstName"
@@ -188,4 +190,4 @@ export function RegisterForm() {
       </Form>
     </Card>
   );
-}
+};

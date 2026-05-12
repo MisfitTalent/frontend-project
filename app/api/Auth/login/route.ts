@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { findUserByEmail, toAuthPayload } from "../mock-users";
-import { AUTH_COOKIE_NAME, AUTH_COOKIE_OPTIONS } from "../session-cookie";
+import type { AuthLoginRequestDto } from "@/lib/auth/auth-contract";
+import { shouldUseUpstreamAuth } from "@/lib/server/auth-mode";
 import { createBackendUrl } from "@/lib/server/backend-url";
+
+import { findUserByEmail, toAuthPayload } from "../mock-users";
+import {
+  AUTH_COOKIE_NAME,
+  AUTH_COOKIE_OPTIONS,
+  sanitizeAuthPayload,
+} from "../session-cookie";
 
 const readJsonBody = async (response: Response) => {
   const text = await response.text();
@@ -14,19 +21,34 @@ const readJsonBody = async (response: Response) => {
   return JSON.parse(text) as Record<string, unknown>;
 };
 
-export async function POST(request: NextRequest) {
+export const POST = async (request: NextRequest) => {
   const rawBody = await request.text();
-  const credentials = JSON.parse(rawBody) as { email?: string; password?: string };
+  const credentials = JSON.parse(rawBody) as AuthLoginRequestDto;
   const email = credentials.email?.trim().toLowerCase() ?? "";
   const mockUser = email ? findUserByEmail(email) : undefined;
 
   if (mockUser && credentials.password === mockUser.password) {
     const payload = toAuthPayload(mockUser);
-    const response = NextResponse.json(payload, { status: 200 });
+    const response = NextResponse.json(sanitizeAuthPayload(payload), {
+      status: 200,
+    });
 
-    response.cookies.set(AUTH_COOKIE_NAME, payload.token, AUTH_COOKIE_OPTIONS);
+    if (payload.token) {
+      response.cookies.set(
+        AUTH_COOKIE_NAME,
+        payload.token,
+        AUTH_COOKIE_OPTIONS,
+      );
+    }
 
     return response;
+  }
+
+  if (!shouldUseUpstreamAuth()) {
+    return NextResponse.json(
+      { message: "Invalid email or password." },
+      { status: 401 },
+    );
   }
 
   const upstream = await fetch(createBackendUrl("/api/Auth/login"), {
@@ -38,13 +60,14 @@ export async function POST(request: NextRequest) {
     redirect: "manual",
   });
   const payload = await readJsonBody(upstream);
-  const response = NextResponse.json(payload, { status: upstream.status });
-
   const token = typeof payload.token === "string" ? payload.token : "";
+  const response = NextResponse.json(sanitizeAuthPayload(payload), {
+    status: upstream.status,
+  });
 
   if (upstream.ok && token) {
     response.cookies.set(AUTH_COOKIE_NAME, token, AUTH_COOKIE_OPTIONS);
   }
 
   return response;
-}
+};

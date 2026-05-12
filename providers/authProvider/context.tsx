@@ -1,33 +1,16 @@
+"use client";
+
 import { createContext } from "react";
 
-export interface IUserLoginRequest {
-  email?: string | null;
-  password?: string | null;
-}
+import type {
+  AuthLoginRequestDto,
+  AuthRegisterRequestDto,
+  AuthSessionUser,
+} from "@/lib/auth/auth-contract";
 
-export interface IUserRegisterRequest {
-  email?: string | null;
-  firstName?: string | null;
-  lastName?: string | null;
-  password?: string | null;
-  phoneNumber?: string | null;
-  role?: string | null;
-  tenantId?: string | null;
-  tenantName?: string | null;
-}
-
-export interface IUserLoginResponse {
-  clientIds?: string[] | null;
-  email?: string | null;
-  expiresAt?: string;
-  firstName?: string | null;
-  lastName?: string | null;
-  roles?: string[] | null;
-  tenantId?: string | null;
-  tenantName?: string | null;
-  token?: string | null;
-  userId?: string;
-}
+export type IUserLoginRequest = AuthLoginRequestDto;
+export type IUserRegisterRequest = AuthRegisterRequestDto;
+export type IUserLoginResponse = AuthSessionUser;
 
 export interface IAuthStateContext {
   isAuthenticated: boolean;
@@ -52,6 +35,6 @@ export const INITIAL_STATE: IAuthStateContext = {
   user: null,
 };
 
-export const AuthStateContext = createContext<IAuthStateContext>(INITIAL_STATE);
+export const AuthStateContext = createContext<IAuthStateContext | undefined>(undefined);
 
-export const AuthActionContext = createContext<IAuthActionContext>(undefined!);
+export const AuthActionContext = createContext<IAuthActionContext | undefined>(undefined);

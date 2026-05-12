@@ -1,56 +1,23 @@
 "use client";
 
 import { Card, Col, Progress, Row, Statistic, Tag, Typography } from "antd";
+import Link from "next/link";
 import { useMemo } from "react";
 
 import { AnimatedDashboardTable } from "@/components/dashboard/animated-dashboard-table";
 import { useDashboardState } from "@/providers/dashboardProvider";
-import { type ITeamMember } from "@/providers/salesTypes";
+import { usePricingRequestState } from "@/providers/pricingRequestProvider";
+import { getTeamCapacity, type TeamWorkloadProfile } from "@/providers/salesSelectors";
 
-type TeamMemberRow = ITeamMember & {
-  assignedOpportunities: number;
-  openActivities: number;
-  totalLoad: number;
-};
+type TeamMemberRow = TeamWorkloadProfile;
 
 export function TeamMembersPanel() {
-  const { salesData, teamMembers } = useDashboardState();
+  const { salesData } = useDashboardState();
+  const { pricingRequests } = usePricingRequestState();
 
   const rows = useMemo<TeamMemberRow[]>(
-    () =>
-      teamMembers
-        .map((member) => {
-          const assignedOpportunities = salesData.opportunities.filter(
-            (opportunity) =>
-              opportunity.ownerId === member.id &&
-              !["Won", "Lost"].includes(String(opportunity.stage)),
-          ).length;
-          const openActivities = salesData.activities.filter(
-            (activity) =>
-              activity.assignedToId === member.id &&
-              activity.status !== "Completed" &&
-              !activity.completed,
-          ).length;
-
-          return {
-            ...member,
-            assignedOpportunities,
-            openActivities,
-            totalLoad: assignedOpportunities + openActivities,
-          };
-        })
-        .sort((left, right) => {
-          if (right.totalLoad !== left.totalLoad) {
-            return right.totalLoad - left.totalLoad;
-          }
-
-          if (left.availabilityPercent !== right.availabilityPercent) {
-            return left.availabilityPercent - right.availabilityPercent;
-          }
-
-          return left.name.localeCompare(right.name);
-        }),
-    [salesData.activities, salesData.opportunities, teamMembers],
+    () => getTeamCapacity(salesData, { pricingRequests }),
+    [pricingRequests, salesData],
   );
 
   const averageAvailability = useMemo(() => {
@@ -58,9 +25,7 @@ export function TeamMembersPanel() {
       return 0;
     }
 
-    return Math.round(
-      rows.reduce((sum, member) => sum + member.availabilityPercent, 0) / rows.length,
-    );
+    return Math.round(rows.reduce((sum, row) => sum + row.availableCapacity, 0) / rows.length);
   }, [rows]);
 
   const totalOpenOpportunities = useMemo(
@@ -84,14 +49,21 @@ export function TeamMembersPanel() {
       key: "member",
       render: (_: unknown, record: TeamMemberRow) => (
         <div className="space-y-1">
-          <Typography.Text strong>{record.name}</Typography.Text>
-          <div className="text-sm text-slate-500">{record.role}</div>
+          <Typography.Text strong>
+            <Link
+              className="text-inherit transition-colors hover:text-[#f28c28]"
+              href={`/dashboard/team-members/${record.member.id}`}
+            >
+              {record.member.name}
+            </Link>
+          </Typography.Text>
+          <div className="text-sm text-slate-500">{record.member.role}</div>
         </div>
       ),
       title: "Team member",
     },
     {
-      dataIndex: "region",
+      dataIndex: ["member", "region"],
       key: "region",
       title: "Region",
     },
@@ -99,29 +71,35 @@ export function TeamMembersPanel() {
       key: "availability",
       render: (_: unknown, record: TeamMemberRow) => (
         <div className="min-w-[140px]">
-          <Progress percent={record.availabilityPercent} size="small" showInfo={false} />
+          <Progress percent={record.availableCapacity} size="small" showInfo={false} />
           <Typography.Text className="!text-slate-500">
-            {record.availabilityPercent}% available
+            {record.availableCapacity}% capacity from tracked workload
           </Typography.Text>
         </div>
       ),
-      title: "Availability",
+      title: "Adjusted capacity",
     },
     {
       dataIndex: "assignedOpportunities",
       key: "assignedOpportunities",
+      render: (_: unknown, record: TeamMemberRow) => record.assignments,
       title: "Live opportunities",
     },
     {
-      dataIndex: "openActivities",
+      dataIndex: "openFollowUps",
       key: "openActivities",
       title: "Open follow-ups",
+    },
+    {
+      dataIndex: "overdueFollowUps",
+      key: "overdueFollowUps",
+      title: "Overdue",
     },
     {
       key: "skills",
       render: (_: unknown, record: TeamMemberRow) => (
         <div className="flex flex-wrap gap-2">
-          {record.skills.slice(0, 3).map((skill) => (
+          {record.member.skills.slice(0, 3).map((skill) => (
             <Tag color="#4f7cac" key={skill}>
               {skill}
             </Tag>
@@ -145,9 +123,9 @@ export function TeamMembersPanel() {
         </Col>
         <Col xs={24} md={12} xxl={6}>
           <Card className="h-full border-slate-200">
-            <Statistic title="Average availability" value={averageAvailability} suffix="%" />
+            <Statistic title="Average capacity" value={averageAvailability} suffix="%" />
             <Typography.Text className="!text-slate-500">
-              Useful for balancing owner assignments and follow-up load.
+              Computed only from tracked workload across active commercial work.
             </Typography.Text>
           </Card>
         </Col>
@@ -169,15 +147,12 @@ export function TeamMembersPanel() {
         </Col>
       </Row>
 
-      <Card
-        className="border-slate-200"
-        title="Team workload"
-      >
+      <Card className="border-slate-200" title="Team workload">
         <AnimatedDashboardTable
           columns={columns}
           dataSource={rows}
           emptyDescription="No team members available"
-          rowKey="id"
+          rowKey={(record) => record.member.id}
           scroll={{ x: 960 }}
         />
       </Card>

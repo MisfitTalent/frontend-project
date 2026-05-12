@@ -1,5 +1,6 @@
 import "server-only";
 
+import { readLocalStateSnapshot, writeLocalStateSnapshot } from "@/lib/server/local-state-store";
 import type { IMockUser } from "@/app/api/Auth/mock-users";
 import {
   initialActivities,
@@ -38,6 +39,11 @@ type MockWorkspaceState = {
   salesData: ISalesData;
 };
 
+declare global {
+  // Keep one in-memory store across Next route bundles in the same Node process.
+  var __mockWorkspaceStore__: Map<string, MockWorkspaceState> | undefined;
+}
+
 type CreateOpportunityInput = {
   clientId: string;
   contactId?: string;
@@ -70,12 +76,35 @@ type CreateProposalInput = {
   validUntil: string;
 };
 
-const workspaceStore = new Map<string, MockWorkspaceState>();
+type CreateActivityInput = Omit<IActivity, "id"> & {
+  id?: string;
+};
+
+type CreatePricingRequestInput = Omit<IPricingRequest, "createdAt" | "id"> & {
+  id?: string;
+};
+
+const workspaceStore =
+  globalThis.__mockWorkspaceStore__ ??
+  new Map<string, MockWorkspaceState>(
+    Object.entries(readLocalStateSnapshot().mockWorkspaceStore).map(([tenantId, state]) => [
+      tenantId,
+      state as MockWorkspaceState,
+    ]),
+  );
+
+globalThis.__mockWorkspaceStore__ = workspaceStore;
 
 const createId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const clone = <T,>(value: T): T => structuredClone(value);
+
+const persistWorkspaceStore = () => {
+  writeLocalStateSnapshot((state) => {
+    state.mockWorkspaceStore = Object.fromEntries(workspaceStore.entries());
+  });
+};
 
 const buildSeedWorkspace = (): MockWorkspaceState => ({
   documents: initialDocuments(),
@@ -103,6 +132,7 @@ const getWorkspaceState = (tenantId: string) => {
 
   const next = buildSeedWorkspace();
   workspaceStore.set(tenantId, next);
+  persistWorkspaceStore();
 
   return next;
 };
@@ -163,6 +193,7 @@ export const createMockClient = (user: IMockUser, input: CreateClientInput) => {
     id: createId("auto"),
     title: "Client created",
   });
+  persistWorkspaceStore();
 
   return clone(client);
 };
@@ -183,6 +214,7 @@ export const updateMockClient = (
     ...workspace.salesData.clients[index],
     ...patch,
   };
+  persistWorkspaceStore();
 
   return clone(workspace.salesData.clients[index]);
 };
@@ -193,6 +225,7 @@ export const deleteMockClient = (tenantId: string, clientId: string) => {
   workspace.salesData.contacts = workspace.salesData.contacts.filter((item) => item.clientId !== clientId);
   workspace.salesData.opportunities = workspace.salesData.opportunities.filter((item) => item.clientId !== clientId);
   workspace.salesData.proposals = workspace.salesData.proposals.filter((item) => item.clientId !== clientId);
+  persistWorkspaceStore();
 };
 
 export const createMockContact = (user: IMockUser, input: Omit<IContact, "id">) => {
@@ -210,6 +243,7 @@ export const createMockContact = (user: IMockUser, input: Omit<IContact, "id">) 
     id: createId("auto"),
     title: "Contact created",
   });
+  persistWorkspaceStore();
 
   return clone(contact);
 };
@@ -230,6 +264,7 @@ export const updateMockContact = (
     ...workspace.salesData.contacts[index],
     ...patch,
   };
+  persistWorkspaceStore();
 
   return clone(workspace.salesData.contacts[index]);
 };
@@ -237,6 +272,7 @@ export const updateMockContact = (
 export const deleteMockContact = (tenantId: string, contactId: string) => {
   const workspace = getWorkspaceState(tenantId);
   workspace.salesData.contacts = workspace.salesData.contacts.filter((item) => item.id !== contactId);
+  persistWorkspaceStore();
 };
 
 export const listMockOpportunities = (tenantId: string) =>
@@ -286,6 +322,7 @@ export const createMockOpportunity = (
     id: createId("auto"),
     title: `Opportunity added to pipeline`,
   });
+  persistWorkspaceStore();
 
   return clone(opportunity);
 };
@@ -309,6 +346,7 @@ export const updateMockOpportunity = (
       patch.expectedCloseDate ?? workspace.salesData.opportunities[index].expectedCloseDate,
     ),
   };
+  persistWorkspaceStore();
 
   return clone(workspace.salesData.opportunities[index]);
 };
@@ -321,6 +359,7 @@ export const deleteMockOpportunity = (tenantId: string, opportunityId: string) =
   workspace.salesData.proposals = workspace.salesData.proposals.filter(
     (item) => item.opportunityId !== opportunityId,
   );
+  persistWorkspaceStore();
 };
 
 export const assignMockOpportunity = (
@@ -380,6 +419,7 @@ export const createMockProposal = (user: IMockUser, input: CreateProposalInput) 
     id: createId("auto"),
     title: `Proposal created`,
   });
+  persistWorkspaceStore();
 
   return clone(proposal);
 };
@@ -411,6 +451,7 @@ export const updateMockProposal = (
       getLineItemsTotal(nextLineItems) ??
       workspace.salesData.proposals[index].value,
   };
+  persistWorkspaceStore();
 
   return clone(workspace.salesData.proposals[index]);
 };
@@ -420,6 +461,7 @@ export const deleteMockProposal = (tenantId: string, proposalId: string) => {
   workspace.salesData.proposals = workspace.salesData.proposals.filter(
     (item) => item.id !== proposalId,
   );
+  persistWorkspaceStore();
 };
 
 export const transitionMockProposal = (
@@ -515,6 +557,34 @@ export const listMockTeamMembers = (tenantId: string): ITeamMember[] =>
 export const listMockActivities = (tenantId: string): IActivity[] =>
   clone(getWorkspaceState(tenantId).salesData.activities);
 
+export const createMockActivity = (user: IMockUser, input: CreateActivityInput) => {
+  const workspace = getWorkspaceState(user.tenantId);
+  const assignedOwner = input.assignedToId
+    ? workspace.salesData.teamMembers.find((member) => member.id === input.assignedToId)
+    : undefined;
+  const activity: IActivity = {
+    ...input,
+    assignedToName: input.assignedToName ?? assignedOwner?.name,
+    completed: input.completed ?? false,
+    createdAt: new Date().toISOString(),
+    dueDate: normalizeDate(input.dueDate),
+    id: input.id ?? createId("act"),
+    status: input.status ?? "Scheduled",
+    title: input.title ?? input.subject,
+  };
+
+  workspace.salesData.activities.push(activity);
+  workspace.salesData.automationFeed.unshift({
+    createdAt: new Date().toISOString(),
+    description: `${user.firstName} ${user.lastName}`.trim() + ` logged ${activity.subject}.`,
+    id: createId("auto"),
+    title: "Activity created",
+  });
+  persistWorkspaceStore();
+
+  return clone(activity);
+};
+
 export const updateMockActivity = (
   tenantId: string,
   activityId: string,
@@ -531,6 +601,184 @@ export const updateMockActivity = (
     ...workspace.salesData.activities[index],
     ...patch,
   };
+  persistWorkspaceStore();
 
   return clone(workspace.salesData.activities[index]);
+};
+
+export const deleteMockActivity = (tenantId: string, activityId: string) => {
+  const workspace = getWorkspaceState(tenantId);
+  workspace.salesData.activities = workspace.salesData.activities.filter(
+    (item) => item.id !== activityId,
+  );
+  persistWorkspaceStore();
+};
+
+export const listMockPricingRequests = (tenantId: string): IPricingRequest[] =>
+  clone(getWorkspaceState(tenantId).pricingRequests);
+
+export const createMockPricingRequest = (
+  user: IMockUser,
+  input: CreatePricingRequestInput,
+) => {
+  const workspace = getWorkspaceState(user.tenantId);
+  const pricingRequest: IPricingRequest = {
+    ...input,
+    createdAt: new Date().toISOString(),
+    id: input.id ?? createId("price"),
+    requiredByDate: normalizeDate(input.requiredByDate),
+  };
+
+  workspace.pricingRequests.push(pricingRequest);
+  workspace.salesData.automationFeed.unshift({
+    createdAt: new Date().toISOString(),
+    description:
+      `${user.firstName} ${user.lastName}`.trim() + ` submitted ${pricingRequest.title}.`,
+    id: createId("auto"),
+    title: "Commercial request created",
+  });
+  persistWorkspaceStore();
+
+  return clone(pricingRequest);
+};
+
+export const updateMockPricingRequest = (
+  tenantId: string,
+  pricingRequestId: string,
+  patch: Partial<IPricingRequest>,
+) => {
+  const workspace = getWorkspaceState(tenantId);
+  const index = workspace.pricingRequests.findIndex((item) => item.id === pricingRequestId);
+
+  if (index < 0) {
+    return null;
+  }
+
+  workspace.pricingRequests[index] = {
+    ...workspace.pricingRequests[index],
+    ...patch,
+    requiredByDate: normalizeDate(
+      patch.requiredByDate ?? workspace.pricingRequests[index].requiredByDate,
+    ),
+  };
+  persistWorkspaceStore();
+
+  return clone(workspace.pricingRequests[index]);
+};
+
+export const deleteMockPricingRequest = (tenantId: string, pricingRequestId: string) => {
+  const workspace = getWorkspaceState(tenantId);
+  workspace.pricingRequests = workspace.pricingRequests.filter(
+    (item) => item.id !== pricingRequestId,
+  );
+  persistWorkspaceStore();
+};
+
+export const listMockNotes = (tenantId: string): INoteItem[] =>
+  clone(getWorkspaceState(tenantId).notes);
+
+export const createMockNote = (
+  user: IMockUser,
+  input: Omit<INoteItem, "id"> & { id?: string },
+) => {
+  const workspace = getWorkspaceState(user.tenantId);
+  const note: INoteItem = {
+    ...input,
+    createdDate: normalizeDate(input.createdDate),
+    id: input.id ?? createId("note"),
+  };
+
+  workspace.notes.push(note);
+  workspace.salesData.automationFeed.unshift({
+    createdAt: new Date().toISOString(),
+    description: `${user.firstName} ${user.lastName}`.trim() + ` captured note "${note.title}".`,
+    id: createId("auto"),
+    title: "Note created",
+  });
+  persistWorkspaceStore();
+
+  return clone(note);
+};
+
+export const updateMockNote = (
+  tenantId: string,
+  noteId: string,
+  patch: Partial<INoteItem>,
+) => {
+  const workspace = getWorkspaceState(tenantId);
+  const index = workspace.notes.findIndex((item) => item.id === noteId);
+
+  if (index < 0) {
+    return null;
+  }
+
+  workspace.notes[index] = {
+    ...workspace.notes[index],
+    ...patch,
+    createdDate: normalizeDate(patch.createdDate ?? workspace.notes[index].createdDate),
+  };
+  persistWorkspaceStore();
+
+  return clone(workspace.notes[index]);
+};
+
+export const deleteMockNote = (tenantId: string, noteId: string) => {
+  const workspace = getWorkspaceState(tenantId);
+  workspace.notes = workspace.notes.filter((item) => item.id !== noteId);
+  persistWorkspaceStore();
+};
+
+export const syncMockUserWorkspaceProfile = (
+  user: IMockUser,
+  options: { organizationName?: string } = {},
+) => {
+  const workspace = getWorkspaceState(user.tenantId);
+  const fullName = `${user.firstName} ${user.lastName}`.trim();
+  const organizationName = options.organizationName?.trim();
+  const linkedClientIds = new Set(user.clientIds ?? []);
+  const teamMemberIndex = workspace.salesData.teamMembers.findIndex(
+    (item) => item.id === user.id,
+  );
+
+  if (teamMemberIndex >= 0) {
+    workspace.salesData.teamMembers[teamMemberIndex] = {
+      ...workspace.salesData.teamMembers[teamMemberIndex],
+      name: fullName,
+    };
+  }
+
+  workspace.salesData.activities = workspace.salesData.activities.map((item) =>
+    item.assignedToId === user.id ? { ...item, assignedToName: fullName } : item,
+  );
+
+  workspace.pricingRequests = workspace.pricingRequests.map((item) => ({
+    ...item,
+    assignedToName: item.assignedToId === user.id ? fullName : item.assignedToName,
+    requestedByName: item.requestedById === user.id ? fullName : item.requestedByName,
+  }));
+
+  workspace.notes = workspace.notes.map((item) => ({
+    ...item,
+    representativeName:
+      item.representativeId === user.id ? fullName : item.representativeName,
+  }));
+
+  if (organizationName && linkedClientIds.size > 0) {
+    workspace.salesData.clients = workspace.salesData.clients.map((item) =>
+      linkedClientIds.has(item.id) ? { ...item, name: organizationName } : item,
+    );
+  }
+
+  workspace.salesData.automationFeed.unshift({
+    createdAt: new Date().toISOString(),
+    description:
+      linkedClientIds.size > 0 && organizationName
+        ? `${fullName} updated the linked client workspace name to ${organizationName}.`
+        : `${fullName} updated their workspace profile details.`,
+    id: createId("auto"),
+    title: linkedClientIds.size > 0 && organizationName ? "Client workspace updated" : "Profile updated",
+  });
+  persistWorkspaceStore();
+
+  return clone(workspace);
 };

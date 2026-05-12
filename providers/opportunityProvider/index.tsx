@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import { useAuthState } from "@/providers/authProvider";
 import {
@@ -17,9 +18,10 @@ import {
   isMockSessionToken,
   mapBackendOpportunity,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { initialOpportunities } from "@/providers/domainSeeds";
 import { OpportunityActionContext, OpportunityStateContext } from "./context";
-import { OpportunityStage, type IOpportunity } from "@/providers/salesTypes";
+import type { IOpportunity } from "@/providers/salesTypes";
 
 export const useOpportunityState = () => {
   const context = useContext(OpportunityStateContext);
@@ -45,9 +47,29 @@ export default function OpportunityProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const { isAuthenticated, user } = useAuthState();
-  const [opportunities, setOpportunities] = useState<IOpportunity[]>([]);
   const isDemoMode = isMockSessionToken(getSessionToken());
   const role = getPrimaryUserRole(user?.roles);
+  const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
+  const isScopedClient = isClientScopedUser(user?.clientIds);
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("opportunities", user?.tenantId, user?.userId, role),
+    [role, user?.tenantId, user?.userId],
+  );
+  const cachedOpportunities = useMemo(
+    () => readProviderCache<IOpportunity[]>(cacheKey),
+    [cacheKey],
+  );
+  const [opportunities, setOpportunities] = useState<IOpportunity[]>(
+    () => cachedOpportunities ?? [],
+  );
+
+  const scopeOpportunities = useCallback(
+    (items: IOpportunity[]) =>
+      isScopedClient
+        ? items.filter((opportunity) => scopedClientIds.has(opportunity.clientId))
+        : items,
+    [isScopedClient, scopedClientIds],
+  );
 
   const loadOpportunities = useCallback(async () => {
     const payload = await backendRequest<BackendPagedResult<BackendOpportunityDto> | BackendOpportunityDto[]>(
@@ -56,8 +78,14 @@ export default function OpportunityProvider({
         : "/api/Opportunities?pageNumber=1&pageSize=100",
     );
 
-    setOpportunities(coerceItems(payload).map(mapBackendOpportunity));
-  }, [role]);
+    setOpportunities(
+      writeProviderCache(cacheKey, scopeOpportunities(coerceItems(payload).map(mapBackendOpportunity))),
+    );
+  }, [cacheKey, role, scopeOpportunities]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, opportunities);
+  }, [cacheKey, opportunities]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -72,7 +100,7 @@ export default function OpportunityProvider({
           console.error(error);
 
           if (isActive) {
-            setOpportunities(initialOpportunities());
+            setOpportunities(writeProviderCache(cacheKey, scopeOpportunities(initialOpportunities())));
           }
         });
       }, 0);
@@ -92,6 +120,12 @@ export default function OpportunityProvider({
       };
     }
 
+    if (cachedOpportunities && cachedOpportunities.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     void backendRequest<BackendPagedResult<BackendOpportunityDto> | BackendOpportunityDto[]>(
       role === "SalesRep"
         ? "/api/opportunities/my-opportunities?pageNumber=1&pageSize=100"
@@ -102,7 +136,7 @@ export default function OpportunityProvider({
           return;
         }
 
-        setOpportunities(coerceItems(payload).map(mapBackendOpportunity));
+        setOpportunities(scopeOpportunities(coerceItems(payload).map(mapBackendOpportunity)));
       })
       .catch((error) => {
         console.error(error);
@@ -111,7 +145,7 @@ export default function OpportunityProvider({
     return () => {
       isActive = false;
     };
-  }, [isAuthenticated, isDemoMode, loadOpportunities, role]);
+  }, [cacheKey, cachedOpportunities, isAuthenticated, isDemoMode, loadOpportunities, role, scopeOpportunities]);
 
   const assignIfNeeded = async (opportunity: IOpportunity, ownerId?: string) => {
     if (!ownerId) {
@@ -142,7 +176,7 @@ export default function OpportunityProvider({
   };
 
   const moveStageIfNeeded = async (opportunity: IOpportunity, stage?: string) => {
-    if (!stage || stage === OpportunityStage.New) {
+    if (!stage) {
       return opportunity;
     }
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { isManagerRole } from "@/lib/auth/roles";
+import { isManagerRole, normalizeUserRole } from "@/lib/auth/roles";
 import { getAuthorizedUser } from "@/lib/server/assistant-auth";
 import { analyzeReassignmentScenario } from "@/lib/server/reassignment-simulator";
 import type { IReassignmentSimulationRequest } from "@/types/reassignment";
@@ -23,14 +23,14 @@ const isValidRequest = (value: unknown): value is IReassignmentSimulationRequest
   );
 };
 
-export async function POST(request: NextRequest) {
-  const user = getAuthorizedUser(request);
+export const POST = async (request: NextRequest) => {
+  const user = await getAuthorizedUser(request);
 
   if (!user) {
     return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
   }
 
-  if (!isManagerRole(user.role)) {
+  if (!isManagerRole(normalizeUserRole(user.role))) {
     return NextResponse.json(
       { message: "Only admins and sales managers can run the reassignment simulator." },
       { status: 403 },
@@ -48,7 +48,6 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await analyzeReassignmentScenario(body);
-
     return NextResponse.json(result);
   } catch (error) {
     console.error(error);
@@ -63,4 +62,4 @@ export async function POST(request: NextRequest) {
       { status: 500 },
     );
   }
-}
+};

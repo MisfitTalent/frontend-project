@@ -7,27 +7,38 @@ import { getBackendBaseUrl } from "@/lib/server/backend-url";
 import {
   addMockProposalLineItem,
   assignMockOpportunity,
+  createMockActivity,
   createMockClient,
   createMockContact,
+  createMockNote,
   createMockOpportunity,
+  createMockPricingRequest,
   createMockProposal,
+  deleteMockActivity,
   deleteMockClient,
   deleteMockContact,
+  deleteMockNote,
   deleteMockOpportunity,
+  deleteMockPricingRequest,
   deleteMockProposal,
   deleteMockProposalLineItem,
   getMockProposal,
   listMockActivities,
   listMockClients,
   listMockContacts,
+  listMockNotes,
   listMockOpportunities,
+  listMockPricingRequests,
   listMockProposals,
+  listMockTeamMembers,
   transitionMockProposal,
   updateMockActivity,
   updateMockClient,
   updateMockContact,
+  updateMockNote,
   updateMockOpportunity,
   updateMockOpportunityStage,
+  updateMockPricingRequest,
   updateMockProposal,
   updateMockProposalLineItem,
 } from "@/lib/server/mock-workspace-store";
@@ -288,6 +299,53 @@ const toActivityDto = (activity: ReturnType<typeof listMockActivities>[number]) 
   typeName: String(activity.type ?? "Task"),
 });
 
+const toPricingRequestDto = (
+  request: ReturnType<typeof listMockPricingRequests>[number],
+) => ({
+  assignedToId: request.assignedToId ?? null,
+  assignedToName: request.assignedToName ?? null,
+  completedDate: request.completedDate ? `${request.completedDate}T09:00:00` : null,
+  createdAt: request.createdAt,
+  description: request.description ?? null,
+  id: request.id,
+  opportunityId: request.opportunityId,
+  opportunityTitle: request.opportunityTitle ?? null,
+  priority: request.priority ?? 2,
+  priorityName: request.priorityLabel ?? null,
+  requestNumber: request.requestNumber ?? null,
+  requestedById: request.requestedById ?? null,
+  requestedByName: request.requestedByName ?? null,
+  requiredByDate: request.requiredByDate ? `${request.requiredByDate}T09:00:00` : null,
+  status:
+    String(request.status) === "In Progress"
+      ? 2
+      : String(request.status) === "Completed"
+        ? 3
+        : String(request.status) === "Cancelled"
+          ? 4
+          : 1,
+  statusName: String(request.status ?? "Pending"),
+  title: request.title,
+  updatedAt: request.updatedAt ?? null,
+});
+
+const toNoteDto = (note: ReturnType<typeof listMockNotes>[number]) => ({
+  ...note,
+});
+
+const toUserDto = (member: ReturnType<typeof listMockTeamMembers>[number]) => ({
+  availabilityPercent: member.availabilityPercent,
+  email: null,
+  firstName: member.name.split(" ").slice(0, -1).join(" ") || member.name,
+  fullName: member.name,
+  id: member.id,
+  lastName: member.name.split(" ").slice(-1)[0] ?? "",
+  region: member.region,
+  role: member.role,
+  roles: [member.role],
+  skills: member.skills,
+});
+
 const handleMockRequest = async (
   request: NextRequest,
   path: string[],
@@ -456,6 +514,15 @@ const handleMockRequest = async (
     }
   }
 
+  if (resource === "Users" && !id && request.method === "GET") {
+    const roleFilter = request.nextUrl.searchParams.get("role");
+    const items = listMockTeamMembers(user.tenantId).filter((item) =>
+      roleFilter ? item.role === roleFilter : true,
+    );
+
+    return json({ items: items.map(toUserDto) });
+  }
+
   if (resource === "Activities" || resource === "activities") {
     if (!id && request.method === "GET") {
       const items =
@@ -469,6 +536,26 @@ const handleMockRequest = async (
     if (resource === "activities" && id === "my-activities" && request.method === "GET") {
       const items = listMockActivities(user.tenantId).filter((item) => item.assignedToId === user.id);
       return json({ items: items.map(toActivityDto) });
+    }
+
+    if (!id && request.method === "POST" && body) {
+      const activity = createMockActivity(user, {
+        assignedToId: body.assignedToId ? String(body.assignedToId) : undefined,
+        assignedToName: body.assignedToName ? String(body.assignedToName) : undefined,
+        description: body.description ? String(body.description) : "",
+        dueDate: body.dueDate ? String(body.dueDate).split("T")[0] : "",
+        duration: body.duration ? Number(body.duration) : undefined,
+        location: body.location ? String(body.location) : undefined,
+        priority: Number(body.priority ?? 2),
+        relatedToId: String(body.relatedToId ?? ""),
+        relatedToType: Number(body.relatedToType ?? 2),
+        status: body.statusName ? String(body.statusName) : "Scheduled",
+        subject: String(body.subject ?? "Untitled activity"),
+        title: body.subject ? String(body.subject) : "Untitled activity",
+        type: body.typeName ? String(body.typeName) : "Task",
+      });
+
+      return json(toActivityDto(activity), 201);
     }
 
     if (id && request.method === "PUT" && body) {
@@ -488,6 +575,185 @@ const handleMockRequest = async (
       });
 
       return activity ? json(toActivityDto(activity)) : json({ message: "Activity not found." }, 404);
+    }
+
+    if (id && request.method === "DELETE") {
+      deleteMockActivity(user.tenantId, id);
+      return new NextResponse(null, { status: 204 });
+    }
+  }
+
+  if (resource === "PricingRequests" || resource === "pricingrequests") {
+    if (!id && request.method === "GET") {
+      const items =
+        resource === "pricingrequests" && path[2] === "my-requests"
+          ? listMockPricingRequests(user.tenantId).filter((item) => item.requestedById === user.id)
+          : listMockPricingRequests(user.tenantId);
+
+      return json({ items: items.map(toPricingRequestDto) });
+    }
+
+    if (resource === "pricingrequests" && id === "my-requests" && request.method === "GET") {
+      const items = listMockPricingRequests(user.tenantId).filter(
+        (item) => item.requestedById === user.id,
+      );
+      return json({ items: items.map(toPricingRequestDto) });
+    }
+
+    if (!id && request.method === "POST" && body) {
+      const requestItem = createMockPricingRequest(user, {
+        assignedToId: body.assignedToId ? String(body.assignedToId) : undefined,
+        assignedToName: body.assignedToName ? String(body.assignedToName) : undefined,
+        description: body.description ? String(body.description) : undefined,
+        opportunityId: String(body.opportunityId ?? ""),
+        opportunityTitle: body.opportunityTitle ? String(body.opportunityTitle) : undefined,
+        priority: Number(body.priority ?? 2),
+        requestNumber: body.requestNumber ? String(body.requestNumber) : undefined,
+        requestedById: user.id,
+        requestedByName: `${user.firstName} ${user.lastName}`.trim(),
+        requiredByDate: body.requiredByDate ? String(body.requiredByDate) : undefined,
+        status: body.statusName ? String(body.statusName) : "Pending",
+        title: String(body.title ?? "Untitled pricing request"),
+        updatedAt: new Date().toISOString(),
+      });
+
+      return json(toPricingRequestDto(requestItem), 201);
+    }
+
+    if (id && nested === "assign" && request.method === "POST" && body) {
+      const requestItem = updateMockPricingRequest(user.tenantId, id, {
+        assignedToId: String(body.userId ?? ""),
+      });
+
+      return requestItem
+        ? json(toPricingRequestDto(requestItem))
+        : json({ message: "Pricing request not found." }, 404);
+    }
+
+    if (id && nested === "complete" && request.method === "PUT") {
+      const requestItem = updateMockPricingRequest(user.tenantId, id, {
+        completedDate: new Date().toISOString().split("T")[0],
+        status: "Completed",
+        updatedAt: new Date().toISOString(),
+      });
+
+      return requestItem
+        ? json(toPricingRequestDto(requestItem))
+        : json({ message: "Pricing request not found." }, 404);
+    }
+
+    if (id && !nested && request.method === "PUT" && body) {
+      const requestItem = updateMockPricingRequest(user.tenantId, id, {
+        assignedToId: body.assignedToId ? String(body.assignedToId) : undefined,
+        assignedToName: body.assignedToName ? String(body.assignedToName) : undefined,
+        description: body.description ? String(body.description) : undefined,
+        opportunityId: body.opportunityId ? String(body.opportunityId) : undefined,
+        opportunityTitle: body.opportunityTitle ? String(body.opportunityTitle) : undefined,
+        priority: body.priority ? Number(body.priority) : undefined,
+        requestNumber: body.requestNumber ? String(body.requestNumber) : undefined,
+        requiredByDate: body.requiredByDate ? String(body.requiredByDate) : undefined,
+        status: body.statusName ? String(body.statusName) : undefined,
+        title: body.title ? String(body.title) : undefined,
+        updatedAt: new Date().toISOString(),
+      });
+
+      return requestItem
+        ? json(toPricingRequestDto(requestItem))
+        : json({ message: "Pricing request not found." }, 404);
+    }
+
+    if (id && request.method === "DELETE") {
+      deleteMockPricingRequest(user.tenantId, id);
+      return new NextResponse(null, { status: 204 });
+    }
+  }
+
+  if (resource === "Notes" || resource === "notes") {
+    if (!id && request.method === "GET") {
+      return json({ items: listMockNotes(user.tenantId).map(toNoteDto) });
+    }
+
+    if (!id && request.method === "POST" && body) {
+      const note = createMockNote(user, {
+        assignedByUserId: body.assignedByUserId ? String(body.assignedByUserId) : undefined,
+        assignedByUserName: body.assignedByUserName ? String(body.assignedByUserName) : undefined,
+        category: String(body.category ?? "General"),
+        clientId: body.clientId ? String(body.clientId) : undefined,
+        content: String(body.content ?? ""),
+        createdDate: body.createdDate ? String(body.createdDate) : new Date().toISOString(),
+        kind: body.kind
+          ? (String(body.kind) as
+              | "client_feedback"
+              | "client_message"
+              | "general"
+              | "team_assignment")
+          : undefined,
+        linkedRequestId: body.linkedRequestId ? String(body.linkedRequestId) : undefined,
+        representativeId: body.representativeId ? String(body.representativeId) : undefined,
+        representativeName: body.representativeName ? String(body.representativeName) : undefined,
+        requestType: body.requestType
+          ? (String(body.requestType) as "client_request" | "team_assignment")
+          : undefined,
+        source: body.source
+          ? (String(body.source) as "assistant" | "client_portal" | "workspace")
+          : undefined,
+        status: body.status
+          ? (String(body.status) as
+              | "Acknowledged"
+              | "Accepted"
+              | "Pending admin review"
+              | "Pending client response"
+              | "Rejected"
+              | "Sent")
+          : undefined,
+        title: String(body.title ?? "Untitled note"),
+      });
+
+      return json(toNoteDto(note), 201);
+    }
+
+    if (id && request.method === "PUT" && body) {
+      const note = updateMockNote(user.tenantId, id, {
+        assignedByUserId: body.assignedByUserId ? String(body.assignedByUserId) : undefined,
+        assignedByUserName: body.assignedByUserName ? String(body.assignedByUserName) : undefined,
+        category: body.category ? String(body.category) : undefined,
+        clientId: body.clientId ? String(body.clientId) : undefined,
+        content: body.content ? String(body.content) : undefined,
+        createdDate: body.createdDate ? String(body.createdDate) : undefined,
+        kind: body.kind
+          ? (String(body.kind) as
+              | "client_feedback"
+              | "client_message"
+              | "general"
+              | "team_assignment")
+          : undefined,
+        linkedRequestId: body.linkedRequestId ? String(body.linkedRequestId) : undefined,
+        representativeId: body.representativeId ? String(body.representativeId) : undefined,
+        representativeName: body.representativeName ? String(body.representativeName) : undefined,
+        requestType: body.requestType
+          ? (String(body.requestType) as "client_request" | "team_assignment")
+          : undefined,
+        source: body.source
+          ? (String(body.source) as "assistant" | "client_portal" | "workspace")
+          : undefined,
+        status: body.status
+          ? (String(body.status) as
+              | "Acknowledged"
+              | "Accepted"
+              | "Pending admin review"
+              | "Pending client response"
+              | "Rejected"
+              | "Sent")
+          : undefined,
+        title: body.title ? String(body.title) : undefined,
+      });
+
+      return note ? json(toNoteDto(note)) : json({ message: "Note not found." }, 404);
+    }
+
+    if (id && request.method === "DELETE") {
+      deleteMockNote(user.tenantId, id);
+      return new NextResponse(null, { status: 204 });
     }
   }
 

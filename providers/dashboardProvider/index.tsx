@@ -1,31 +1,20 @@
 "use client";
 
-import { useContext, useEffect, useMemo, useReducer, useState } from "react";
+import { useContext, useMemo, useReducer } from "react";
 
-import {
-  type BackendPagedResult,
-  type BackendUserDto,
-  backendRequest,
-  coerceItems,
-  getSessionToken,
-  isMockSessionToken,
-  mapBackendUser,
-} from "@/lib/client/backend-api";
-import { getPrimaryUserRole } from "@/lib/auth/roles";
-import { useAuthState } from "@/providers/authProvider";
 import {
   ActivityStatus,
   ActivityType,
   OpportunityStage,
   ProposalStatus,
 } from "@/providers/salesTypes";
-import { initialAutomationFeed, initialTeamMembers } from "@/providers/domainSeeds";
+import { initialAutomationFeed } from "@/providers/domainSeeds";
 import { useActivityActions, useActivityState } from "@/providers/activityProvider";
 import { useClientActions, useClientState } from "@/providers/clientProvider";
-import { useContactActions, useContactState } from "@/providers/contactProvider";
 import { useContractState } from "@/providers/contractProvider";
 import { useOpportunityActions, useOpportunityState } from "@/providers/opportunityProvider";
 import { useProposalActions, useProposalState } from "@/providers/proposalProvider";
+import { useTeamMembersState } from "@/providers/teamMembersProvider";
 import { formatCurrency, getBestOwner } from "@/providers/salesSelectors";
 import type { IAutomationEvent, IClientBundleInput, ISalesData } from "@/providers/salesTypes";
 import { addAutomationEventAction } from "./actions";
@@ -58,97 +47,44 @@ const createId = (prefix: string) =>
 export default function DashboardProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  const fallbackTeamMembers = useMemo(() => initialTeamMembers(), []);
   const [localState, dispatch] = useReducer(DashboardReducer, {
     automationFeed: initialAutomationFeed(),
-    teamMembers: fallbackTeamMembers,
+    teamMembers: [],
   });
-  const [teamMembers, setTeamMembers] = useState(fallbackTeamMembers);
-  const { isAuthenticated, user } = useAuthState();
-  const isDemoMode = isMockSessionToken(getSessionToken());
-  const role = getPrimaryUserRole(user?.roles);
+  const { teamMembers } = useTeamMembersState();
 
   const { opportunities } = useOpportunityState();
   const { proposals } = useProposalState();
   const { clients } = useClientState();
-  const { contacts } = useContactState();
   const { contracts, renewals } = useContractState();
   const { activities } = useActivityState();
 
   const { addOpportunity } = useOpportunityActions();
   const { addProposal } = useProposalActions();
   const { addClient } = useClientActions();
-  const { addContact } = useContactActions();
   const { addActivity } = useActivityActions();
-
-  useEffect(() => {
-    if (!isAuthenticated) {
-      return;
-    }
-
-    let isActive = true;
-
-    if (isDemoMode) {
-      Promise.resolve().then(() => {
-        if (isActive) {
-          setTeamMembers(fallbackTeamMembers);
-        }
-      });
-
-      return () => {
-        isActive = false;
-      };
-    }
-
-    void backendRequest<BackendPagedResult<BackendUserDto> | BackendUserDto[]>(
-      `/api/Users?pageNumber=1&pageSize=100&isActive=true${
-        role === "SalesRep" ? "&role=SalesRep" : ""
-      }`,
-    )
-      .then((payload) => {
-        if (!isActive) {
-          return;
-        }
-
-        const users = coerceItems(payload).map(mapBackendUser);
-
-        if (users.length > 0) {
-          setTeamMembers(users);
-        }
-      })
-      .catch((error) => {
-        console.error(error);
-      });
-
-    return () => {
-      isActive = false;
-    };
-  }, [fallbackTeamMembers, isAuthenticated, isDemoMode, role]);
-
-  const visibleTeamMembers = isAuthenticated ? teamMembers : fallbackTeamMembers;
 
   const salesData = useMemo<ISalesData>(
     () => ({
       activities,
       automationFeed: localState.automationFeed,
       clients,
-      contacts,
+      contacts: [],
       contracts,
       opportunities,
       proposals,
       renewals,
-      teamMembers: visibleTeamMembers,
+      teamMembers,
     }),
     [
       activities,
       clients,
-      contacts,
       contracts,
       localState.automationFeed,
       opportunities,
       proposals,
       renewals,
-      visibleTeamMembers,
+      teamMembers,
     ],
   );
 
@@ -173,27 +109,8 @@ export default function DashboardProvider({
         (payload.opportunity.value >= 1_000_000 ? "Enterprise" : "Growth"),
     });
 
-    let contactId: string | undefined;
-
-    if (payload.contact?.firstName && payload.contact?.lastName && payload.contact?.email) {
-      const contact = await addContact({
-        clientId: client.id,
-        createdAt: new Date().toISOString(),
-        email: payload.contact.email,
-        firstName: payload.contact.firstName,
-        id: createId("contact"),
-        isPrimaryContact: true,
-        lastName: payload.contact.lastName,
-        phoneNumber: payload.contact.phoneNumber,
-        position: payload.contact.position ?? "Primary contact",
-      });
-
-      contactId = contact.id;
-    }
-
     const opportunity = await addOpportunity({
       clientId: client.id,
-      contactId,
       createdDate: new Date().toISOString().split("T")[0],
       currency: "ZAR",
       description: payload.opportunity.description,
@@ -256,7 +173,7 @@ export default function DashboardProvider({
       value={{
         automationFeed: localState.automationFeed,
         salesData,
-        teamMembers: visibleTeamMembers,
+        teamMembers,
       }}
     >
       <DashboardActionContext.Provider

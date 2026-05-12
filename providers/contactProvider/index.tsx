@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { useAuthState } from "@/providers/authProvider";
 import {
   type BackendContactDto,
@@ -14,6 +15,7 @@ import {
   isMockSessionToken,
   mapBackendContact,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { initialContacts } from "@/providers/domainSeeds";
 import { ContactActionContext, ContactStateContext } from "./context";
 import type { IContact } from "@/providers/salesTypes";
@@ -45,17 +47,40 @@ type ContactProviderProps = Readonly<{
 export default function ContactProvider({
   children,
 }: ContactProviderProps) {
-  const { isAuthenticated } = useAuthState();
-  const [contacts, setContacts] = useState<IContact[]>([]);
+  const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
+  const isScopedClient = isClientScopedUser(user?.clientIds);
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("contacts", user?.tenantId, user?.userId),
+    [user?.tenantId, user?.userId],
+  );
+  const cachedContacts = useMemo(() => readProviderCache<IContact[]>(cacheKey), [cacheKey]);
+  const [contacts, setContacts] = useState<IContact[]>(
+    () => cachedContacts ?? [],
+  );
+
+  const scopeContacts = useCallback(
+    (items: IContact[]) =>
+      isScopedClient
+        ? items.filter((contact) => scopedClientIds.has(contact.clientId))
+        : items,
+    [isScopedClient, scopedClientIds],
+  );
 
   const loadContacts = useCallback(async () => {
     const payload = await backendRequest<BackendPagedResult<BackendContactDto> | BackendContactDto[]>(
       "/api/Contacts?pageNumber=1&pageSize=100",
     );
 
-    setContacts(coerceItems(payload).map(mapBackendContact));
-  }, []);
+    setContacts(
+      writeProviderCache(cacheKey, scopeContacts(coerceItems(payload).map(mapBackendContact))),
+    );
+  }, [cacheKey, scopeContacts]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, contacts);
+  }, [cacheKey, contacts]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -70,7 +95,7 @@ export default function ContactProvider({
           console.error(error);
 
           if (isActive) {
-            setContacts(initialContacts());
+            setContacts(writeProviderCache(cacheKey, scopeContacts(initialContacts())));
           }
         });
       }, 0);
@@ -90,6 +115,12 @@ export default function ContactProvider({
       };
     }
 
+    if (cachedContacts && cachedContacts.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     const timer = window.setTimeout(() => {
       void loadContacts().catch((error) => {
         console.error(error);
@@ -100,7 +131,7 @@ export default function ContactProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [isAuthenticated, isDemoMode, loadContacts]);
+  }, [cacheKey, cachedContacts, isAuthenticated, isDemoMode, loadContacts, scopeContacts]);
 
   return (
     <ContactStateContext.Provider value={{ contacts: isAuthenticated ? contacts : [] }}>

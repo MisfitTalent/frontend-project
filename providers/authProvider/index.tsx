@@ -1,14 +1,17 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useReducer } from "react";
 import { useRouter } from "next/navigation";
+import { useCallback, useContext, useEffect, useReducer } from "react";
 
+import { getDashboardHomePath } from "@/lib/auth/dashboard-access";
+import { getPrimaryUserRole } from "@/lib/auth/roles";
 import {
   clearAuthSession,
   getSessionToken,
   getStoredAuthUser,
   storeAuthSession,
 } from "@/lib/client/auth-session";
+
 import {
   getMePending,
   getMeSuccess,
@@ -31,6 +34,17 @@ import {
   type IUserRegisterRequest,
 } from "./context";
 import { AuthReducer } from "./reducers";
+
+class AuthRequestError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "AuthRequestError";
+    this.status = status;
+  }
+}
+
 export const useAuthState = () => {
   const context = useContext(AuthStateContext);
 
@@ -80,10 +94,13 @@ const authRequest = async <T,>(
     credentials: "same-origin",
     headers,
   });
-  const payload = (await readJsonPayload<T & { message?: string }>(response));
+  const payload = await readJsonPayload<T & { message?: string }>(response);
 
   if (!response.ok) {
-    throw new Error(payload.message ?? "Authentication failed.");
+    throw new AuthRequestError(
+      payload.message ?? "Authentication failed.",
+      response.status,
+    );
   }
 
   return payload;
@@ -95,23 +112,24 @@ const mergeAuthUser = (
 ): IUserLoginResponse => ({
   ...fallback,
   ...payload,
+  clientIds: payload.clientIds ?? fallback?.clientIds ?? null,
+  isMockSession: payload.isMockSession ?? fallback?.isMockSession ?? false,
   roles: payload.roles ?? fallback?.roles ?? null,
   token: payload.token ?? fallback?.token ?? getSessionToken(),
 });
 
-export default function AuthProvider({ children }: AuthProviderProps) {
+export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [state, dispatch] = useReducer(AuthReducer, INITIAL_STATE);
   const router = useRouter();
 
   const authenticate = async (
     path: "/api/Auth/login" | "/api/Auth/register",
     payload: IUserLoginRequest | IUserRegisterRequest,
-  ) => {
-    return authRequest<IUserLoginResponse>(path, {
+  ) =>
+    authRequest<IUserLoginResponse>(path, {
       body: JSON.stringify(payload),
       method: "POST",
     });
-  };
 
   const login = async (payload: IUserLoginRequest) => {
     dispatch(loginPending());
@@ -120,7 +138,12 @@ export default function AuthProvider({ children }: AuthProviderProps) {
       .then((response) => {
         storeAuthSession(response);
         dispatch(loginSuccess(response));
-        router.push("/dashboard");
+        router.push(
+          getDashboardHomePath(
+            getPrimaryUserRole(response.roles),
+            response.clientIds,
+          ),
+        );
       })
       .catch((error: unknown) => {
         dispatch(loginError());
@@ -135,7 +158,12 @@ export default function AuthProvider({ children }: AuthProviderProps) {
       .then((response) => {
         storeAuthSession(response);
         dispatch(registerSuccess(response));
-        router.push("/dashboard");
+        router.push(
+          getDashboardHomePath(
+            getPrimaryUserRole(response.roles),
+            response.clientIds,
+          ),
+        );
       })
       .catch((error: unknown) => {
         dispatch(registerError());
@@ -171,7 +199,9 @@ export default function AuthProvider({ children }: AuthProviderProps) {
     }
 
     try {
-      const response = await authRequest<Partial<IUserLoginResponse>>("/api/Auth/me");
+      const response = await authRequest<Partial<IUserLoginResponse>>(
+        "/api/Auth/me",
+      );
       const nextUser = mergeAuthUser(response, storedUser);
 
       storeAuthSession(nextUser);
@@ -179,9 +209,22 @@ export default function AuthProvider({ children }: AuthProviderProps) {
       return;
     } catch (error) {
       console.error(error);
+
+      if (
+        error instanceof AuthRequestError &&
+        (error.status === 401 || error.status === 403)
+      ) {
+        clearAuthSession();
+        dispatch(logoutSuccess());
+        return;
+      }
+
+      if (storedUser) {
+        dispatch(getMeSuccess(storedUser));
+        return;
+      }
     }
 
-    clearAuthSession();
     dispatch(logoutSuccess());
   }, []);
 
@@ -203,4 +246,6 @@ export default function AuthProvider({ children }: AuthProviderProps) {
       </AuthActionContext.Provider>
     </AuthStateContext.Provider>
   );
-}
+};
+
+export default AuthProvider;

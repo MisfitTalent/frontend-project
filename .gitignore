@@ -15,6 +15,11 @@
 
 # next.js
 /.next/
+/.next-dev/
+/.next-turbo/
+/.next-webpack/
+/.next-verify/
+/next-verify/
 /out/
 
 # production
@@ -35,6 +40,7 @@ yarn-error.log*
 
 # vercel
 .vercel
+.local-state/
 
 # typescript
 *.tsbuildinfo
