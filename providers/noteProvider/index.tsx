@@ -72,6 +72,24 @@ export default function NoteProvider({
       return;
     }
 
+    const handleWorkspaceUpdate = () => {
+      void loadNotes().catch((error) => {
+        console.error(error);
+      });
+    };
+
+    window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+
+    return () => {
+      window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+    };
+  }, [isAuthenticated, loadNotes]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     let isActive = true;
     let pollTimer: number | null = null;
 
@@ -98,14 +116,7 @@ export default function NoteProvider({
         });
       }, 0);
 
-      const handleWorkspaceUpdate = () => {
-        void loadNotes().catch((error) => {
-          console.error(error);
-        });
-      };
-
       schedulePolling();
-      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
 
       return () => {
         isActive = false;
@@ -113,7 +124,6 @@ export default function NoteProvider({
         if (pollTimer !== null) {
           window.clearInterval(pollTimer);
         }
-        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
       };
     }
 

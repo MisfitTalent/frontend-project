@@ -69,8 +69,9 @@ export function ContactForm({
     });
   };
 
-  return mounted ? (
+  return (
     <Modal
+      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}
@@ -143,5 +144,5 @@ export function ContactForm({
         </div>
       </Form>
     </Modal>
-  ) : null;
+  );
 }

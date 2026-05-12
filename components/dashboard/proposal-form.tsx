@@ -186,8 +186,9 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
     }
   };
 
-  return mounted ? (
+  return (
     <Modal
+      forceRender
       onCancel={() => {
         setFormError(null);
         onClose();
@@ -381,5 +382,5 @@ export function ProposalForm({ isOpen, editingId, onClose }: ProposalFormProps) 
         </Form>
       )}
     </Modal>
-  ) : null;
+  );
 }

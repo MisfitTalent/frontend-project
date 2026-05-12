@@ -84,9 +84,14 @@ const authRequest = async <T,>(
   init: RequestInit = {},
 ) => {
   const headers = new Headers(init.headers);
+  const token = getSessionToken();
 
   if (init.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
+  }
+
+  if (path === "/api/Auth/me" && token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
   }
 
   const response = await fetch(path, {
@@ -192,7 +197,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     const storedUser = getStoredAuthUser();
     const token = storedUser?.token ?? getSessionToken();
 
-    if (!token) {
+    if (!token && !storedUser) {
       clearAuthSession();
       dispatch(logoutSuccess());
       return;

@@ -9,7 +9,14 @@ import {
   getOpportunityInsights,
   getTeamCapacity,
 } from "@/providers/salesSelectors";
-import { OpportunityStage, ProposalStatus } from "@/providers/salesTypes";
+import {
+  OpportunityStage,
+  ProposalStatus,
+  type IClient,
+  type IOpportunity,
+  type IProposal,
+  type ITeamMember,
+} from "@/providers/salesTypes";
 
 import {
   getAssistantServerConfig,
@@ -248,8 +255,10 @@ type PendingOpportunityCreateRequest = {
   clientId: string | null;
   clientName: string | null;
   estimatedValue: number | null;
+  excludedOwnerIds?: string[];
   expectedCloseDate: string | null;
   ownerId: string | null;
+  ownerPreferenceHints?: string[];
   ownerName: string | null;
   stage: string | null;
   title: string | null;
@@ -389,20 +398,30 @@ Security rules:
 - Use only information returned by tools in this session.
 
 Behavior rules:
+- Act like a capable operations agent for this workspace, not a form wizard.
+- Interpret natural language, slang, shorthand, fragments, corrections, and follow-up references such as "that one", "them", "the last quote", "not her", and "you decide".
+- Prefer doing the planning work yourself. Infer reasonable defaults from workspace context whenever the user leaves details open.
+- Ask only for truly missing required information. Do not ask the user to repeat information already present in the conversation or available from tools.
+- When the user is vague but the task is clear, propose a concrete plan or draft with sensible defaults instead of listing empty fields.
+- If the user asks what you can do, answer briefly and then move back to helping with the actual task.
+- If a matching tool exists, do not claim that you are unable to perform the action. Use the tool or ask for only the minimum missing information.
+- For client creation, only the client name is truly required. Industry and all other client fields are optional.
+- If the user explicitly asks for test data, sample data, made-up values, placeholders, or random values in this workspace, you may generate sensible mock business details for optional fields and then ask for confirmation.
 - Give direct, practical sales advice.
 - For Admin and SalesManager users, focus on pipeline risk, next actions, owner load, proposals, renewals, and commercial blockers.
 - For BusinessDevelopmentManager and SalesRep users, focus on execution, assigned work, proposal progress, pricing requests, and next steps.
 - For Client users, focus on their shared account workspace, messages, proposals, documents, contracts, and the next external-facing step.
-  - When helpful, recommend the next 1 to 3 actions.
-  - Keep answers concise and business-ready.
-  - Only create records when the user explicitly asks you to create, add, draft, or open something.
-  - Only delete records when the user explicitly asks you to delete, remove, or cancel them.
-  - You are allowed to delete clients, opportunities, proposals, activities, pricing requests, and notes when the user explicitly asks.
-  - If the user says "delete this", "delete them", "remove it", or similar immediately after you created or discussed records, use the most recent matching record context instead of refusing.
-  - All authenticated users are allowed to ask you to send a message. Use the messaging tool for that.
-  - Respect authenticated permissions at the tool layer. Do not promise a mutation if the current role or scope is not allowed to do it.
-  - Before you create, update, delete, reassign, approve, reject, send, or otherwise mutate workspace records, pause and ask for confirmation first.
-  - When the latest user message is a confirmation such as "confirm", "yes", or "go ahead", use the recent conversation context to complete the previously proposed action.
+- When helpful, recommend the next 1 to 3 actions.
+- Keep answers concise and business-ready.
+- Only create records when the user explicitly asks you to create, add, draft, or open something.
+- Only delete records when the user explicitly asks you to delete, remove, or cancel them.
+- You are allowed to delete clients, opportunities, proposals, activities, pricing requests, and notes when the user explicitly asks.
+- If the user says "delete this", "delete them", "remove it", or similar immediately after you created or discussed records, use the most recent matching record context instead of refusing.
+- All authenticated users are allowed to ask you to send a message. Use the messaging tool for that.
+- Respect authenticated permissions at the tool layer. Do not promise a mutation if the current role or scope is not allowed to do it.
+- Before you create, update, delete, reassign, approve, reject, send, or otherwise mutate workspace records, pause and ask for confirmation first.
+- When the latest user message is a confirmation such as "confirm", "yes", or "go ahead", use the recent conversation context to complete the previously proposed action.
+- Do not turn generic user intent into a fake fully specified draft. If you do not have a real target record or enough grounded context, ask one focused follow-up question.
 
 Authorized scope summary:
 ${JSON.stringify(summarizeWorkspace(workspace), null, 2)}
@@ -1084,11 +1103,13 @@ const isProposalEditIntent = (message: string) => {
 };
 
 const extractProposalTitle = (message: string) =>
-  message.match(/\btitle\s+(?:is|to)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
-  message.match(/\b(?:rename|call)\s+(?:it|the proposal)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
-  message.match(/\bdraft proposal titled\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
-  message.match(/\bproposal(?: called| named| title is)?\s+["“]?(.+?)["”]?(?=\s+(?:for|with|valid until|expires|expiry|by)\b|$|\n)/i)?.[1]?.trim() ??
-  null;
+  sanitizeProposalGeneratedTitle(
+    message.match(/\btitle\s+(?:is|to)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+      message.match(/\b(?:rename|call)\s+(?:it|the proposal)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+      message.match(/\bdraft proposal titled\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+      message.match(/\bproposal(?: called| named| title is)?\s+["“]?(.+?)["”]?(?=\s+(?:for|with|valid until|expires|expiry|by)\b|$|\n)/i)?.[1]?.trim() ??
+      null,
+  );
 
 const extractProposalValidUntil = (message: string) => {
   const raw =
@@ -1252,21 +1273,12 @@ const findClientByReferenceInWorkspace = (
   workspace: IAssistantWorkspace,
   reference: string | null,
 ) => {
-  if (!reference) {
-    return null;
-  }
-
-  const normalizedReference = normalizeLookupValue(reference);
-
   return (
-    workspace.salesData.clients.find(
-      (client) => normalizeLookupValue(client.id) === normalizedReference,
-    ) ??
-    workspace.salesData.clients.find(
-      (client) => normalizeLookupValue(client.name) === normalizedReference,
-    ) ??
-    workspace.salesData.clients.find((client) =>
-      normalizeLookupValue(client.name).includes(normalizedReference),
+    findBestReferenceMatch<IClient>(
+      workspace.salesData.clients,
+      reference,
+      (client) => [client.id, client.name, client.industry, client.segment ?? null],
+      52,
     ) ??
     null
   );
@@ -1276,21 +1288,12 @@ const findOwnerByReferenceInWorkspace = (
   workspace: IAssistantWorkspace,
   reference: string | null,
 ) => {
-  if (!reference) {
-    return null;
-  }
-
-  const normalizedReference = normalizeLookupValue(reference);
-
   return (
-    workspace.salesData.teamMembers.find(
-      (member) => normalizeLookupValue(member.id) === normalizedReference,
-    ) ??
-    workspace.salesData.teamMembers.find(
-      (member) => normalizeLookupValue(member.name) === normalizedReference,
-    ) ??
-    workspace.salesData.teamMembers.find((member) =>
-      normalizeLookupValue(member.name).includes(normalizedReference),
+    findBestReferenceMatch<ITeamMember>(
+      workspace.salesData.teamMembers,
+      reference,
+      (member) => [member.id, member.name, member.role, ...member.skills],
+      58,
     ) ??
     null
   );
@@ -1422,6 +1425,33 @@ const sanitizeWorkflowGeneratedTitle = (value: string | null) => {
   return trimmed;
 };
 
+const sanitizeProposalGeneratedTitle = (value: string | null) => {
+  const trimmed = sanitizeWorkflowGeneratedTitle(value);
+
+  if (!trimmed) {
+    return null;
+  }
+
+  const normalized = normalizeLookupValue(trimmed);
+
+  if (
+    normalized === "proposal" ||
+    normalized === "draft proposal" ||
+    normalized === "a draft proposal" ||
+    normalized === "new proposal" ||
+    normalized === "existing opportunity" ||
+    normalized === "an existing opportunity" ||
+    normalized === "for an existing opportunity" ||
+    normalized === "for existing opportunity" ||
+    normalized.endsWith("existing opportunity") ||
+    normalized.endsWith("current opportunity")
+  ) {
+    return null;
+  }
+
+  return trimmed;
+};
+
 const prefixClientNameOnce = (clientName: string | null, title: string) => {
   if (!clientName) {
     return title.trim();
@@ -1430,6 +1460,333 @@ const prefixClientNameOnce = (clientName: string | null, title: string) => {
   return normalizeLookupValue(title).startsWith(normalizeLookupValue(clientName))
     ? title.trim()
     : `${clientName} ${title}`.trim();
+};
+
+const LOOKUP_NOISE_TOKENS = new Set([
+  "a",
+  "an",
+  "and",
+  "any",
+  "client",
+  "deal",
+  "for",
+  "it",
+  "last",
+  "new",
+  "of",
+  "one",
+  "opportunity",
+  "proposal",
+  "quote",
+  "record",
+  "team",
+  "that",
+  "the",
+  "this",
+  "to",
+  "user",
+  "with",
+]);
+
+const tokenizeLookupValue = (value: string) =>
+  normalizeLookupValue(value)
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0 && !LOOKUP_NOISE_TOKENS.has(token));
+
+const scoreReferenceMatch = (candidate: string, reference: string) => {
+  const normalizedCandidate = normalizeLookupValue(candidate);
+  const normalizedReference = normalizeLookupValue(reference);
+
+  if (!normalizedCandidate || !normalizedReference) {
+    return 0;
+  }
+
+  if (normalizedCandidate === normalizedReference) {
+    return 200;
+  }
+
+  let score = 0;
+
+  if (normalizedCandidate.startsWith(normalizedReference)) {
+    score += 120;
+  } else if (normalizedCandidate.includes(normalizedReference)) {
+    score += 90;
+  }
+
+  const candidateTokens = tokenizeLookupValue(candidate);
+  const referenceTokens = tokenizeLookupValue(reference);
+
+  if (referenceTokens.length === 0) {
+    return score;
+  }
+
+  let overlap = 0;
+
+  referenceTokens.forEach((token) => {
+    if (
+      candidateTokens.some(
+        (candidateToken) =>
+          candidateToken === token ||
+          candidateToken.startsWith(token) ||
+          token.startsWith(candidateToken),
+      )
+    ) {
+      overlap += 1;
+    }
+  });
+
+  if (overlap > 0) {
+    score += overlap * 28;
+    if (overlap === referenceTokens.length) {
+      score += 24;
+    }
+  }
+
+  return score;
+};
+
+const findBestReferenceMatch = <T>(
+  items: T[],
+  reference: string | null,
+  getCandidates: (item: T) => Array<string | null | undefined>,
+  minimumScore = 60,
+): T | null => {
+  if (!reference) {
+    return null;
+  }
+
+  let bestItem: T | null = null;
+  let bestScore = 0;
+
+  items.forEach((item) => {
+    const itemScore = getCandidates(item).reduce((highest, candidate) => {
+      if (typeof candidate !== "string" || !candidate.trim()) {
+        return highest;
+      }
+
+      return Math.max(highest, scoreReferenceMatch(candidate, reference));
+    }, 0);
+
+    if (itemScore > bestScore) {
+      bestScore = itemScore;
+      bestItem = item;
+    }
+  });
+
+  return bestScore >= minimumScore ? bestItem : null;
+};
+
+const extractOwnerPreferenceHints = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+  const hints = new Set<string>();
+
+  if (
+    /(?:tech|technical|integration|api|automation|cloud|engineering)/i.test(normalized)
+  ) {
+    hints.add("Technology");
+    hints.add("Cloud");
+    hints.add("Automation");
+  }
+
+  if (/(?:proposal|quote|rfp|commercial pack)/i.test(normalized)) {
+    hints.add("Proposals");
+    hints.add("RFP");
+  }
+
+  if (/(?:pricing|commercial|deal desk|contract)/i.test(normalized)) {
+    hints.add("Pricing");
+    hints.add("Commercial");
+    hints.add("Contracts");
+  }
+
+  if (/(?:renewal|retention|upsell)/i.test(normalized)) {
+    hints.add("Renewals");
+    hints.add("Retention");
+  }
+
+  if (/(?:prospect|outbound|discovery|pipeline creation)/i.test(normalized)) {
+    hints.add("Prospecting");
+    hints.add("Discovery");
+    hints.add("Pipeline Creation");
+  }
+
+  if (/\benterprise\b/i.test(normalized)) {
+    hints.add("Enterprise");
+  }
+
+  if (/\bhealth(?:care)?\b/i.test(normalized)) {
+    hints.add("Healthcare");
+  }
+
+  if (/\bretail\b/i.test(normalized)) {
+    hints.add("Retail");
+  }
+
+  if (/\btechnology\b/i.test(normalized)) {
+    hints.add("Technology");
+  }
+
+  return [...hints];
+};
+
+const shouldResetOwnerSelection = (message: string) =>
+  /\b(?:not her|not him|not them|someone else|another owner|more suitable|better fit)\b/i.test(
+    message,
+  );
+
+const isAutonomousDefaultsInstruction = (message: string) =>
+  /\b(?:your own|whatever you want|choose whatever|pick whatever|you decide|make your own|any values|sensible defaults|best guess)\b/i.test(
+    message,
+  );
+
+const inferOpportunityTheme = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  if (normalized.includes("renewal")) {
+    return "Renewal Opportunity";
+  }
+
+  if (normalized.includes("expansion")) {
+    return "Expansion Opportunity";
+  }
+
+  if (normalized.includes("rollout")) {
+    return "Rollout Opportunity";
+  }
+
+  if (normalized.includes("integration")) {
+    return "Integration Opportunity";
+  }
+
+  if (normalized.includes("automation")) {
+    return "Automation Opportunity";
+  }
+
+  if (normalized.includes("upgrade")) {
+    return "Upgrade Opportunity";
+  }
+
+  return "Growth Opportunity";
+};
+
+const roundCurrencyValue = (value: number) => Math.max(50_000, Math.round(value / 10_000) * 10_000);
+
+const inferOpportunityValueForClient = (
+  workspace: IAssistantWorkspace,
+  clientId: string,
+) => {
+  const clientOpportunities = workspace.salesData.opportunities.filter(
+    (opportunity) => opportunity.clientId === clientId,
+  );
+
+  const values = clientOpportunities
+    .map((opportunity) => opportunity.value ?? opportunity.estimatedValue)
+    .filter((value): value is number => Number.isFinite(value) && value > 0);
+
+  if (values.length > 0) {
+    const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+    return roundCurrencyValue(average);
+  }
+
+  const industry = workspace.salesData.clients.find((client) => client.id === clientId)?.industry;
+  const peerValues = workspace.salesData.opportunities
+    .filter((opportunity) => {
+      const peerClient = workspace.salesData.clients.find((client) => client.id === opportunity.clientId);
+      return peerClient?.industry === industry;
+    })
+    .map((opportunity) => opportunity.value ?? opportunity.estimatedValue)
+    .filter((value): value is number => Number.isFinite(value) && value > 0);
+
+  if (peerValues.length > 0) {
+    const average = peerValues.reduce((sum, value) => sum + value, 0) / peerValues.length;
+    return roundCurrencyValue(average);
+  }
+
+  return 250_000;
+};
+
+const inferOpportunityCloseDateForClient = (
+  workspace: IAssistantWorkspace,
+  clientId: string,
+) => {
+  const clientDurations = workspace.salesData.opportunities
+    .filter((opportunity) => opportunity.clientId === clientId)
+    .map((opportunity) => {
+      const created = new Date(`${opportunity.createdDate}T00:00:00`);
+      const close = new Date(`${opportunity.expectedCloseDate}T00:00:00`);
+      const days = Math.round((close.getTime() - created.getTime()) / 86_400_000);
+      return Number.isFinite(days) && days > 0 ? days : null;
+    })
+    .filter((value): value is number => value !== null);
+
+  const averageDuration =
+    clientDurations.length > 0
+      ? Math.round(clientDurations.reduce((sum, value) => sum + value, 0) / clientDurations.length)
+      : 30;
+
+  return toIsoDate(addDays(new Date(), Math.min(Math.max(averageDuration, 14), 60)));
+};
+
+const inferOpportunityTitleForClient = (
+  clientName: string,
+  message: string,
+) => prefixClientNameOnce(clientName, inferOpportunityTheme(message));
+
+const chooseBestOwnerForClientRequest = (
+  workspace: IAssistantWorkspace,
+  options: {
+    clientId: string;
+    estimatedValue: number;
+    excludedOwnerIds?: string[];
+    preferredHints?: string[];
+  },
+) => {
+  const client = workspace.salesData.clients.find((item) => item.id === options.clientId) ?? null;
+  const preferredHints = (options.preferredHints ?? []).map((hint) => normalizeLookupValue(hint));
+  const excluded = new Set(options.excludedOwnerIds ?? []);
+  const targetSegment = options.estimatedValue >= 1_000_000 ? "enterprise" : "smb";
+
+  const rankedMembers = [...workspace.salesData.teamMembers]
+    .filter((member) => !excluded.has(member.id))
+    .map((member) => {
+      const normalizedSkills = member.skills.map((skill) => normalizeLookupValue(skill));
+      const normalizedRole = normalizeLookupValue(member.role);
+      let score = getAvailableCapacity(workspace.salesData, member, {
+        pricingRequests: workspace.pricingRequests,
+      });
+
+      if (
+        client?.industry &&
+        normalizedSkills.includes(normalizeLookupValue(client.industry))
+      ) {
+        score += 28;
+      }
+
+      if (normalizedSkills.includes(targetSegment)) {
+        score += 18;
+      }
+
+      preferredHints.forEach((hint) => {
+        if (normalizedSkills.includes(hint)) {
+          score += 22;
+        } else if (normalizedRole.includes(hint)) {
+          score += 14;
+        }
+      });
+
+      if (
+        preferredHints.includes("technology") &&
+        normalizedRole.includes(normalizeLookupValue("sales consultant"))
+      ) {
+        score += 8;
+      }
+
+      return { member, score };
+    })
+    .sort((left, right) => right.score - left.score);
+
+  return rankedMembers[0]?.member ?? null;
 };
 
 const extractOpportunityStage = (message: string) => {
@@ -1586,27 +1943,53 @@ const parseOpportunityCreateTurn = (
   workspace: IAssistantWorkspace,
   current: PendingOpportunityCreateRequest,
 ): OpportunityCreateSlotUpdate => {
-  const normalized = normalizeLookupValue(message);
-  const client =
-    workspace.salesData.clients.find((item) =>
-      normalized.includes(normalizeLookupValue(item.name)),
-    ) ??
-    workspace.salesData.clients.find((item) =>
-      normalized.includes(normalizeLookupValue(item.id)),
-    ) ??
+  const client = (
     findClientByReferenceInWorkspace(workspace, extractPlainEnglishClientName(message)) ??
-    null;
-  const owner =
-    workspace.salesData.teamMembers.find((item) =>
-      normalized.includes(normalizeLookupValue(item.name)),
+    findBestReferenceMatch<IClient>(
+      workspace.salesData.clients,
+      message,
+      (item) => [item.id, item.name, item.industry, item.segment ?? null],
+      72,
     ) ??
-    workspace.salesData.teamMembers.find((item) =>
-      normalized.includes(normalizeLookupValue(item.name.split(" ")[0] ?? "")),
+    null
+  ) as IClient | null;
+  const owner = (
+    findOwnerByReferenceInWorkspace(workspace, message) ??
+    findBestReferenceMatch<ITeamMember>(
+      workspace.salesData.teamMembers,
+      message,
+      (item) => [item.id, item.name, item.role, ...item.skills],
+      84,
     ) ??
-    workspace.salesData.teamMembers.find((item) =>
-      normalized.includes(normalizeLookupValue(item.id)),
-    ) ??
-    null;
+    null
+  ) as ITeamMember | null;
+  const shouldClearOwner = shouldResetOwnerSelection(message);
+  const ownerPreferenceHints = [
+    ...(current.ownerPreferenceHints ?? []),
+    ...extractOwnerPreferenceHints(message),
+  ];
+  const excludedOwnerIds = new Set(current.excludedOwnerIds ?? []);
+
+  if (shouldClearOwner && current.ownerId) {
+    excludedOwnerIds.add(current.ownerId);
+  }
+
+  workspace.salesData.teamMembers.forEach((member) => {
+    const escapedFullName = member.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedFirstName = (member.name.split(" ")[0] ?? "").replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&",
+    );
+
+    if (
+      (escapedFullName &&
+        new RegExp(`\\bnot\\s+${escapedFullName}\\b`, "i").test(message)) ||
+      (escapedFirstName &&
+        new RegExp(`\\bnot\\s+${escapedFirstName}\\b`, "i").test(message))
+    ) {
+      excludedOwnerIds.add(member.id);
+    }
+  });
   const explicitOpportunityName =
     message.match(/\b(?:opp|opportunity|deal)\s+name\s+(?:should be|must be|is|to)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
     null;
@@ -1615,8 +1998,8 @@ const parseOpportunityCreateTurn = (
       extractOpportunityTitle(
         message,
         workspace,
-        current.clientName ?? client?.name ?? null,
-        current.ownerName ?? owner?.name ?? null,
+        current.clientName ?? ((client as IClient | null)?.name ?? null),
+        current.ownerName ?? ((owner as ITeamMember | null)?.name ?? null),
       ),
   );
   const hasExplicitTitleRefinement =
@@ -1625,14 +2008,24 @@ const parseOpportunityCreateTurn = (
     );
 
   return {
-    autoAssignBestOwner: isBestFitOwnerInstruction(message) || current.autoAssignBestOwner,
+    autoAssignBestOwner:
+      isBestFitOwnerInstruction(message) ||
+      isAutonomousDefaultsInstruction(message) ||
+      ownerPreferenceHints.length > 0 ||
+      shouldClearOwner ||
+      current.autoAssignBestOwner,
     clientId: client?.id ?? current.clientId,
     clientName: client?.name ?? current.clientName,
     estimatedValue: extractOpportunityEstimatedValue(message) ?? current.estimatedValue,
+    excludedOwnerIds: [...excludedOwnerIds],
     expectedCloseDate:
       extractOpportunityExpectedCloseDate(message) ?? current.expectedCloseDate,
-    ownerId: owner?.id ?? current.ownerId,
-    ownerName: owner?.name ?? current.ownerName,
+    ownerId: shouldClearOwner ? null : owner?.id ?? current.ownerId,
+    ownerName: shouldClearOwner ? null : owner?.name ?? current.ownerName,
+    ownerPreferenceHints:
+      ownerPreferenceHints.length > 0
+        ? [...new Set(ownerPreferenceHints)]
+        : current.ownerPreferenceHints,
     stage: extractOpportunityStage(message) ?? current.stage,
     title:
       extractedTitle &&
@@ -1755,25 +2148,121 @@ const extractOpportunityTitle = (
   return remainder.length > 0 ? remainder : null;
 };
 
+const inferOpportunityCreateDefaults = (
+  workspace: IAssistantWorkspace,
+  request: PendingOpportunityCreateRequest,
+  messages: AssistantMessage[],
+) => {
+  const workflowContext = getRecentWorkflowContext(workspace, messages);
+  const client =
+    findClientByReferenceInWorkspace(workspace, request.clientId ?? request.clientName) ??
+    workflowContext.client ??
+    null;
+
+  if (!client) {
+    return request;
+  }
+
+  const recentUserMessage =
+    getRecentUserMessages(messages)
+      .filter((message) => !isConfirmationMessage(message.content))
+      .slice(-1)[0]?.content ?? "";
+
+  const estimatedValue =
+    request.estimatedValue ?? inferOpportunityValueForClient(workspace, client.id);
+  const expectedCloseDate =
+    request.expectedCloseDate ?? inferOpportunityCloseDateForClient(workspace, client.id);
+  const preferredHints = [
+    ...(request.ownerPreferenceHints ?? []),
+    ...extractOwnerPreferenceHints(recentUserMessage),
+  ];
+  const autoAssignBestOwner =
+    request.autoAssignBestOwner ||
+    preferredHints.length > 0 ||
+    !request.ownerId ||
+    isAutonomousDefaultsInstruction(recentUserMessage);
+  const owner =
+    findOwnerByReferenceInWorkspace(workspace, request.ownerId ?? request.ownerName) ??
+    (estimatedValue
+      ? chooseBestOwnerForClientRequest(workspace, {
+          clientId: client.id,
+          estimatedValue,
+          excludedOwnerIds: request.excludedOwnerIds,
+          preferredHints,
+        })
+      : null);
+
+  return {
+    ...request,
+    autoAssignBestOwner,
+    clientId: client.id,
+    clientName: client.name,
+    estimatedValue,
+    expectedCloseDate,
+    ownerId: owner?.id ?? request.ownerId,
+    ownerName: owner?.name ?? request.ownerName,
+    ownerPreferenceHints: preferredHints.length > 0 ? [...new Set(preferredHints)] : request.ownerPreferenceHints,
+    stage: request.stage ?? OpportunityStage.New,
+    title:
+      request.title ??
+      inferOpportunityTitleForClient(client.name, recentUserMessage),
+  } satisfies PendingOpportunityCreateRequest;
+};
+
+const inferProposalDraftDefaults = (
+  workspace: IAssistantWorkspace,
+  request: PendingProposalDraftRequest,
+  messages: AssistantMessage[],
+) => {
+  const workflowContext = getRecentWorkflowContext(workspace, messages);
+  const opportunity =
+    findOpportunityByReferenceInWorkspace(
+      workspace,
+      request.opportunityId ?? request.opportunityTitle,
+    ) ??
+    workflowContext.opportunity ??
+    null;
+
+  if (!opportunity) {
+    return request;
+  }
+
+  const client =
+    workspace.salesData.clients.find((item) => item.id === opportunity.clientId) ?? null;
+  const title =
+    sanitizeProposalGeneratedTitle(request.title) ??
+    sanitizeProposalGeneratedTitle(
+      client ? `${client.name} proposal` : `${opportunity.title} proposal`,
+    );
+  const validUntil =
+    request.validUntil ??
+    opportunity.expectedCloseDate ??
+    toIsoDate(addDays(new Date(), 14));
+
+  return {
+    ...request,
+    opportunityId: opportunity.id,
+    opportunityTitle: opportunity.title,
+    title,
+    validUntil,
+  } satisfies PendingProposalDraftRequest;
+};
+
 const findOpportunityByReferenceInWorkspace = (
   workspace: IAssistantWorkspace,
   reference: string | null,
 ) => {
-  if (!reference) {
-    return null;
-  }
-
-  const normalizedReference = normalizeLookupValue(reference);
-
   return (
-    workspace.salesData.opportunities.find(
-      (opportunity) => normalizeLookupValue(opportunity.id) === normalizedReference,
-    ) ??
-    workspace.salesData.opportunities.find(
-      (opportunity) => normalizeLookupValue(opportunity.title) === normalizedReference,
-    ) ??
-    workspace.salesData.opportunities.find((opportunity) =>
-      normalizeLookupValue(opportunity.title).includes(normalizedReference),
+    findBestReferenceMatch<IOpportunity>(
+      workspace.salesData.opportunities,
+      reference,
+      (opportunity) => [
+        opportunity.id,
+        opportunity.title,
+        opportunity.name ?? null,
+        opportunity.description ?? null,
+      ],
+      52,
     ) ??
     null
   );
@@ -1783,21 +2272,12 @@ const findProposalByReferenceInWorkspace = (
   workspace: IAssistantWorkspace,
   reference: string | null,
 ) => {
-  if (!reference) {
-    return null;
-  }
-
-  const normalizedReference = normalizeLookupValue(reference);
-
   return (
-    workspace.salesData.proposals.find(
-      (proposal) => normalizeLookupValue(proposal.id) === normalizedReference,
-    ) ??
-    workspace.salesData.proposals.find(
-      (proposal) => normalizeLookupValue(proposal.title) === normalizedReference,
-    ) ??
-    workspace.salesData.proposals.find((proposal) =>
-      normalizeLookupValue(proposal.title).includes(normalizedReference),
+    findBestReferenceMatch<IProposal>(
+      workspace.salesData.proposals,
+      reference,
+      (proposal) => [proposal.id, proposal.title],
+      52,
     ) ??
     null
   );
@@ -1806,10 +2286,16 @@ const findProposalByReferenceInWorkspace = (
 const extractOpportunityReference = (
   message: string,
   workspace: IAssistantWorkspace,
-) =>
-  workspace.salesData.opportunities.find((opportunity) =>
-    normalizeLookupValue(message).includes(normalizeLookupValue(opportunity.title)),
-  )?.title ?? null;
+) => {
+  const opportunity = findBestReferenceMatch<IOpportunity>(
+    workspace.salesData.opportunities,
+    message,
+    (item) => [item.id, item.title, item.name ?? null],
+    72,
+  );
+
+  return opportunity ? opportunity.title : null;
+};
 
 const inferPendingProposalDraftRequest = (
   messages: AssistantMessage[],
@@ -1842,8 +2328,11 @@ const inferPendingProposalDraftRequest = (
           workspace,
           extractPlainEnglishClientName(message.content),
         ) ??
-        workspace.salesData.clients.find((item) =>
-          normalizeLookupValue(message.content).includes(normalizeLookupValue(item.name)),
+        findBestReferenceMatch<IClient>(
+          workspace.salesData.clients,
+          message.content,
+          (item) => [item.id, item.name, item.industry, item.segment ?? null],
+          72,
         ) ??
         null;
 
@@ -1863,8 +2352,9 @@ const inferPendingProposalDraftRequest = (
 
   const opportunity = findOpportunityByReferenceInWorkspace(workspace, request.opportunityTitle);
   request.opportunityId = opportunity?.id ?? null;
+  request.title = sanitizeProposalGeneratedTitle(request.title);
 
-  return request;
+  return inferProposalDraftDefaults(workspace, request, messages);
 };
 
 const inferPendingProposalEditRequest = (
@@ -2111,32 +2601,7 @@ const inferPendingOpportunityCreateRequest = (
     );
   });
 
-  if (request.clientName && !request.clientId) {
-    request.clientId = findClientByReferenceInWorkspace(workspace, request.clientName)?.id ?? null;
-  }
-
-  if (request.ownerName && !request.ownerId) {
-    request.ownerId = findOwnerByReferenceInWorkspace(workspace, request.ownerName)?.id ?? null;
-  }
-
-  if (
-    request.autoAssignBestOwner &&
-    !request.ownerId &&
-    request.clientId &&
-    request.estimatedValue
-  ) {
-    const client = findClientByReferenceInWorkspace(workspace, request.clientId);
-    const bestOwner = client
-      ? getBestOwner(workspace.salesData, request.estimatedValue, client.industry ?? "General", {
-          pricingRequests: workspace.pricingRequests,
-        })
-      : null;
-
-    request.ownerId = bestOwner?.id ?? request.ownerId;
-    request.ownerName = bestOwner?.name ?? request.ownerName;
-  }
-
-  return request;
+  return inferOpportunityCreateDefaults(workspace, request, messages);
 };
 
 const createOpportunityMissingFieldsMessage = (
@@ -2150,10 +2615,6 @@ const createOpportunityMissingFieldsMessage = (
 
   if (!request.title) {
     missing.push("the opportunity name");
-  }
-
-  if (!request.ownerId && !request.ownerName && !request.autoAssignBestOwner) {
-    missing.push("the owner name or id");
   }
 
   if (!request.estimatedValue) {
@@ -2220,11 +2681,21 @@ const getRecentPendingOpportunityCreateRequest = (
       typeof traceStep.arguments.estimatedValue === "number"
         ? traceStep.arguments.estimatedValue
         : null,
+    excludedOwnerIds: Array.isArray(traceStep.arguments.excludedOwnerIds)
+      ? traceStep.arguments.excludedOwnerIds.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
     expectedCloseDate:
       typeof traceStep.arguments.expectedCloseDate === "string"
         ? traceStep.arguments.expectedCloseDate
         : null,
     ownerId: typeof traceStep.arguments.ownerId === "string" ? traceStep.arguments.ownerId : null,
+    ownerPreferenceHints: Array.isArray(traceStep.arguments.ownerPreferenceHints)
+      ? traceStep.arguments.ownerPreferenceHints.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
     ownerName:
       typeof traceStep.arguments.ownerName === "string" ? traceStep.arguments.ownerName : null,
     stage: typeof traceStep.arguments.stage === "string" ? traceStep.arguments.stage : null,
@@ -3988,8 +4459,11 @@ const createConfirmedOpportunityCreateResult = async (
   const owner =
     findOwnerByReferenceInWorkspace(workspace, request.ownerId ?? request.ownerName) ??
     (request.autoAssignBestOwner
-      ? getBestOwner(workspace.salesData, request.estimatedValue, client.industry ?? "General", {
-          pricingRequests: workspace.pricingRequests,
+      ? chooseBestOwnerForClientRequest(workspace, {
+          clientId: client.id,
+          estimatedValue: request.estimatedValue,
+          excludedOwnerIds: request.excludedOwnerIds,
+          preferredHints: request.ownerPreferenceHints,
         })
       : null) ??
     null;
@@ -6663,7 +7137,11 @@ const createAutonomousSaleResult = (
   };
 };
 
-const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessage[]) => {
+const createToolset = (
+  workspace: IAssistantWorkspace,
+  messages: AssistantMessage[],
+  options?: { enforceConfirmationGuard?: boolean },
+) => {
   const { salesData } = workspace;
   const opportunityInsights = getOpportunityInsights(salesData);
   const actor = createAssistantActor(workspace);
@@ -6694,86 +7172,85 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
     }
   };
 
+  const latestUserMessage = getRecentUserMessages(messages).slice(-1)[0]?.content ?? "";
+  const isConfirmedTurn = isConfirmationMessage(latestUserMessage);
+  const mutatingToolNames = new Set([
+    "create_client",
+    "create_opportunity",
+    "create_proposal",
+    "create_activity",
+    "update_activity",
+    "delete_activity",
+    "create_pricing_request",
+    "update_pricing_request",
+    "delete_pricing_request",
+    "create_note",
+    "create_message",
+    "update_note",
+    "delete_note",
+    "delete_client",
+    "delete_opportunity",
+    "delete_proposal",
+    "rebalance_responsibilities",
+  ]);
+
+  const createConfirmationGuardOutput = (name: string, args: Record<string, unknown>) => ({
+    confirmationRequired: true,
+    message:
+      "This action changes workspace data. First propose the action clearly, then wait for the user to confirm before executing it.",
+    pendingAction: {
+      arguments: args,
+      tool: name,
+    },
+  });
+
   const findClientByReference = (reference: unknown) => {
-    if (typeof reference !== "string" || !reference.trim()) {
-      return null;
-    }
-
-    const normalizedReference = normalizeLookupValue(reference);
-
-    return (
-      salesData.clients.find((client) => normalizeLookupValue(client.id) === normalizedReference) ??
-      salesData.clients.find((client) => normalizeLookupValue(client.name) === normalizedReference) ??
-      salesData.clients.find((client) =>
-        normalizeLookupValue(client.name).includes(normalizedReference),
-      ) ??
-      null
-    );
+    return typeof reference === "string"
+      ? findBestReferenceMatch<IClient>(
+          salesData.clients,
+          reference,
+          (client) => [client.id, client.name, client.industry, client.segment ?? null],
+          52,
+        )
+      : null;
   };
 
   const findOpportunityByReference = (reference: unknown) => {
-    if (typeof reference !== "string" || !reference.trim()) {
-      return null;
-    }
-
-    const normalizedReference = normalizeLookupValue(reference);
-
-    return (
-      salesData.opportunities.find(
-        (opportunity) => normalizeLookupValue(opportunity.id) === normalizedReference,
-      ) ??
-      salesData.opportunities.find(
-        (opportunity) => normalizeLookupValue(opportunity.title) === normalizedReference,
-      ) ??
-      salesData.opportunities.find(
-        (opportunity) => normalizeLookupValue(opportunity.name ?? "") === normalizedReference,
-      ) ??
-      salesData.opportunities.find((opportunity) =>
-        normalizeLookupValue(opportunity.title).includes(normalizedReference),
-      ) ??
-      salesData.opportunities.find((opportunity) =>
-        normalizeLookupValue(opportunity.name ?? "").includes(normalizedReference),
-      ) ??
-      null
-    );
+    return typeof reference === "string"
+      ? findBestReferenceMatch<IOpportunity>(
+          salesData.opportunities,
+          reference,
+          (opportunity) => [
+            opportunity.id,
+            opportunity.title,
+            opportunity.name ?? null,
+            opportunity.description ?? null,
+          ],
+          52,
+        )
+      : null;
   };
 
   const findOwnerByReference = (reference: unknown) => {
-    if (typeof reference !== "string" || !reference.trim()) {
-      return null;
-    }
-
-    const normalizedReference = normalizeLookupValue(reference);
-
-    return (
-      salesData.teamMembers.find((member) => normalizeLookupValue(member.id) === normalizedReference) ??
-      salesData.teamMembers.find((member) => normalizeLookupValue(member.name) === normalizedReference) ??
-      salesData.teamMembers.find((member) =>
-        normalizeLookupValue(member.name).includes(normalizedReference),
-      ) ??
-      null
-    );
+    return typeof reference === "string"
+      ? findBestReferenceMatch<ITeamMember>(
+          salesData.teamMembers,
+          reference,
+          (member) => [member.id, member.name, member.role, ...member.skills],
+          58,
+        )
+      : null;
   };
 
   const findProposalByReference = (reference: unknown) => {
-    if (typeof reference !== "string" || !reference.trim()) {
-      return null;
-    }
-
-    const normalizedReference = normalizeLookupValue(reference);
-
-    return (
-      salesData.proposals.find(
-        (proposal) => normalizeLookupValue(proposal.id) === normalizedReference,
-      ) ??
-      salesData.proposals.find(
-        (proposal) => normalizeLookupValue(proposal.title) === normalizedReference,
-      ) ??
-      salesData.proposals.find((proposal) =>
-        normalizeLookupValue(proposal.title).includes(normalizedReference),
-      ) ??
-      null
-    );
+    return typeof reference === "string"
+      ? findBestReferenceMatch<IProposal>(
+          salesData.proposals,
+          reference,
+          (proposal) => [proposal.id, proposal.title],
+          52,
+        )
+      : null;
   };
 
   const findActivityByReference = (reference: unknown) => {
@@ -6911,35 +7388,53 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
     args: Record<string, unknown>,
     options?: { allowRecentFallback?: boolean },
   ) => {
+    const explicitClientReference =
+      typeof args.clientId === "string" && args.clientId.trim()
+        ? args.clientId
+        : typeof args.clientName === "string" && args.clientName.trim()
+          ? args.clientName
+          : typeof args.organizationName === "string" && args.organizationName.trim()
+            ? args.organizationName
+            : typeof args.accountName === "string" && args.accountName.trim()
+              ? args.accountName
+              : null;
     const directClient =
       findClientByReference(args.clientId) ??
       findClientByReference(args.clientName) ??
       findClientByReference(args.organizationName) ??
       findClientByReference(args.accountName);
 
-    if (!directClient && options?.allowRecentFallback) {
-      const hasExplicitClientReference =
-        hasValueReference(args.clientId) ||
-        hasValueReference(args.clientName) ||
-        hasValueReference(args.organizationName) ||
-        hasValueReference(args.accountName);
+    if (directClient) {
+      return directClient;
+    }
+
+    if (options?.allowRecentFallback) {
+      const recentClient = getRecentClient();
+      const hasExplicitClientReference = Boolean(explicitClientReference);
 
       if (!hasExplicitClientReference) {
-        const recentClient = getRecentClient();
-
         if (recentClient) {
+          return recentClient;
+        }
+      } else if (recentClient && explicitClientReference) {
+        const explicitReferenceScore = scoreReferenceMatch(
+          recentClient.name,
+          explicitClientReference,
+        );
+        const normalizedExplicitReference = normalizeLookupValue(explicitClientReference);
+        const recentClientTitleMatches =
+          normalizeLookupValue(recentClient.name).includes("unnamed client") &&
+          normalizedExplicitReference.includes("unnamed client");
+
+        if (explicitReferenceScore >= 52 || recentClientTitleMatches) {
           return recentClient;
         }
       }
     }
 
-    if (!directClient) {
-      throw new Error(
-        "No matching client was found in your current workspace. Provide a valid client name or create the client first.",
-      );
-    }
-
-    return directClient;
+    throw new Error(
+      "No matching client was found in your current workspace. Provide a valid client name or create the client first.",
+    );
   };
 
   const resolveOpportunity = (
@@ -7336,7 +7831,7 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
     },
     {
       description:
-        "Create a new client in the current tenant when the user explicitly asks you to add a client or account.",
+        "Create a new client in the current tenant when the user explicitly asks you to add a client or account. Only the name is required. Industry and all other fields are optional. If the user explicitly asks for sample, mock, placeholder, or random values, you may generate sensible business details for the optional fields before asking for confirmation.",
       name: "create_client",
       parameters: {
         additionalProperties: false,
@@ -7348,7 +7843,7 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
           taxNumber: { type: "string" },
           website: { type: "string" },
         },
-        required: ["industry", "name"],
+        required: ["name"],
         type: "object",
       },
     },
@@ -7680,6 +8175,15 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
 
   const runTool = async (name: string, rawArguments: string) => {
     const args = rawArguments ? JSON.parse(rawArguments) as Record<string, unknown> : {};
+
+    if (
+      options?.enforceConfirmationGuard &&
+      mutatingToolNames.has(name) &&
+      !isConfirmedTurn
+    ) {
+      return createConfirmationGuardOutput(name, args);
+    }
+
     const internalMutationTools = new Set([
       "create_client",
       "create_opportunity",
@@ -9058,6 +9562,118 @@ const createOfflineAssistantResult = ({
   };
 };
 
+const createProviderUnavailableResult = ({
+  latestUserMessage,
+  reason,
+  workspace,
+}: {
+  latestUserMessage: string;
+  reason: string;
+  workspace: IAssistantWorkspace;
+}) => ({
+  message: reason,
+  mode: "offline" as const,
+  model: "live-provider-unavailable",
+  reason,
+  trace: [
+    {
+      arguments: {
+        latestUserMessage,
+        scopeLabel: workspace.scopeLabel,
+      },
+      outputPreview: createTracePreview({
+        latestUserMessage,
+        workspace: summarizeWorkspace(workspace),
+      }),
+      tool: "live_provider_unavailable",
+    },
+  ] satisfies AssistantTraceStep[],
+  mutations: [] satisfies AssistantMutation[],
+});
+
+const extractRetryDelaySeconds = (reason: string) => {
+  const directMatch = reason.match(/retry in\s+(\d+(?:\.\d+)?)s?/i)?.[1];
+
+  if (directMatch) {
+    return Math.max(1, Math.round(Number(directMatch)));
+  }
+
+  const retryInfoMatch = reason.match(/"retryDelay"\s*:\s*"(\d+)s"/i)?.[1];
+
+  if (retryInfoMatch) {
+    return Math.max(1, Number(retryInfoMatch));
+  }
+
+  return null;
+};
+
+const getRecentPendingAssistantActionSummary = (messages: AssistantMessage[]) => {
+  const assistantMessage = [...messages].reverse().find((message) => message.role === "assistant");
+  const content = assistantMessage?.content?.trim();
+
+  if (!content) {
+    return null;
+  }
+
+  const normalized = normalizeLookupValue(content);
+  const looksPending =
+    normalized.includes("would you like me to") ||
+    normalized.includes("reply confirm to proceed") ||
+    normalized.includes("if that looks good") ||
+    normalized.includes("i can create") ||
+    normalized.includes("i can delete") ||
+    normalized.includes("i can update") ||
+    normalized.includes("i can submit") ||
+    normalized.includes("i can send");
+
+  if (!looksPending) {
+    return null;
+  }
+
+  return content.replace(/\s+/g, " ").trim();
+};
+
+const createConfirmedProviderUnavailableResult = ({
+  messages,
+  reason,
+  workspace,
+}: {
+  messages: AssistantMessage[];
+  reason: string;
+  workspace: IAssistantWorkspace;
+}) => {
+  const pendingActionSummary = getRecentPendingAssistantActionSummary(messages);
+  const retryDelaySeconds = extractRetryDelaySeconds(reason);
+  const retryHint = retryDelaySeconds
+    ? ` Retry in about ${retryDelaySeconds} second${retryDelaySeconds === 1 ? "" : "s"}, then say "retry now" or confirm again.`
+    : ` Retry once the live provider is available, then say "retry now" or confirm again.`;
+
+  return {
+    message: pendingActionSummary
+      ? `Your confirmed action is still pending. Latest prepared action: ${pendingActionSummary}.${retryHint}`
+      : `Your confirmed action is still pending because the live assistant is unavailable.${retryHint}`,
+    mode: "offline" as const,
+    model: "live-provider-unavailable",
+    reason,
+    trace: [
+      {
+        arguments: {
+          pendingActionSummary,
+          retryDelaySeconds,
+          scopeLabel: workspace.scopeLabel,
+        },
+        outputPreview: createTracePreview({
+          pendingActionSummary,
+          retryDelaySeconds,
+          workspace: summarizeWorkspace(workspace),
+        }),
+        tool: "confirmed_live_action_pending_retry",
+      },
+    ] satisfies AssistantTraceStep[],
+    mutations: [] satisfies AssistantMutation[],
+  };
+};
+
 const runGeminiWithTools = async ({
   config,
   messages,
@@ -9636,6 +10252,10 @@ export const runSecureAssistant = async ({
   workspace: IAssistantWorkspace;
 }) => {
   const latestUserMessage = getRecentUserMessages(messages).slice(-1)[0]?.content;
+  const primaryConfig = getAssistantServerConfig();
+  const providerConfigs = getAssistantServerConfigs();
+  const configuredProviders = providerConfigs.filter((config) => config.isConfigured);
+  const prefersLiveProvider = configuredProviders.length > 0;
 
   if (!latestUserMessage) {
     throw new Error("The assistant requires a user message.");
@@ -9650,151 +10270,157 @@ export const runSecureAssistant = async ({
         })()
       : null);
 
-  const mutationConfirmationResult = await createMutationConfirmationReply(
-    latestUserMessage,
-    workspace,
-    messages,
-  );
+  if (!prefersLiveProvider) {
+    const mutationConfirmationResult = await createMutationConfirmationReply(
+      latestUserMessage,
+      workspace,
+      messages,
+    );
 
-  if (mutationConfirmationResult) {
-    return mutationConfirmationResult;
+    if (mutationConfirmationResult) {
+      return mutationConfirmationResult;
+    }
   }
 
-  const confirmedServiceRequestCreateResult = shouldRunConfirmedServiceRequestCreateWorkflow(
-    latestUserMessage,
-    messages,
-    workspace,
-  )
-    ? await createConfirmedServiceRequestCreateResult(workspace, messages)
-    : null;
-
-  if (confirmedServiceRequestCreateResult) {
-    return confirmedServiceRequestCreateResult;
-  }
-
-  const confirmedAdminRequestHandlingResult = shouldRunConfirmedAdminRequestHandlingWorkflow(
-    latestUserMessage,
-    messages,
-    workspace,
-  )
-    ? await createConfirmedAdminRequestHandlingResult(workspace, messages)
-    : null;
-
-  if (confirmedAdminRequestHandlingResult) {
-    return confirmedAdminRequestHandlingResult;
-  }
-
-  const confirmedMessageSendResult = shouldRunConfirmedMessageSendWorkflow(
-    latestUserMessage,
-    messages,
-    workspace,
-  )
-    ? createConfirmedMessageSendResult(workspace, messages)
-    : null;
-
-  if (confirmedMessageSendResult) {
-    return confirmedMessageSendResult;
-  }
-
-  const confirmedProposalDraftResult = shouldRunConfirmedProposalDraftWorkflow(
-    latestUserMessage,
-    messages,
-    workspace,
-  )
-    ? await createConfirmedProposalDraftResult(workspace, messages)
-    : null;
-
-  if (confirmedProposalDraftResult) {
-    return confirmedProposalDraftResult;
-  }
-
-  const confirmedProposalEditResult = shouldRunConfirmedProposalEditWorkflow(
-    latestUserMessage,
-    messages,
-    workspace,
-  )
-    ? await createConfirmedProposalEditResult(workspace, messages)
-    : null;
-
-  if (confirmedProposalEditResult) {
-    return confirmedProposalEditResult;
-  }
-
-  const confirmedOpportunityEditResult = shouldRunConfirmedOpportunityEditWorkflow(
-    latestUserMessage,
-    messages,
-    workspace,
-  )
-    ? await createConfirmedOpportunityEditResult(workspace, messages)
-    : null;
-
-  if (confirmedOpportunityEditResult) {
-    return confirmedOpportunityEditResult;
-  }
-
-  const confirmedOpportunityCreateResult = shouldRunConfirmedOpportunityCreateWorkflow(
-    latestUserMessage,
-    messages,
-    workspace,
-  )
-    ? await createConfirmedOpportunityCreateResult(workspace, messages)
-    : null;
-
-  if (confirmedOpportunityCreateResult) {
-    return confirmedOpportunityCreateResult;
-  }
-
-  const confirmedClientRequestAssignmentResult = shouldRunClientRequestAssignmentWorkflow(
-    latestUserMessage,
-    messages,
-    workspace,
-  )
-    ? await createClientRequestAssignmentResult(workspace, messages)
-    : null;
-
-  if (confirmedClientRequestAssignmentResult) {
-    return confirmedClientRequestAssignmentResult;
-  }
-
-  const confirmedClientAssignmentDecisionResult =
-    shouldRunConfirmedClientAssignmentDecisionWorkflow(latestUserMessage, messages)
-      ? await createConfirmedClientAssignmentDecisionResult(workspace, messages)
+  if (!prefersLiveProvider) {
+    const confirmedServiceRequestCreateResult = shouldRunConfirmedServiceRequestCreateWorkflow(
+      latestUserMessage,
+      messages,
+      workspace,
+    )
+      ? await createConfirmedServiceRequestCreateResult(workspace, messages)
       : null;
 
-  if (confirmedClientAssignmentDecisionResult) {
-    return confirmedClientAssignmentDecisionResult;
-  }
+    if (confirmedServiceRequestCreateResult) {
+      return confirmedServiceRequestCreateResult;
+    }
 
-  const confirmedRepresentativeDecisionResult =
-    shouldRunConfirmedRepresentativeDecisionWorkflow(latestUserMessage, messages)
-      ? await createConfirmedRepresentativeDecisionResult(workspace, messages)
+    const confirmedAdminRequestHandlingResult = shouldRunConfirmedAdminRequestHandlingWorkflow(
+      latestUserMessage,
+      messages,
+      workspace,
+    )
+      ? await createConfirmedAdminRequestHandlingResult(workspace, messages)
       : null;
 
-  if (confirmedRepresentativeDecisionResult) {
-    return confirmedRepresentativeDecisionResult;
+    if (confirmedAdminRequestHandlingResult) {
+      return confirmedAdminRequestHandlingResult;
+    }
+
+    const confirmedMessageSendResult = shouldRunConfirmedMessageSendWorkflow(
+      latestUserMessage,
+      messages,
+      workspace,
+    )
+      ? createConfirmedMessageSendResult(workspace, messages)
+      : null;
+
+    if (confirmedMessageSendResult) {
+      return confirmedMessageSendResult;
+    }
+
+    const confirmedProposalDraftResult = shouldRunConfirmedProposalDraftWorkflow(
+      latestUserMessage,
+      messages,
+      workspace,
+    )
+      ? await createConfirmedProposalDraftResult(workspace, messages)
+      : null;
+
+    if (confirmedProposalDraftResult) {
+      return confirmedProposalDraftResult;
+    }
+
+    const confirmedProposalEditResult = shouldRunConfirmedProposalEditWorkflow(
+      latestUserMessage,
+      messages,
+      workspace,
+    )
+      ? await createConfirmedProposalEditResult(workspace, messages)
+      : null;
+
+    if (confirmedProposalEditResult) {
+      return confirmedProposalEditResult;
+    }
+
+    const confirmedOpportunityEditResult = shouldRunConfirmedOpportunityEditWorkflow(
+      latestUserMessage,
+      messages,
+      workspace,
+    )
+      ? await createConfirmedOpportunityEditResult(workspace, messages)
+      : null;
+
+    if (confirmedOpportunityEditResult) {
+      return confirmedOpportunityEditResult;
+    }
+
+    const confirmedOpportunityCreateResult = shouldRunConfirmedOpportunityCreateWorkflow(
+      latestUserMessage,
+      messages,
+      workspace,
+    )
+      ? await createConfirmedOpportunityCreateResult(workspace, messages)
+      : null;
+
+    if (confirmedOpportunityCreateResult) {
+      return confirmedOpportunityCreateResult;
+    }
+
+    const confirmedClientRequestAssignmentResult = shouldRunClientRequestAssignmentWorkflow(
+      latestUserMessage,
+      messages,
+      workspace,
+    )
+      ? await createClientRequestAssignmentResult(workspace, messages)
+      : null;
+
+    if (confirmedClientRequestAssignmentResult) {
+      return confirmedClientRequestAssignmentResult;
+    }
+
+    const confirmedClientAssignmentDecisionResult =
+      shouldRunConfirmedClientAssignmentDecisionWorkflow(latestUserMessage, messages)
+        ? await createConfirmedClientAssignmentDecisionResult(workspace, messages)
+        : null;
+
+    if (confirmedClientAssignmentDecisionResult) {
+      return confirmedClientAssignmentDecisionResult;
+    }
+
+    const confirmedRepresentativeDecisionResult =
+      shouldRunConfirmedRepresentativeDecisionWorkflow(latestUserMessage, messages)
+        ? await createConfirmedRepresentativeDecisionResult(workspace, messages)
+        : null;
+
+    if (confirmedRepresentativeDecisionResult) {
+      return confirmedRepresentativeDecisionResult;
+    }
+
+    const confirmedGenericMutationLocalResult = shouldRunConfirmedGenericMutationWorkflow(
+      latestUserMessage,
+      messages,
+    )
+      ? await createConfirmedGenericMutationLocalResult(workspace, messages)
+      : null;
+
+    if (confirmedGenericMutationLocalResult) {
+      return confirmedGenericMutationLocalResult;
+    }
   }
 
-  const confirmedGenericMutationLocalResult = shouldRunConfirmedGenericMutationWorkflow(
-    latestUserMessage,
-    messages,
-  )
-    ? await createConfirmedGenericMutationLocalResult(workspace, messages)
-    : null;
+  if (!prefersLiveProvider) {
+    const clientRequestNotificationSummaryReply = createClientRequestNotificationSummaryReply(
+      latestUserMessage,
+      workspace,
+    );
 
-  if (confirmedGenericMutationLocalResult) {
-    return confirmedGenericMutationLocalResult;
+    if (clientRequestNotificationSummaryReply) {
+      return clientRequestNotificationSummaryReply;
+    }
   }
 
-  const clientRequestNotificationSummaryReply = createClientRequestNotificationSummaryReply(
-    latestUserMessage,
-    workspace,
-  );
-
-  if (clientRequestNotificationSummaryReply) {
-    return clientRequestNotificationSummaryReply;
-  }
-
-  if (pendingSaleRequest) {
+  if (!prefersLiveProvider && pendingSaleRequest) {
     return createAutonomousSaleResult(pendingSaleRequest, workspace);
   }
 
@@ -9809,7 +10435,8 @@ export const runSecureAssistant = async ({
     return confirmedDraftFollowUpResult;
   }
 
-  const advisorAssignmentResult = shouldRunAdvisorAssignmentWorkflow(
+  const advisorAssignmentResult = !prefersLiveProvider &&
+    shouldRunAdvisorAssignmentWorkflow(
     latestUserMessage,
     messages,
     workspace,
@@ -9821,7 +10448,8 @@ export const runSecureAssistant = async ({
     return advisorAssignmentResult;
   }
 
-  const workloadBoostResult = shouldRunWorkloadBoostWorkflow(
+  const workloadBoostResult = !prefersLiveProvider &&
+    shouldRunWorkloadBoostWorkflow(
     latestUserMessage,
     messages,
     workspace,
@@ -9833,7 +10461,8 @@ export const runSecureAssistant = async ({
     return workloadBoostResult;
   }
 
-  const proposalAcceptanceResult = shouldRunProposalAcceptanceWorkflow(
+  const proposalAcceptanceResult = !prefersLiveProvider &&
+    shouldRunProposalAcceptanceWorkflow(
     latestUserMessage,
     messages,
   )
@@ -9844,17 +10473,20 @@ export const runSecureAssistant = async ({
     return proposalAcceptanceResult;
   }
 
-  const conversationalReplyResult = createConversationalReplyResult(
-    latestUserMessage,
-    workspace,
-    messages,
-  );
+  if (!prefersLiveProvider) {
+    const conversationalReplyResult = createConversationalReplyResult(
+      latestUserMessage,
+      workspace,
+      messages,
+    );
 
-  if (conversationalReplyResult) {
-    return conversationalReplyResult;
+    if (conversationalReplyResult) {
+      return conversationalReplyResult;
+    }
   }
 
-  const reassignmentResult = shouldRunReassignmentWorkflow(latestUserMessage, messages)
+  const reassignmentResult =
+    !prefersLiveProvider && shouldRunReassignmentWorkflow(latestUserMessage, messages)
     ? createReassignmentWorkflowResult(latestUserMessage, workspace, messages)
     : null;
 
@@ -9862,23 +10494,22 @@ export const runSecureAssistant = async ({
     return reassignmentResult;
   }
 
-  const localAssistantReplyResult = createLocalAssistantReplyResult(
-    workspace,
-    latestUserMessage,
-    messages,
-  );
+  if (!prefersLiveProvider) {
+    const localAssistantReplyResult = createLocalAssistantReplyResult(
+      workspace,
+      latestUserMessage,
+      messages,
+    );
 
-  if (localAssistantReplyResult) {
-    return localAssistantReplyResult;
+    if (localAssistantReplyResult) {
+      return localAssistantReplyResult;
+    }
+
+    if (isDashboardAdvisorConversation(messages)) {
+      return createLocalAdvisorGuidanceResult(workspace, latestUserMessage);
+    }
   }
 
-  if (isDashboardAdvisorConversation(messages)) {
-    return createLocalAdvisorGuidanceResult(workspace, latestUserMessage);
-  }
-
-  const primaryConfig = getAssistantServerConfig();
-  const providerConfigs = getAssistantServerConfigs();
-  const configuredProviders = providerConfigs.filter((config) => config.isConfigured);
   const confirmedGenericMutationRequest = isConfirmationMessage(latestUserMessage)
     ? getRecentConfirmedGenericMutationRequest(messages)
     : null;
@@ -9901,7 +10532,9 @@ export const runSecureAssistant = async ({
     });
   }
 
-  const { runTool, toolDefinitions } = createToolset(workspace, messages);
+  const { runTool, toolDefinitions } = createToolset(workspace, messages, {
+    enforceConfirmationGuard: prefersLiveProvider,
+  });
   const trace: AssistantTraceStep[] = [];
   const mutations: AssistantMutation[] = [];
   const initialInput = mapMessagesToProviderInput(messages, confirmedGenericMutationRequest);
@@ -10043,11 +10676,11 @@ export const runSecureAssistant = async ({
   const reason =
     configuredProviders.length > 1
       ? hasRateLimit
-        ? `The live assistant providers are temporarily rate-limited. Tried ${attemptedProviders}, and fell back to offline workspace guidance.${providerErrorSuffix}`
-        : `The live assistant providers are temporarily unavailable. Tried ${attemptedProviders}, and fell back to offline workspace guidance.${providerErrorSuffix}`
+        ? `The live assistant providers are temporarily rate-limited. Tried ${attemptedProviders}.${providerErrorSuffix}`
+        : `The live assistant providers are temporarily unavailable. Tried ${attemptedProviders}.${providerErrorSuffix}`
       : hasRateLimit
-        ? `The live assistant is temporarily rate-limited. Using offline workspace guidance.${providerErrorSuffix}`
-        : `The live assistant is temporarily unavailable. Using offline workspace guidance.${providerErrorSuffix}`;
+        ? `The live assistant is temporarily rate-limited.${providerErrorSuffix}`
+        : `The live assistant is temporarily unavailable.${providerErrorSuffix}`;
 
   if (confirmedGenericMutationRequest) {
     return createConfirmedGenericMutationUnavailableResult({
@@ -10057,7 +10690,15 @@ export const runSecureAssistant = async ({
     });
   }
 
-  return createOfflineAssistantResult({
+  if (isConfirmationMessage(latestUserMessage)) {
+    return createConfirmedProviderUnavailableResult({
+      messages,
+      reason,
+      workspace,
+    });
+  }
+
+  return createProviderUnavailableResult({
     latestUserMessage,
     reason,
     workspace,

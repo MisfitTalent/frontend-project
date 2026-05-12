@@ -98,6 +98,24 @@ export default function TeamMembersProvider({
       return;
     }
 
+    const handleWorkspaceUpdate = () => {
+      void loadTeamMembers().catch((error) => {
+        console.error(error);
+      });
+    };
+
+    window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+
+    return () => {
+      window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+    };
+  }, [isAuthenticated, loadTeamMembers]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     let isActive = true;
 
     const runLoad = () => {
@@ -113,22 +131,7 @@ export default function TeamMembersProvider({
     };
 
     const timer = window.setTimeout(runLoad, 0);
-
     if (isDemoMode) {
-      const handleWorkspaceUpdate = () => {
-        runLoad();
-      };
-
-      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-
-      return () => {
-        isActive = false;
-        window.clearTimeout(timer);
-        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-      };
-    }
-
-    if (cachedTeamMembers && cachedTeamMembers.length > 0) {
       return () => {
         isActive = false;
         window.clearTimeout(timer);
