@@ -92,6 +92,24 @@ export default function OpportunityProvider({
       return;
     }
 
+    const handleWorkspaceUpdate = () => {
+      void loadOpportunities().catch((error) => {
+        console.error(error);
+      });
+    };
+
+    window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+
+    return () => {
+      window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+    };
+  }, [isAuthenticated, loadOpportunities]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     let isActive = true;
 
     if (isDemoMode) {
@@ -105,24 +123,9 @@ export default function OpportunityProvider({
         });
       }, 0);
 
-      const handleWorkspaceUpdate = () => {
-        void loadOpportunities().catch((error) => {
-          console.error(error);
-        });
-      };
-
-      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-
       return () => {
         isActive = false;
         window.clearTimeout(timer);
-        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-      };
-    }
-
-    if (cachedOpportunities && cachedOpportunities.length > 0) {
-      return () => {
-        isActive = false;
       };
     }
 

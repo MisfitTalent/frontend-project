@@ -68,8 +68,9 @@ export function RenewalForm({ isOpen, editingId, onClose }: RenewalFormProps) {
     form.resetFields();
   };
 
-  return mounted ? (
+  return (
     <Modal
+      forceRender
       title={editingId ? "Edit Renewal" : "Add Renewal"}
       open={isOpen}
       onCancel={onClose}
@@ -109,5 +110,5 @@ export function RenewalForm({ isOpen, editingId, onClose }: RenewalFormProps) {
         </Form.Item>
       </Form>
     </Modal>
-  ) : null;
+  );
 }

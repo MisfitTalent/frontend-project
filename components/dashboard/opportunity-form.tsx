@@ -119,8 +119,9 @@ export function OpportunityForm({
     }
   };
 
-  return mounted ? (
+  return (
     <Modal
+      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}
@@ -211,5 +212,5 @@ export function OpportunityForm({
         </Form.Item>
       </Form>
     </Modal>
-  ) : null;
+  );
 }

@@ -87,6 +87,24 @@ export default function ContactProvider({
       return;
     }
 
+    const handleWorkspaceUpdate = () => {
+      void loadContacts().catch((error) => {
+        console.error(error);
+      });
+    };
+
+    window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+
+    return () => {
+      window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+    };
+  }, [isAuthenticated, loadContacts]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     let isActive = true;
 
     if (isDemoMode) {
@@ -100,24 +118,9 @@ export default function ContactProvider({
         });
       }, 0);
 
-      const handleWorkspaceUpdate = () => {
-        void loadContacts().catch((error) => {
-          console.error(error);
-        });
-      };
-
-      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-
       return () => {
         isActive = false;
         window.clearTimeout(timer);
-        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-      };
-    }
-
-    if (cachedContacts && cachedContacts.length > 0) {
-      return () => {
-        isActive = false;
       };
     }
 

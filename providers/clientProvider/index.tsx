@@ -83,6 +83,24 @@ export default function ClientProvider({
       return;
     }
 
+    const handleWorkspaceUpdate = () => {
+      void loadClients().catch((error) => {
+        console.error(error);
+      });
+    };
+
+    window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+
+    return () => {
+      window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+    };
+  }, [isAuthenticated, loadClients]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     let isActive = true;
 
     if (isDemoMode) {
@@ -96,24 +114,9 @@ export default function ClientProvider({
         });
       }, 0);
 
-      const handleWorkspaceUpdate = () => {
-        void loadClients().catch((error) => {
-          console.error(error);
-        });
-      };
-
-      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-
       return () => {
         isActive = false;
         window.clearTimeout(timer);
-        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-      };
-    }
-
-    if (cachedClients && cachedClients.length > 0) {
-      return () => {
-        isActive = false;
       };
     }
 

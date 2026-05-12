@@ -68,8 +68,9 @@ export function ClientForm({
     clearSessionDraft(draftKey);
   };
 
-  return mounted ? (
+  return (
     <Modal
+      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}
@@ -168,5 +169,5 @@ export function ClientForm({
         ) : null}
       </Form>
     </Modal>
-  ) : null;
+  );
 }

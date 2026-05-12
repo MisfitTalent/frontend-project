@@ -30,7 +30,7 @@ export interface IAuthActionContext {
 export const INITIAL_STATE: IAuthStateContext = {
   isAuthenticated: false,
   isError: false,
-  isPending: false,
+  isPending: true,
   isSuccess: false,
   user: null,
 };

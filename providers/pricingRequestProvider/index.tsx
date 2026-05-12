@@ -88,6 +88,24 @@ export default function PricingRequestProvider({
       return;
     }
 
+    const handleWorkspaceUpdate = () => {
+      void loadPricingRequests().catch((error) => {
+        console.error(error);
+      });
+    };
+
+    window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+
+    return () => {
+      window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
+    };
+  }, [isAuthenticated, loadPricingRequests]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     let isActive = true;
 
     if (isDemoMode) {
@@ -101,24 +119,9 @@ export default function PricingRequestProvider({
         });
       }, 0);
 
-      const handleWorkspaceUpdate = () => {
-        void loadPricingRequests().catch((error) => {
-          console.error(error);
-        });
-      };
-
-      window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-
       return () => {
         isActive = false;
         window.clearTimeout(timer);
-        window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
-      };
-    }
-
-    if (cachedPricingRequests && cachedPricingRequests.length > 0) {
-      return () => {
-        isActive = false;
       };
     }
 

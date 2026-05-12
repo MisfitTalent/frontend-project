@@ -93,8 +93,9 @@ export default function ActivityForm({
     }
   };
 
-  return mounted ? (
+  return (
     <Modal
+      forceRender
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ loading: isSubmitting }}
@@ -164,5 +165,5 @@ export default function ActivityForm({
         </Form.Item>
       </Form>
     </Modal>
-  ) : null;
+  );
 }
