@@ -19,6 +19,10 @@ const users = {
   },
 };
 
+const writeLine = (message = "") => {
+  process.stdout.write(`${message}\n`);
+};
+
 const baseUrl = (process.env.BACKEND_API_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
 
 const request = async (path, init = {}) => {
@@ -132,7 +136,7 @@ const ensureSalesRep = async (tenantId) => {
 };
 
 const main = async () => {
-  console.log(`Seeding demo users against ${baseUrl}`);
+  writeLine(`Seeding demo users against ${baseUrl}`);
 
   const admin = await ensureAdmin();
   const tenantId = admin.login?.tenantId;
@@ -143,17 +147,17 @@ const main = async () => {
 
   const salesRep = await ensureSalesRep(tenantId);
 
-  console.log("");
-  console.log(`Admin:  ${users.admin.email} / ${users.admin.password}`);
-  console.log(`SalesRep: ${users.salesRep.email} / ${users.salesRep.password}`);
-  console.log(`Tenant: ${admin.login?.tenantName || users.admin.tenantName} (${tenantId})`);
+  writeLine();
+  writeLine(`Admin:  ${users.admin.email} / ${users.admin.password}`);
+  writeLine(`SalesRep: ${users.salesRep.email} / ${users.salesRep.password}`);
+  writeLine(`Tenant: ${admin.login?.tenantName || users.admin.tenantName} (${tenantId})`);
 
   if (admin.warning) {
-    console.log(`Admin note: ${admin.warning}`);
+    writeLine(`Admin note: ${admin.warning}`);
   }
 
   if (salesRep.warning) {
-    console.log(`SalesRep note: ${salesRep.warning}`);
+    writeLine(`SalesRep note: ${salesRep.warning}`);
   }
 };
 
