@@ -5,7 +5,8 @@ export type MockUserRole =
   | "Admin"
   | "SalesManager"
   | "BusinessDevelopmentManager"
-  | "SalesRep";
+  | "SalesRep"
+  | "Client";
 
 export interface IMockUser {
   clientIds?: string[];
@@ -67,12 +68,12 @@ const users = new Map<string, IMockUser>([
       clientIds: [],
       email: "admin@autosales.com",
       firstName: "Admin",
-      id: "legacy-admin",
+      id: "admin-shared-demo",
       lastName: "User",
       password: "Admin123",
       role: "Admin",
-      tenantId: AUTO_SALES_TENANT_ID,
-      tenantName: AUTO_SALES_TENANT_NAME,
+      tenantId: "11111111-1111-1111-1111-111111111111",
+      tenantName: "Shared Demo Tenant",
     },
   ],
   [
@@ -122,11 +123,25 @@ const users = new Map<string, IMockUser>([
     {
       clientIds: [],
       email: "salesrep@salesautomation.com",
-      firstName: "Demo",
-      id: "2",
-      lastName: "Rep",
+      firstName: "Lebo",
+      id: "tm02",
+      lastName: "Dlamini",
       password: "Pass@123",
       role: "SalesRep",
+      tenantId: "11111111-1111-1111-1111-111111111111",
+      tenantName: "Shared Demo Tenant",
+    },
+  ],
+  [
+    "client@boxfusion.com",
+    {
+      clientIds: ["c1"],
+      email: "client@boxfusion.com",
+      firstName: "Boxfusion",
+      id: "client-c1-user",
+      lastName: "Client",
+      password: "Pass@123",
+      role: "Client",
       tenantId: "11111111-1111-1111-1111-111111111111",
       tenantName: "Shared Demo Tenant",
     },
@@ -184,6 +199,29 @@ export const registerMockUser = ({
   users.set(normalizedEmail, user);
 
   return user;
+};
+
+export const updateMockUser = (
+  email: string,
+  updates: Partial<Pick<IMockUser, "firstName" | "lastName" | "tenantName">>,
+) => {
+  const normalizedEmail = email.toLowerCase();
+  const existingUser = users.get(normalizedEmail);
+
+  if (!existingUser) {
+    return null;
+  }
+
+  const nextUser: IMockUser = {
+    ...existingUser,
+    firstName: updates.firstName ?? existingUser.firstName,
+    lastName: updates.lastName ?? existingUser.lastName,
+    tenantName: updates.tenantName ?? existingUser.tenantName,
+  };
+
+  users.set(normalizedEmail, nextUser);
+
+  return nextUser;
 };
 
 export const toAuthPayload = (user: IMockUser): AuthSessionUser => ({

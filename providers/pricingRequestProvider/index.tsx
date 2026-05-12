@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import {
@@ -15,6 +15,7 @@ import {
   isMockSessionToken,
   mapBackendPricingRequest,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { useAuthState } from "@/providers/authProvider";
 import { initialPricingRequests } from "@/providers/domainSeeds";
 import type { IPricingRequest } from "@/providers/salesTypes";
@@ -49,9 +50,19 @@ export default function PricingRequestProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const { isAuthenticated, user } = useAuthState();
-  const [pricingRequests, setPricingRequests] = useState<IPricingRequest[]>([]);
   const isDemoMode = isMockSessionToken(getSessionToken());
   const role = getPrimaryUserRole(user?.roles);
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("pricing-requests", user?.tenantId, user?.userId, role),
+    [role, user?.tenantId, user?.userId],
+  );
+  const cachedPricingRequests = useMemo(
+    () => readProviderCache<IPricingRequest[]>(cacheKey),
+    [cacheKey],
+  );
+  const [pricingRequests, setPricingRequests] = useState<IPricingRequest[]>(
+    () => cachedPricingRequests ?? [],
+  );
 
   const listPath =
     role === "SalesRep"
@@ -63,8 +74,14 @@ export default function PricingRequestProvider({
       listPath,
     );
 
-    setPricingRequests(coerceItems(payload).map(mapBackendPricingRequest));
-  }, [listPath]);
+    setPricingRequests(
+      writeProviderCache(cacheKey, coerceItems(payload).map(mapBackendPricingRequest)),
+    );
+  }, [cacheKey, listPath]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, pricingRequests);
+  }, [cacheKey, pricingRequests]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -79,7 +96,7 @@ export default function PricingRequestProvider({
           console.error(error);
 
           if (isActive) {
-            setPricingRequests(initialPricingRequests());
+            setPricingRequests(writeProviderCache(cacheKey, initialPricingRequests()));
           }
         });
       }, 0);
@@ -99,14 +116,23 @@ export default function PricingRequestProvider({
       };
     }
 
-    void loadPricingRequests().catch((error) => {
+    if (cachedPricingRequests && cachedPricingRequests.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadPricingRequests().catch((error) => {
         console.error(error);
       });
+    }, 0);
 
     return () => {
       isActive = false;
+      window.clearTimeout(timer);
     };
-  }, [isAuthenticated, isDemoMode, loadPricingRequests]);
+  }, [cacheKey, cachedPricingRequests, isAuthenticated, isDemoMode, loadPricingRequests]);
 
   const replacePricingRequest = (request: IPricingRequest) => {
     setPricingRequests((current) => {

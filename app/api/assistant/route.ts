@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { AUTH_COOKIE_NAME } from "@/app/api/Auth/session-cookie";
 import { getAuthorizedUser } from "@/lib/server/assistant-auth";
 import {
   type AssistantMutation,
@@ -11,8 +12,44 @@ import { getAssistantWorkspaceForUser } from "@/lib/server/assistant-workspace";
 
 export const runtime = "nodejs";
 
-const MAX_MESSAGE_COUNT = 12;
-const MAX_MESSAGE_LENGTH = 2000;
+const MAX_MESSAGE_COUNT = 24;
+const MAX_MESSAGE_LENGTH = 3000;
+
+const parseTrace = (value: unknown): AssistantTraceStep[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value
+    .flatMap((step) => {
+      if (!step || typeof step !== "object") {
+        return [];
+      }
+
+      const candidate = step as {
+        arguments?: unknown;
+        outputPreview?: unknown;
+        tool?: unknown;
+      };
+
+      if (typeof candidate.tool !== "string") {
+        return [];
+      }
+
+      return [
+        {
+          arguments:
+            candidate.arguments && typeof candidate.arguments === "object"
+              ? (candidate.arguments as Record<string, unknown>)
+              : {},
+          outputPreview:
+            typeof candidate.outputPreview === "string" ? candidate.outputPreview : "",
+          tool: candidate.tool,
+        },
+      ];
+    })
+    .slice(0, 8);
+};
 
 const parseMessages = (value: unknown): AssistantMessage[] => {
   if (!Array.isArray(value) || value.length === 0) {
@@ -30,6 +67,7 @@ const parseMessages = (value: unknown): AssistantMessage[] => {
         (message as { role?: unknown }).role === "assistant" ? "assistant" : "user";
       const content = String((message as { content?: unknown }).content ?? "").trim();
       const rawMutations = (message as { mutations?: unknown }).mutations;
+      const trace = parseTrace((message as { trace?: unknown }).trace);
       let mutations: AssistantMutation[] | undefined;
 
       if (Array.isArray(rawMutations)) {
@@ -80,6 +118,7 @@ const parseMessages = (value: unknown): AssistantMessage[] => {
         content: content.slice(0, MAX_MESSAGE_LENGTH),
         mutations,
         role,
+        trace,
       };
     });
 };
@@ -89,6 +128,22 @@ const sanitizeTrace = (trace: AssistantTraceStep[] | undefined) =>
 
 const sanitizeMutations = (mutations: AssistantMutation[] | undefined) =>
   Array.isArray(mutations) ? mutations.slice(0, 8) : [];
+
+const getSessionToken = (request: NextRequest) => {
+  const cookieToken = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+
+  if (cookieToken) {
+    return cookieToken;
+  }
+
+  const authHeader = request.headers.get("authorization");
+
+  if (!authHeader?.startsWith("Bearer ")) {
+    return "";
+  }
+
+  return authHeader.slice("Bearer ".length).trim();
+};
 
 export async function POST(request: NextRequest) {
   const user = await getAuthorizedUser(request);
@@ -109,7 +164,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const workspace = getAssistantWorkspaceForUser(user);
+    const workspace = await getAssistantWorkspaceForUser(user, getSessionToken(request));
     const result = await runSecureAssistant({ messages, workspace });
 
     return NextResponse.json({
@@ -117,6 +172,7 @@ export async function POST(request: NextRequest) {
       mode: result.mode,
       model: result.model,
       mutations: sanitizeMutations(result.mutations),
+      reason: result.reason,
       role: workspace.role,
       scopeLabel: workspace.scopeLabel,
       trace: sanitizeTrace(result.trace),

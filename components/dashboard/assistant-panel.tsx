@@ -7,14 +7,20 @@ import {
   SafetyCertificateOutlined,
   SendOutlined,
 } from "@ant-design/icons";
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
 import { getSessionToken } from "@/lib/client/backend-api";
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { useAuthState } from "@/providers/authProvider";
 import type { UserRole } from "@/providers/salesTypes";
-import { ASSISTANT_PANEL_DRAFT_KEY, ASSISTANT_PANEL_MESSAGES_KEY } from "./draft-storage";
+import {
+  ASSISTANT_PANEL_DRAFT_KEY,
+  ASSISTANT_PANEL_MESSAGES_KEY,
+  getScopedDraftKey,
+} from "./draft-storage";
 import { AssistantRichText } from "./assistant-rich-text";
 
 type AssistantMessage = {
@@ -40,71 +46,169 @@ type AssistantMessage = {
   }>;
 };
 
+type AssistantRuntimeMode =
+  | "gemini"
+  | "groq"
+  | "local"
+  | "offline"
+  | "openai"
+  | "workflow"
+  | null;
+
 const MAX_VISIBLE_MESSAGES = 12;
 
-const getIntroMessage = (role: UserRole) =>
-  isManagerRole(role)
-    ? "I can help with pipeline risk, next actions, proposal bottlenecks, renewal risk, workload pressure, workspace search, and creating clients, opportunities, and draft proposals or deleting opportunities and draft proposals when you ask explicitly."
-    : "I can help with your assigned opportunities, proposal progress, pricing requests, activities, workspace search, and creating or deleting opportunities and draft proposals when you ask explicitly.";
+const getIntroMessage = (role: UserRole, isScopedClientUser: boolean) =>
+  isScopedClientUser
+    ? "I can help with your shared client workspace, proposals, documents, messages, and the next best step with the account team."
+    : isManagerRole(role)
+      ? "I can help with pipeline risk, next actions, proposal bottlenecks, renewal risk, workload pressure, pending client requests, workspace search, and creating or deleting clients, opportunities, draft proposals, activities, pricing requests, and notes when you ask explicitly."
+      : "I can help with your assigned opportunities, proposal progress, pricing requests, activities, workspace search, and creating or deleting clients, opportunities, draft proposals, activities, pricing requests, and notes when you ask explicitly.";
+
+const getModeTag = (mode: AssistantRuntimeMode) => {
+  if (mode === "offline") {
+    return { color: "gold", label: "Offline guidance" };
+  }
+
+  if (mode === "workflow") {
+    return { color: "blue", label: "Workflow automation" };
+  }
+
+  if (mode === "local") {
+    return { color: "cyan", label: "Local guidance" };
+  }
+
+  return { color: "green", label: "Live assistant" };
+};
+
+const getResponseStatusLabel = (mode: AssistantRuntimeMode, scopeLabel?: string) => {
+  if (mode === "offline") {
+    return "Offline workspace guidance active";
+  }
+
+  if (mode === "workflow") {
+    return "Workflow completed locally";
+  }
+
+  if (mode === "local") {
+    return "Local workspace guidance active";
+  }
+
+  return scopeLabel ?? "Secure access ready";
+};
 
 export function AssistantPanel() {
+  const searchParams = useSearchParams();
   const { user } = useAuthState();
   const role = getPrimaryUserRole(user?.roles);
-  const [draft, setDraft] = useState(() => readSessionDraft<string>(ASSISTANT_PANEL_DRAFT_KEY) ?? "");
+  const isScopedClientUser = isClientScopedUser(user?.clientIds);
+  const draftStorageKey = getScopedDraftKey(ASSISTANT_PANEL_DRAFT_KEY, {
+    tenantId: user?.tenantId,
+    userId: user?.userId,
+  });
+  const messageStorageKey = getScopedDraftKey(ASSISTANT_PANEL_MESSAGES_KEY, {
+    tenantId: user?.tenantId,
+    userId: user?.userId,
+  });
+  const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [assistantMode, setAssistantMode] = useState<"groq" | "offline" | "openai" | null>(null);
+  const [assistantMode, setAssistantMode] = useState<AssistantRuntimeMode>(null);
   const [assistantReason, setAssistantReason] = useState<string | null>(null);
+  const [lastResponseReason, setLastResponseReason] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [messages, setMessages] = useState<AssistantMessage[]>(
-    () => readSessionDraft<AssistantMessage[]>(ASSISTANT_PANEL_MESSAGES_KEY) ?? [],
-  );
+  const [messages, setMessages] = useState<AssistantMessage[]>([]);
+  const [loadedStorageIdentity, setLoadedStorageIdentity] = useState<string | null>(null);
   const [statusLabel, setStatusLabel] = useState("Awaiting your question");
+  const autoPrompt = searchParams.get("prompt")?.trim() ?? "";
+  const shouldAutoRun = searchParams.get("autorun") === "1";
+  const shouldStartFresh = searchParams.get("fresh") === "1";
+  const autoRunKeyRef = useRef<string | null>(null);
+  const storageIdentity = `${draftStorageKey}::${messageStorageKey}`;
+  const modeTag = getModeTag(assistantMode);
+  const scopeTagLabel = isScopedClientUser
+    ? "Client scope"
+    : isManagerRole(role)
+      ? "Manager scope"
+      : `${getUserRoleLabel(role)} scope`;
 
   const resetConversation = () => {
     setDraft("");
     setMessages([]);
     setError(null);
-    clearSessionDraft(ASSISTANT_PANEL_DRAFT_KEY);
-    clearSessionDraft(ASSISTANT_PANEL_MESSAGES_KEY);
+    setLastResponseReason(null);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
+    clearSessionDraft(messageStorageKey, { storage: "local" });
   };
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDraft(readSessionDraft<string>(draftStorageKey, { storage: "local" }) ?? "");
+      setMessages(
+        readSessionDraft<AssistantMessage[]>(messageStorageKey, { storage: "local" }) ?? [],
+      );
+      setError(null);
+      setLastResponseReason(null);
+      setLoadedStorageIdentity(storageIdentity);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [draftStorageKey, messageStorageKey, storageIdentity]);
+
   const suggestedPrompts =
-    role === "SalesRep"
-      ? [
-          "What assigned work needs my attention first?",
-          "Which pricing request or proposal is blocked?",
-          "Summarize my pipeline in plain language.",
-          "Create a new opportunity for an existing client.",
-          "Create a draft proposal for an existing opportunity.",
-          "Delete a proposal or opportunity I no longer need.",
-        ]
-      : [
-          "Which deals need action first this week?",
-          "Where is the biggest renewal risk right now?",
-          "Who looks overloaded and what should I reassign?",
-          "Create a new opportunity for an existing client.",
-          "Create a draft proposal for an existing opportunity.",
-          "Delete a proposal or opportunity I no longer need.",
-          "Search the workspace for a client, proposal, or contract.",
-      ];
+    isScopedClientUser
+        ? [
+            "What is the latest proposal status for my account?",
+            "Summarize the latest messages with the account team.",
+            "What documents or contracts need my attention?",
+            "Send a message to my representative saying we are ready to proceed.",
+          ]
+        : role === "SalesRep"
+        ? [
+            "What assigned work needs my attention first?",
+            "Which pricing request or proposal is blocked?",
+            "Summarize my pipeline in plain language.",
+            "Create a new opportunity for an existing client.",
+            "Create a draft proposal for an existing opportunity.",
+            "Delete the client or proposal I just created.",
+          ]
+        : [
+            "Which deals need action first this week?",
+            "Where is the biggest renewal risk right now?",
+            "Who looks overloaded and what should I reassign?",
+            "What client requests are waiting for admin review?",
+            "Review the latest client request and recommend the right reps.",
+            "Create a new opportunity for an existing client.",
+            "Create a draft proposal for an existing opportunity.",
+            "Delete the client or proposal I just created.",
+            "Search the workspace for a client, proposal, or contract.",
+        ];
 
   useEffect(() => {
+    if (loadedStorageIdentity !== storageIdentity) {
+      return;
+    }
+
     if (draft) {
-      writeSessionDraft(ASSISTANT_PANEL_DRAFT_KEY, draft);
+      writeSessionDraft(draftStorageKey, draft, { storage: "local" });
       return;
     }
 
-    clearSessionDraft(ASSISTANT_PANEL_DRAFT_KEY);
-  }, [draft]);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
+  }, [draft, draftStorageKey, loadedStorageIdentity, storageIdentity]);
 
   useEffect(() => {
-    if (messages.length > 0) {
-      writeSessionDraft(ASSISTANT_PANEL_MESSAGES_KEY, messages);
+    if (loadedStorageIdentity !== storageIdentity) {
       return;
     }
 
-    clearSessionDraft(ASSISTANT_PANEL_MESSAGES_KEY);
-  }, [messages]);
+    if (messages.length > 0) {
+      writeSessionDraft(messageStorageKey, messages, { storage: "local" });
+      return;
+    }
+
+    clearSessionDraft(messageStorageKey, { storage: "local" });
+  }, [loadedStorageIdentity, messageStorageKey, messages, storageIdentity]);
 
   useEffect(() => {
     let isActive = true;
@@ -118,7 +222,7 @@ export function AssistantPanel() {
         const payload = (await response.json()) as {
           isConfigured?: boolean;
           message?: string;
-          mode?: "groq" | "offline" | "openai";
+          mode?: "gemini" | "groq" | "offline" | "openai";
           model?: string;
           reason?: string | null;
         };
@@ -159,15 +263,16 @@ export function AssistantPanel() {
     };
   }, []);
 
-  const sendMessage = async (content: string) => {
+  const sendMessage = async (content: string, options?: { baseMessages?: AssistantMessage[] }) => {
     const trimmed = content.trim();
 
     if (!trimmed || isSubmitting) {
       return;
     }
 
+    const baseMessages = options?.baseMessages ?? messages;
     const nextMessages = [
-      ...messages,
+      ...baseMessages,
       {
         content: trimmed,
         role: "user" as const,
@@ -176,8 +281,9 @@ export function AssistantPanel() {
 
     setMessages(nextMessages);
     setDraft("");
-    clearSessionDraft(ASSISTANT_PANEL_DRAFT_KEY);
+    clearSessionDraft(draftStorageKey, { storage: "local" });
     setError(null);
+    setLastResponseReason(null);
     setIsSubmitting(true);
 
     try {
@@ -193,7 +299,7 @@ export function AssistantPanel() {
 
       const payload = (await response.json()) as {
         message?: string;
-        mode?: string;
+        mode?: AssistantRuntimeMode;
         model?: string;
         mutations?: Array<{
           entityId: string;
@@ -208,6 +314,7 @@ export function AssistantPanel() {
           record?: Record<string, unknown>;
           title: string;
         }>;
+        reason?: string | null;
         scopeLabel?: string;
         trace?: Array<{
           arguments: Record<string, unknown>;
@@ -220,6 +327,8 @@ export function AssistantPanel() {
         throw new Error(payload.message ?? "The assistant request failed.");
       }
 
+      setAssistantMode(payload.mode ?? null);
+      setLastResponseReason(payload.reason ?? null);
       setMessages((current) =>
         [
           ...current,
@@ -239,21 +348,93 @@ export function AssistantPanel() {
           }),
         );
       }
-      setStatusLabel(
-        payload.mode === "offline"
-          ? "Offline mode available"
-          : payload.scopeLabel ?? "Secure access ready",
-      );
+      setStatusLabel(getResponseStatusLabel(payload.mode ?? null, payload.scopeLabel));
     } catch (requestError) {
       setError(
         requestError instanceof Error
           ? requestError.message
           : "The assistant could not process this request.",
       );
+      setLastResponseReason(null);
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  const runAutoPrompt = useEffectEvent(
+    (prompt: string, fresh: boolean, clearAutorunFlag: () => void) => {
+      const baseMessages = fresh ? [] : messages;
+
+      if (fresh) {
+        setMessages([]);
+        setDraft("");
+        clearSessionDraft(draftStorageKey, { storage: "local" });
+        clearSessionDraft(messageStorageKey, { storage: "local" });
+      }
+
+      void sendMessage(prompt, { baseMessages }).finally(() => {
+        clearAutorunFlag();
+      });
+    },
+  );
+
+  useEffect(() => {
+    if (!shouldAutoRun) {
+      autoRunKeyRef.current = null;
+    }
+  }, [shouldAutoRun]);
+
+  useEffect(() => {
+    if (!autoPrompt || !shouldAutoRun || loadedStorageIdentity !== storageIdentity || isSubmitting) {
+      return;
+    }
+
+    const autoRunKey = `${storageIdentity}::${autoPrompt}`;
+
+    if (autoRunKeyRef.current === autoRunKey) {
+      return;
+    }
+
+    const clearAutorunFlag = () => {
+      if (typeof window === "undefined") {
+        return;
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      params.delete("autorun");
+      params.delete("fresh");
+      const nextUrl = params.toString()
+        ? `/dashboard/assistant?${params.toString()}`
+        : "/dashboard/assistant";
+      window.history.replaceState(null, "", nextUrl);
+    };
+
+    if (!shouldStartFresh && messages.length > 0) {
+      autoRunKeyRef.current = autoRunKey;
+      clearAutorunFlag();
+      return;
+    }
+
+    autoRunKeyRef.current = autoRunKey;
+    const timer = window.setTimeout(() => {
+      runAutoPrompt(autoPrompt, shouldStartFresh, clearAutorunFlag);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    autoPrompt,
+    draftStorageKey,
+    isSubmitting,
+    loadedStorageIdentity,
+    messages,
+    messages.length,
+    messageStorageKey,
+    shouldAutoRun,
+    shouldStartFresh,
+    storageIdentity,
+  ]);
 
   return (
     <div className="space-y-6">
@@ -271,15 +452,29 @@ export function AssistantPanel() {
                 {statusLabel}
               </Typography.Text>
             </div>
-            <Tag color={isManagerRole(role) ? "#f28c28" : "#4f7cac"}>
-              {isManagerRole(role) ? "Manager scope" : `${getUserRoleLabel(role)} scope`}
-            </Tag>
+            <div className="flex flex-wrap items-center gap-2">
+              <Tag color={modeTag.color}>{modeTag.label}</Tag>
+              <Tag color={isManagerRole(role) ? "#f28c28" : "#4f7cac"}>{scopeTagLabel}</Tag>
+            </div>
           </div>
+
+          {assistantMode === "offline" && lastResponseReason ? (
+            <Alert
+              className="mb-4"
+              description={lastResponseReason}
+              showIcon
+              title="Live assistant unavailable for this response"
+              type="warning"
+            />
+          ) : null}
 
           <div className="space-y-3">
             {messages.length === 0 ? (
               <div className="rounded-3xl bg-slate-50 p-4 text-slate-700">
-                <AssistantRichText className="text-slate-700" content={getIntroMessage(role)} />
+                <AssistantRichText
+                  className="text-slate-700"
+                  content={getIntroMessage(role, isScopedClientUser)}
+                />
               </div>
             ) : null}
 
@@ -330,7 +525,7 @@ export function AssistantPanel() {
             ) : null}
           </div>
 
-          <div className="mt-5 space-y-3">
+          <div className="mt-5 space-y-4">
             <Input.TextArea
               onChange={(event) => setDraft(event.target.value)}
               onPressEnter={(event) => {
@@ -339,19 +534,18 @@ export function AssistantPanel() {
                   void sendMessage(draft);
                 }
               }}
-              placeholder="Ask for pipeline advice, account status, follow-ups, workspace search, or ask me to create a client, opportunity, or draft proposal, or delete an opportunity or draft proposal."
+              placeholder="Ask for pipeline advice, account status, follow-ups, workspace search, or ask me to create or delete clients, opportunities, proposals, activities, pricing requests, or notes."
               rows={4}
               value={draft}
             />
 
+            {assistantMode === "offline" ? (
+              <Typography.Text className="block !text-sm !text-amber-700">
+                Live provider actions are unavailable in offline mode. Workspace summaries still work, but create, update, and delete assistant actions need `OPENAI_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY` configured locally.
+              </Typography.Text>
+            ) : null}
+
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2">
-                {suggestedPrompts.map((prompt) => (
-                  <Button key={prompt} onClick={() => void sendMessage(prompt)}>
-                    {prompt}
-                  </Button>
-                ))}
-              </div>
               <div className="flex flex-wrap gap-2">
                 <Button
                   disabled={messages.length === 0 && !draft}
@@ -371,6 +565,14 @@ export function AssistantPanel() {
               </div>
             </div>
 
+            <div className="flex flex-wrap gap-2">
+              {suggestedPrompts.map((prompt) => (
+                <Button key={prompt} onClick={() => void sendMessage(prompt)}>
+                  {prompt}
+                </Button>
+              ))}
+            </div>
+
             {error ? <Alert description={error} showIcon title="Assistant request failed." type="error" /> : null}
           </div>
         </Card>
@@ -384,7 +586,7 @@ export function AssistantPanel() {
               description={
                 assistantReason
                   ? `${assistantReason} Add it to .env.local and restart the Next.js server.`
-                  : "Add OPENAI_API_KEY or GROQ_API_KEY to .env.local and restart the Next.js server."
+                  : "Add OPENAI_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY to .env.local and restart the Next.js server."
               }
             />
           ) : null}
@@ -413,7 +615,7 @@ export function AssistantPanel() {
               <p>Renewal risk and deadline pressure</p>
               <p>Follow-ups, workload pressure, and role-appropriate business summaries</p>
               <p>Workspace search across clients, opportunities, proposals, contracts, notes, documents, pricing requests, and renewals</p>
-              <p>Create a client, opportunity, or draft proposal, or delete an opportunity or draft proposal, when you provide enough detail</p>
+              <p>Create or delete clients, opportunities, draft proposals, activities, pricing requests, and notes when you provide enough detail</p>
             </div>
           </Card>
         </div>

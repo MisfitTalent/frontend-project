@@ -1,0 +1,1603 @@
+"use client";
+
+import { MailOutlined, SendOutlined, TeamOutlined } from "@ant-design/icons";
+import type { ColumnsType } from "antd/es/table";
+import {
+  Alert,
+  Button,
+  Card,
+  Empty,
+  Form,
+  Input,
+  Modal,
+  Select,
+  Space,
+  Tag,
+  Typography,
+  message,
+} from "antd";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+
+import { AnimatedDashboardTable } from "@/components/dashboard/animated-dashboard-table";
+import { ClientMessageCenter } from "@/components/dashboard/client-message-center";
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import {
+  addServiceRequestMessage,
+  applyServiceRequestRepresentativeDecision,
+  createServiceRequestAssignments,
+  getServiceRequestDetail,
+  listServiceRequests,
+  type ServiceRequestMessageRecipientType,
+  type ServiceRequestAssignmentRecord,
+  type ServiceRequestDetail,
+  type ServiceRequestRecord,
+} from "@/lib/client/service-request-api";
+import { clearSessionDraft } from "@/lib/client/session-drafts";
+import { useMounted } from "@/lib/client/use-mounted";
+import { getPrimaryUserRole } from "@/lib/auth/roles";
+import {
+  CLIENT_MESSAGE_CATEGORY,
+  getScopedMessageThreads,
+  isClientRequestThread,
+  prioritizeMessageThread,
+} from "@/lib/dashboard/message-threads";
+import { useAuthState } from "@/providers/authProvider";
+import { useClientState } from "@/providers/clientProvider";
+import type { INoteItem } from "@/providers/domainSeeds";
+import { useNoteActions, useNoteState } from "@/providers/noteProvider";
+import { useOpportunityState } from "@/providers/opportunityProvider";
+import { useTeamMembersState } from "@/providers/teamMembersProvider";
+import {
+  ASSISTANT_PANEL_DRAFT_KEY,
+  ASSISTANT_PANEL_MESSAGES_KEY,
+  getScopedDraftKey,
+} from "./draft-storage";
+import { useStyles } from "./messages-panel.styles";
+
+type MessageFormValues = {
+  clientId: string;
+  content: string;
+  representativeId: string;
+  representativeIds?: string[];
+  recipientType?: ServiceRequestMessageRecipientType;
+  subject: string;
+};
+
+type AssignmentFormValues = {
+  representativeIds: string[];
+};
+
+const createMessageId = () =>
+  `workspace-message-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+const createAssignmentId = () =>
+  `team-assignment-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+const summarizeRequestText = (value: string, maxLength = 220) => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  const truncated = normalized.slice(0, maxLength);
+  const lastBoundary = Math.max(
+    truncated.lastIndexOf(". "),
+    truncated.lastIndexOf("! "),
+    truncated.lastIndexOf("? "),
+    truncated.lastIndexOf(", "),
+    truncated.lastIndexOf(" "),
+  );
+
+  return `${truncated.slice(0, lastBoundary > 80 ? lastBoundary : maxLength).trim()}...`;
+};
+
+const isWorkflowInstructionText = (value: string) =>
+  /\breview the (?:latest|client) request\b/i.test(value) &&
+  /\bassign the best reps\b/i.test(value);
+
+const summarizeServiceRequest = (
+  request: ServiceRequestRecord,
+  clientName: string,
+) => {
+  const description = request.description.trim();
+
+  if (description && !isWorkflowInstructionText(description)) {
+    return summarizeRequestText(description);
+  }
+
+  if (request.requestType === "proposal_support") {
+    return `${clientName} needs proposal support.`;
+  }
+
+  if (request.requestType === "pricing_support") {
+    return `${clientName} needs pricing and commercial support.`;
+  }
+
+  const normalizedTitle = request.title.trim().replace(/[.\s]+$/, "");
+
+  if (/support|help|request/i.test(normalizedTitle)) {
+    return `${clientName} needs ${normalizedTitle.toLowerCase()}.`;
+  }
+
+  return `${clientName} needs support with ${normalizedTitle}.`;
+};
+
+const clientFacingRole = (role: string) =>
+  [
+    "Account Executive",
+    "Sales Consultant",
+    "Client Success",
+    "Business Development",
+    "Pipeline Director",
+    "Proposal Manager",
+    "Deal Desk Specialist",
+  ].some((token) => role.includes(token));
+
+const getServiceRequestMessageRecipientSummary = (payload: Record<string, unknown>) => {
+  const recipientType =
+    payload.recipientType === "client" ||
+    payload.recipientType === "representative" ||
+    payload.recipientType === "both"
+      ? payload.recipientType
+      : "client";
+  const representativeNames = Array.isArray(payload.representativeNames)
+    ? payload.representativeNames.filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      )
+    : [];
+
+  if (recipientType === "both") {
+    return representativeNames.length > 0
+      ? `To client and reps: ${representativeNames.join(", ")}`
+      : "To client and reps";
+  }
+
+  if (recipientType === "representative") {
+    return representativeNames.length > 0
+      ? `To reps: ${representativeNames.join(", ")}`
+      : "To reps";
+  }
+
+  return "To client";
+};
+
+type MessagePanelContentProps = Readonly<{
+  initialClientId: string;
+  initialRepresentativeId: string;
+  initialSource: string;
+  selectedThreadId?: string | null;
+}>;
+
+function MessagesPanelContent({
+  initialClientId,
+  initialRepresentativeId,
+  initialSource,
+  selectedThreadId,
+}: MessagePanelContentProps) {
+  const router = useRouter();
+  const { user } = useAuthState();
+  const { clients } = useClientState();
+  const { teamMembers } = useTeamMembersState();
+  const { notes } = useNoteState();
+  const { addNote, updateNote } = useNoteActions();
+  const { opportunities } = useOpportunityState();
+  const { styles } = useStyles();
+  const role = getPrimaryUserRole(user?.roles);
+  const [messageApi, contextHolder] = message.useMessage();
+  const mounted = useMounted();
+  const [selectedClientId, setSelectedClientId] = useState<string>(initialClientId);
+  const [selectedRepresentativeId, setSelectedRepresentativeId] = useState<string>(
+    initialRepresentativeId,
+  );
+  const [selectedSource, setSelectedSource] = useState<string>(initialSource);
+  const [isReplyModalOpen, setIsReplyModalOpen] = useState(false);
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
+  const [activeThread, setActiveThread] = useState<INoteItem | null>(null);
+  const [activeServiceRequest, setActiveServiceRequest] = useState<ServiceRequestRecord | null>(
+    null,
+  );
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [serviceRequests, setServiceRequests] = useState<ServiceRequestRecord[]>([]);
+  const [serviceRequestDetailsById, setServiceRequestDetailsById] = useState<
+    Record<string, ServiceRequestDetail>
+  >({});
+  const [replyForm] = Form.useForm<MessageFormValues>();
+  const [assignmentForm] = Form.useForm<AssignmentFormValues>();
+  const assistantDraftStorageKey = getScopedDraftKey(ASSISTANT_PANEL_DRAFT_KEY, {
+    tenantId: user?.tenantId,
+    userId: user?.userId,
+  });
+  const assistantMessageStorageKey = getScopedDraftKey(ASSISTANT_PANEL_MESSAGES_KEY, {
+    tenantId: user?.tenantId,
+    userId: user?.userId,
+  });
+  const buildRequestHandlingPrompt = useCallback(
+    (request: ServiceRequestRecord) => {
+      const clientName =
+        clients.find((client) => client.id === request.clientId)?.name ?? "the client";
+
+      return `Review the client request "${request.title}" for ${clientName} (request id ${request.id}), create the right opportunity and proposal if needed, and assign the best reps for this request only.`;
+    },
+    [clients],
+  );
+
+  const openAssistantWithFreshContext = useCallback(
+    (prompt: string) => {
+      clearSessionDraft(assistantDraftStorageKey);
+      clearSessionDraft(assistantMessageStorageKey);
+      router.push(
+        `/dashboard/assistant?prompt=${encodeURIComponent(prompt)}&autorun=1&fresh=1`,
+      );
+    },
+    [assistantDraftStorageKey, assistantMessageStorageKey, router],
+  );
+
+  const isScopedClientUser = isClientScopedUser(user?.clientIds);
+
+  const loadServiceRequests = useCallback(async () => {
+    try {
+      const requests = await listServiceRequests();
+      setServiceRequests(requests);
+      const details = await Promise.all(
+        requests.map(async (request) => [request.id, await getServiceRequestDetail(request.id)] as const),
+      );
+      setServiceRequestDetailsById(Object.fromEntries(details));
+    } catch (error) {
+      console.error(error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isScopedClientUser) {
+      return;
+    }
+
+    let isActive = true;
+
+    void listServiceRequests()
+      .then(async (items) => {
+        if (isActive) {
+          setServiceRequests(items);
+          const details = await Promise.all(
+            items.map(async (request) => [request.id, await getServiceRequestDetail(request.id)] as const),
+          );
+          if (isActive) {
+            setServiceRequestDetailsById(Object.fromEntries(details));
+          }
+        }
+      })
+      .catch((error) => {
+        console.error(error);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [isScopedClientUser]);
+
+  const messageThreads = useMemo(
+    () =>
+      getScopedMessageThreads({
+        clientIds: user?.clientIds,
+        notes,
+        opportunities,
+        role,
+        userId: user?.userId,
+      }),
+    [notes, opportunities, role, user?.clientIds, user?.userId],
+  );
+
+  const representativeOptions = useMemo(
+    () =>
+      teamMembers
+        .filter((member) => clientFacingRole(member.role))
+        .map((member) => ({
+          label: member.name,
+          value: member.id,
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label)),
+    [teamMembers],
+  );
+
+  const scopedClientIds = useMemo(
+    () =>
+      [...new Set(messageThreads.map((thread) => thread.clientId).filter(Boolean))] as string[],
+    [messageThreads],
+  );
+  const scopedRepresentativeIds = useMemo(
+    () =>
+      [
+        ...new Set(
+          messageThreads.map((thread) => thread.representativeId).filter(Boolean),
+        ),
+      ] as string[],
+    [messageThreads],
+  );
+  const resolvedSelectedClientId =
+    selectedClientId !== "all" && !scopedClientIds.includes(selectedClientId)
+      ? "all"
+      : selectedClientId;
+  const resolvedSelectedRepresentativeId =
+    selectedRepresentativeId !== "all" &&
+    !scopedRepresentativeIds.includes(selectedRepresentativeId)
+      ? "all"
+      : selectedRepresentativeId;
+  const resolvedSelectedSource = ["assistant", "client_portal", "workspace"].includes(
+    selectedSource,
+  )
+    ? selectedSource
+    : "all";
+
+  const visibleThreads = useMemo(() => {
+    const filteredThreads = messageThreads.filter((note) => {
+      if (resolvedSelectedClientId !== "all" && note.clientId !== resolvedSelectedClientId) {
+        return false;
+      }
+
+      if (
+        resolvedSelectedRepresentativeId !== "all" &&
+        note.representativeId !== resolvedSelectedRepresentativeId
+      ) {
+        return false;
+      }
+
+      if (resolvedSelectedSource !== "all" && note.source !== resolvedSelectedSource) {
+        return false;
+      }
+
+      return true;
+    });
+
+    return prioritizeMessageThread(filteredThreads, selectedThreadId);
+  }, [
+    messageThreads,
+    resolvedSelectedClientId,
+    resolvedSelectedRepresentativeId,
+    resolvedSelectedSource,
+    selectedThreadId,
+  ]);
+
+  const clientOptions = useMemo(
+    () =>
+      clients.map((client) => ({
+        label: client.name,
+        value: client.id,
+      })),
+    [clients],
+  );
+  const visibleClientOptions = useMemo(
+    () => clientOptions.filter((option) => scopedClientIds.includes(option.value)),
+    [clientOptions, scopedClientIds],
+  );
+  const visibleRepresentativeOptions = useMemo(
+    () =>
+      representativeOptions.filter((option) =>
+        scopedRepresentativeIds.includes(option.value),
+      ),
+    [representativeOptions, scopedRepresentativeIds],
+  );
+
+  const pendingWorkflowRequests = useMemo(
+    () =>
+      serviceRequests
+        .filter((request) => request.status === "submitted")
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+    [serviceRequests],
+  );
+  const pendingAdminReviewCount = pendingWorkflowRequests.length;
+  const pendingAdminRequests = useMemo(
+    () => pendingWorkflowRequests,
+    [pendingWorkflowRequests],
+  );
+  const pendingRepresentativeAssignments = useMemo(
+    () =>
+      Object.values(serviceRequestDetailsById).flatMap((detail) =>
+        detail.assignments
+          .filter(
+            (assignment) =>
+              assignment.representativeUserId === user?.userId &&
+              assignment.status === "pending_rep_response",
+          )
+          .map((assignment) => ({
+            assignment,
+            request: detail.request,
+          })),
+      ),
+    [serviceRequestDetailsById, user?.userId],
+  );
+  const pendingClientResponseCount = useMemo(
+    () =>
+      Object.values(serviceRequestDetailsById).reduce(
+        (total, detail) =>
+          total +
+          detail.assignments.filter((assignment) => assignment.status === "pending_client_approval")
+            .length,
+        0,
+      ),
+    [serviceRequestDetailsById],
+  );
+  const outboundCount = messageThreads.filter((note) => note.source === "workspace").length;
+  const uniqueClientCount = new Set(
+    messageThreads.map((note) => note.clientId).filter(Boolean),
+  ).size;
+  const selectedConversationRoot = useMemo(
+    () => visibleThreads.find((note) => note.id === selectedThreadId) ?? null,
+    [selectedThreadId, visibleThreads],
+  );
+  const selectedServiceRequest = useMemo(
+    () => serviceRequests.find((request) => request.id === selectedThreadId) ?? null,
+    [selectedThreadId, serviceRequests],
+  );
+  const selectedServiceRequestDetail = useMemo(
+    () =>
+      selectedServiceRequest
+        ? serviceRequestDetailsById[selectedServiceRequest.id] ?? null
+        : null,
+    [selectedServiceRequest, serviceRequestDetailsById],
+  );
+  const selectedRepresentativeAssignment = useMemo(() => {
+    if (!selectedServiceRequestDetail || !user) {
+      return null;
+    }
+
+    return (
+      selectedServiceRequestDetail.assignments.find(
+        (assignment) =>
+          assignment.representativeUserId === user.userId &&
+          assignment.status === "pending_rep_response",
+      ) ?? null
+    );
+  }, [selectedServiceRequestDetail, user]);
+  const activeServiceRequestSummary = useMemo(() => {
+    if (!activeServiceRequest) {
+      return null;
+    }
+
+    const clientName =
+      clients.find((client) => client.id === activeServiceRequest.clientId)?.name ??
+      "Unlinked client";
+
+    return {
+      clientName,
+      description: summarizeServiceRequest(activeServiceRequest, clientName),
+      title: activeServiceRequest.title,
+    };
+  }, [activeServiceRequest, clients]);
+  const selectedConversationMessages = useMemo(() => {
+    if (!selectedConversationRoot?.clientId) {
+      return [];
+    }
+
+    const linkedRootId = selectedConversationRoot.linkedRequestId ?? selectedConversationRoot.id;
+
+    return messageThreads
+      .filter((note) => {
+        if (note.clientId !== selectedConversationRoot.clientId) {
+          return false;
+        }
+
+        return (
+          note.id === selectedConversationRoot.id ||
+          note.id === linkedRootId ||
+          note.linkedRequestId === selectedConversationRoot.id ||
+          note.linkedRequestId === linkedRootId
+        );
+      })
+      .sort((left, right) => left.createdDate.localeCompare(right.createdDate));
+  }, [messageThreads, selectedConversationRoot]);
+
+  const openConversation = (note: INoteItem) => {
+    const params = new URLSearchParams();
+    params.set("source", note.source ?? "client_portal");
+    params.set("threadId", note.id);
+
+    if (note.clientId) {
+      params.set("clientId", note.clientId);
+    }
+
+    router.push(`/dashboard/messages?${params.toString()}`);
+  };
+
+  const openServiceRequestConversation = (request: ServiceRequestRecord) => {
+    const params = new URLSearchParams();
+    params.set("source", request.source);
+    params.set("threadId", request.id);
+    params.set("clientId", request.clientId);
+    router.push(`/dashboard/messages?${params.toString()}`);
+  };
+
+  const applyRepresentativeDecision = async (
+    request: ServiceRequestRecord,
+    assignment: ServiceRequestAssignmentRecord,
+    decision: "accept" | "reject",
+  ) => {
+    setIsSubmitting(true);
+
+    try {
+      await applyServiceRequestRepresentativeDecision(request.id, {
+        assignmentId: assignment.id,
+        decision,
+      });
+      await loadServiceRequests();
+      messageApi.success(
+        decision === "accept"
+          ? "Assignment accepted."
+          : "Assignment rejected and returned for reassignment.",
+      );
+    } catch (error) {
+      console.error(error);
+      messageApi.error("Could not update the representative decision.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const openReplyComposer = (note?: INoteItem) => {
+    const accountLeadId =
+      note?.clientId &&
+      opportunities.find(
+        (opportunity) => opportunity.clientId === note.clientId && opportunity.ownerId,
+      )?.ownerId;
+
+    replyForm.setFieldsValue({
+      clientId: note?.clientId ?? undefined,
+      content: note ? `Hi, regarding "${note.title}"...` : "",
+      representativeId:
+        note?.representativeId ??
+        accountLeadId ??
+        representativeOptions.find((option) => option.value === user?.userId)?.value ??
+        undefined,
+      subject: note ? `Re: ${note.title}` : "Client follow-up",
+    });
+    setActiveThread(note ?? null);
+    setIsReplyModalOpen(true);
+  };
+
+  const openServiceRequestReplyComposer = (request: ServiceRequestRecord) => {
+    const requestDetail = serviceRequestDetailsById[request.id];
+    const assignedRepresentativeIds =
+      requestDetail?.assignments.map((assignment) => assignment.representativeUserId) ?? [];
+
+    replyForm.setFieldsValue({
+      clientId: request.clientId,
+      content: "",
+      recipientType: "client",
+      representativeId: "",
+      representativeIds: assignedRepresentativeIds,
+      subject: `Re: ${request.title}`,
+    });
+    setActiveThread(null);
+    setActiveServiceRequest(request);
+    setIsReplyModalOpen(true);
+  };
+
+  const closeReplyComposer = () => {
+    setIsReplyModalOpen(false);
+    setActiveThread(null);
+    setActiveServiceRequest(null);
+    replyForm.resetFields();
+  };
+
+  const handleReplySubmit = async (values: MessageFormValues) => {
+    if (activeServiceRequest) {
+      setIsSubmitting(true);
+
+      try {
+        const detail = await addServiceRequestMessage(activeServiceRequest.id, {
+          content: values.content.trim(),
+          recipientType: values.recipientType ?? "client",
+          representativeUserIds:
+            values.recipientType === "representative" || values.recipientType === "both"
+              ? values.representativeIds ?? []
+              : [],
+        });
+        setServiceRequestDetailsById((current) => ({
+          ...current,
+          [activeServiceRequest.id]: detail,
+        }));
+        await loadServiceRequests();
+        messageApi.success("Reply added to the request conversation.");
+        closeReplyComposer();
+      } catch (error) {
+        console.error(error);
+        messageApi.error("Could not save the request reply.");
+      } finally {
+        setIsSubmitting(false);
+      }
+
+      return;
+    }
+
+    const representative = values.representativeId
+      ? teamMembers.find((member) => member.id === values.representativeId)
+      : null;
+
+    setIsSubmitting(true);
+
+    try {
+      await addNote({
+        category: CLIENT_MESSAGE_CATEGORY,
+        clientId: values.clientId || undefined,
+        content: values.content.trim(),
+        createdDate: new Date().toISOString().split("T")[0],
+        id: createMessageId(),
+        kind: "client_message",
+        representativeId: representative?.id,
+        representativeName: representative?.name,
+        source: "workspace",
+        status: "Acknowledged",
+        submittedBy: user?.email ?? undefined,
+        title: values.subject.trim(),
+      });
+
+      if (activeThread && activeThread.status !== "Acknowledged") {
+        await updateNote(activeThread.id, {
+          status: "Acknowledged",
+        });
+      }
+
+      messageApi.success("Message recorded in the workspace.");
+      closeReplyComposer();
+    } catch (error) {
+      console.error(error);
+      messageApi.error("Could not save the workspace reply.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const openAssignModal = useCallback((note: INoteItem) => {
+    assignmentForm.setFieldsValue({
+      representativeIds: [],
+    });
+    setActiveThread(note);
+    setActiveServiceRequest(null);
+    setIsAssignModalOpen(true);
+  }, [assignmentForm]);
+
+  const openServiceRequestAssignModal = useCallback(
+    async (request: ServiceRequestRecord) => {
+      assignmentForm.setFieldsValue({
+        representativeIds: [],
+      });
+      setActiveThread(null);
+      setActiveServiceRequest(request);
+      setIsAssignModalOpen(true);
+    },
+    [assignmentForm],
+  );
+
+  const closeAssignModal = () => {
+    setIsAssignModalOpen(false);
+    setActiveThread(null);
+    setActiveServiceRequest(null);
+    assignmentForm.resetFields();
+    if (selectedThreadId) {
+      const params = new URLSearchParams();
+
+      if (resolvedSelectedClientId !== "all") {
+        params.set("clientId", resolvedSelectedClientId);
+      }
+      if (resolvedSelectedRepresentativeId !== "all") {
+        params.set("representativeId", resolvedSelectedRepresentativeId);
+      }
+      if (resolvedSelectedSource !== "all") {
+        params.set("source", resolvedSelectedSource);
+      }
+
+      router.replace(
+        params.toString() ? `/dashboard/messages?${params.toString()}` : "/dashboard/messages",
+      );
+    }
+  };
+
+  const handleAssignSubmit = async (values: AssignmentFormValues) => {
+    if (activeServiceRequest) {
+      const selectedRepresentatives = teamMembers.filter((member) =>
+        values.representativeIds.includes(member.id),
+      );
+
+      if (selectedRepresentatives.length === 0) {
+        messageApi.error("Select at least one representative.");
+        return;
+      }
+
+      setIsSubmitting(true);
+
+      try {
+        await createServiceRequestAssignments(activeServiceRequest.id, {
+          representativeUserIds: selectedRepresentatives.map((member) => member.id),
+        });
+        await loadServiceRequests();
+        messageApi.success("Assignment shared with the client for review.");
+        closeAssignModal();
+      } catch (error) {
+        console.error(error);
+        messageApi.error("Could not save the assignment.");
+      } finally {
+        setIsSubmitting(false);
+      }
+
+      return;
+    }
+
+    if (!activeThread?.clientId) {
+      messageApi.error("Choose a client request before assigning a representative.");
+      return;
+    }
+
+    const selectedRepresentatives = teamMembers.filter((member) =>
+      values.representativeIds.includes(member.id),
+    );
+
+    if (selectedRepresentatives.length === 0) {
+      messageApi.error("Select at least one representative.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      for (const representative of selectedRepresentatives) {
+        await addNote({
+          assignedByUserId: user?.userId ?? undefined,
+          assignedByUserName:
+            `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim() || user?.email || undefined,
+          category: CLIENT_MESSAGE_CATEGORY,
+          clientId: activeThread.clientId,
+          content: `Assigned ${representative.name} to support "${activeThread.title}".`,
+          createdDate: new Date().toISOString().split("T")[0],
+          id: createAssignmentId(),
+          kind: "team_assignment",
+          linkedRequestId: activeThread.id,
+          representativeId: representative.id,
+          representativeName: representative.name,
+          requestType: "team_assignment",
+          source: "workspace",
+          status: "Pending client response",
+          submittedBy: user?.email ?? undefined,
+          title: `Assigned ${representative.name} to ${activeThread.title}`,
+        });
+      }
+
+      await updateNote(activeThread.id, {
+        status: "Acknowledged",
+      });
+
+      messageApi.success("Assignment shared with the client for review.");
+      closeAssignModal();
+    } catch (error) {
+      console.error(error);
+      messageApi.error("Could not save the assignment.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const columns: ColumnsType<INoteItem> = [
+    {
+      key: "client",
+      render: (_value, record) =>
+        clients.find((client) => client.id === record.clientId)?.name ?? "Unlinked client",
+      title: "Client",
+    },
+    {
+      dataIndex: "title",
+      key: "title",
+      title: "Subject",
+    },
+    {
+      key: "representative",
+      render: (_value, record) =>
+        record.representativeName ??
+        teamMembers.find((member) => member.id === record.representativeId)?.name ??
+        "Unassigned",
+      title: "Representative",
+    },
+    {
+      key: "source",
+      render: (_value, record) => (
+        <Tag color={record.source === "workspace" ? "gold" : "blue"}>
+          {record.source === "workspace" ? "Workspace" : "Client"}
+        </Tag>
+      ),
+      title: "Source",
+    },
+    {
+      key: "status",
+      render: (_value, record) => (
+        <Tag
+          color={
+            record.status === "Accepted"
+              ? "green"
+              : record.status === "Rejected"
+                ? "red"
+                : record.status === "Pending admin review"
+                  ? "orange"
+                  : record.status === "Pending client response"
+                    ? "gold"
+                    : record.status === "Acknowledged"
+                      ? "green"
+                      : "blue"
+          }
+        >
+          {record.status ?? "Sent"}
+        </Tag>
+      ),
+      title: "Status",
+    },
+    {
+      dataIndex: "createdDate",
+      key: "createdDate",
+      title: "Date",
+    },
+    {
+      key: "actions",
+      render: (_value, record) =>
+        isClientRequestThread(record) && record.status === "Pending admin review" ? (
+          <Button icon={<TeamOutlined />} onClick={() => openAssignModal(record)} type="primary">
+            Assign reps
+          </Button>
+        ) : (
+          <Button icon={<SendOutlined />} onClick={() => openReplyComposer(record)}>
+            Reply
+          </Button>
+        ),
+      title: "Actions",
+    },
+  ];
+
+  useEffect(() => {
+    if (!selectedThreadId || isScopedClientUser || isAssignModalOpen) {
+      return;
+    }
+
+    const selectedRequest = visibleThreads.find(
+      (note) =>
+        note.id === selectedThreadId &&
+        isClientRequestThread(note) &&
+        note.status === "Pending admin review",
+    );
+
+    if (selectedRequest) {
+      const timer = window.setTimeout(() => {
+        openAssignModal(selectedRequest);
+      }, 0);
+
+      return () => window.clearTimeout(timer);
+    }
+  }, [isAssignModalOpen, isScopedClientUser, openAssignModal, selectedThreadId, visibleThreads]);
+
+  useEffect(() => {
+    if (!selectedServiceRequest || isScopedClientUser || isAssignModalOpen) {
+      return;
+    }
+
+    if (selectedServiceRequest.status !== "submitted") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void openServiceRequestAssignModal(selectedServiceRequest);
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    isAssignModalOpen,
+    isScopedClientUser,
+    openServiceRequestAssignModal,
+    selectedServiceRequest,
+  ]);
+
+  if (isScopedClientUser) {
+    return <ClientMessageCenter />;
+  }
+
+  return (
+    <div className={styles.container}>
+      {mounted ? contextHolder : null}
+
+      {!isScopedClientUser && pendingAdminRequests.length > 0 ? (
+        <Alert
+          action={
+            <Space size="small" wrap>
+              <Link
+                href={`/dashboard/messages?source=client_portal&threadId=${pendingAdminRequests[0]?.id ?? ""}`}
+              >
+                <Button className="dashboard-admin-alert__button" icon={<TeamOutlined />} type="primary">
+                  Open request
+                </Button>
+              </Link>
+                <Button
+                  icon={<MailOutlined />}
+                  onClick={() =>
+                    pendingAdminRequests[0]
+                      ? openAssistantWithFreshContext(
+                          buildRequestHandlingPrompt(pendingAdminRequests[0]),
+                        )
+                      : undefined
+                  }
+                  disabled={!pendingAdminRequests[0]}
+                >
+                Handle with AI
+              </Button>
+            </Space>
+          }
+          banner
+          className="dashboard-request-queue-banner"
+          description={
+            <div className="space-y-2">
+              <Typography.Text className="!text-slate-700">
+                {pendingAdminRequests.length} client request
+                {pendingAdminRequests.length === 1 ? "" : "s"} need admin action before the workflow can continue.
+              </Typography.Text>
+              <div className="space-y-1">
+                {pendingAdminRequests.slice(0, 3).map((request) => (
+                  <Typography.Text className="block !text-slate-700" key={request.id}>
+                    {request.createdAt.split("T")[0]} - {clients.find((client) => client.id === request.clientId)?.name ?? "Unlinked client"} - {request.title}
+                  </Typography.Text>
+                ))}
+              </div>
+            </div>
+          }
+          message="Client request queue is waiting for admin review"
+          showIcon
+          type="warning"
+        />
+      ) : null}
+
+      {!isScopedClientUser && pendingAdminRequests.length > 0 ? (
+        <Card className={styles.card} title="Admin review queue">
+          <div className={styles.requestQueue}>
+            <div className={styles.requestQueueHeader}>
+              <Typography.Text className={styles.metricText}>
+                These are the actual client requests waiting for admin action.
+              </Typography.Text>
+              <Button
+                icon={<MailOutlined />}
+                onClick={() =>
+                  openAssistantWithFreshContext(
+                    "What client requests are waiting for admin review?",
+                  )
+                }
+                type="default"
+              >
+                Summarize with AI
+              </Button>
+            </div>
+
+            {pendingAdminRequests.map((request) => (
+              <div className={styles.messageCard} key={request.id}>
+                <div className={styles.messageHeader}>
+                  <div className="space-y-2">
+                    <Typography.Title className="!m-0" level={5}>
+                      {request.title}
+                    </Typography.Title>
+                    <Space size="small" wrap>
+                      <Tag color="orange">Needs admin review</Tag>
+                      <Tag color="geekblue">
+                        {clients.find((client) => client.id === request.clientId)?.name ??
+                          "Unlinked client"}
+                      </Tag>
+                      <Tag color="default">{request.createdAt.split("T")[0]}</Tag>
+                    </Space>
+                  </div>
+                  <Space size="small" wrap>
+                    <Button onClick={() => openServiceRequestConversation(request)} type="default">
+                      Open chat
+                    </Button>
+                    <Button
+                      icon={<TeamOutlined />}
+                      onClick={() => void openServiceRequestAssignModal(request)}
+                      type="primary"
+                    >
+                      Assign reps
+                    </Button>
+                    <Button
+                      icon={<MailOutlined />}
+                      onClick={() =>
+                        openAssistantWithFreshContext(buildRequestHandlingPrompt(request))
+                      }
+                    >
+                      Handle with AI
+                    </Button>
+                    <Button
+                      onClick={() =>
+                        openReplyComposer({
+                          category: CLIENT_MESSAGE_CATEGORY,
+                          clientId: request.clientId,
+                          content: request.description,
+                          createdDate: request.createdAt.split("T")[0],
+                          id: request.id,
+                          source: request.source,
+                          title: request.title,
+                        } as INoteItem)
+                      }
+                    >
+                      Reply first
+                    </Button>
+                  </Space>
+                </div>
+                <Typography.Paragraph className={styles.messageText}>
+                  {request.description}
+                </Typography.Paragraph>
+                <Typography.Text className={styles.messageFooter}>
+                  Client request from{" "}
+                  {clients.find((client) => client.id === request.clientId)?.name ??
+                    "the client workspace"}
+                  .
+                </Typography.Text>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
+      {role === "SalesRep" && pendingRepresentativeAssignments.length > 0 ? (
+        <Card className={styles.card} title="Representative action queue">
+          <div className={styles.requestQueue}>
+            {pendingRepresentativeAssignments.map(({ assignment, request }) => (
+              <div className={styles.messageCard} key={assignment.id}>
+                <div className={styles.messageHeader}>
+                  <div className="space-y-2">
+                    <Typography.Title className="!m-0" level={5}>
+                      {request.title}
+                    </Typography.Title>
+                    <Space size="small" wrap>
+                      <Tag color="purple">Waiting for your acceptance</Tag>
+                      <Tag color="geekblue">
+                        {clients.find((client) => client.id === request.clientId)?.name ??
+                          "Unlinked client"}
+                      </Tag>
+                      <Tag color="default">{assignment.createdAt.split("T")[0]}</Tag>
+                    </Space>
+                  </div>
+                  <Space size="small" wrap>
+                    <Button onClick={() => openServiceRequestConversation(request)} type="default">
+                      Open chat
+                    </Button>
+                    <Button
+                      loading={isSubmitting}
+                      onClick={() => void applyRepresentativeDecision(request, assignment, "accept")}
+                      type="primary"
+                    >
+                      Accept
+                    </Button>
+                    <Button
+                      danger
+                      loading={isSubmitting}
+                      onClick={() => void applyRepresentativeDecision(request, assignment, "reject")}
+                    >
+                      Reject
+                    </Button>
+                  </Space>
+                </div>
+                <Typography.Paragraph className={styles.messageText}>
+                  {request.description}
+                </Typography.Paragraph>
+                <Typography.Text className={styles.messageFooter}>
+                  You were assigned as {assignment.representativeName}. Confirm to activate the
+                  workflow for your side.
+                </Typography.Text>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
+      {selectedServiceRequest ? (
+        <Card className={styles.card} title="Open conversation">
+          <div className={styles.conversationThread}>
+            <div className={styles.selectedConversationHeader}>
+              <div>
+                <Typography.Title className="!mb-0" level={4}>
+                  {selectedServiceRequest.title}
+                </Typography.Title>
+                <Typography.Text className={styles.metricText}>
+                  {clients.find((client) => client.id === selectedServiceRequest.clientId)?.name ??
+                    "Unlinked client"}
+                </Typography.Text>
+              </div>
+              <Space size="small" wrap>
+                {selectedServiceRequest.status === "submitted" ? (
+                  <Button
+                    icon={<TeamOutlined />}
+                    onClick={() => void openServiceRequestAssignModal(selectedServiceRequest)}
+                    type="primary"
+                  >
+                    Assign reps
+                  </Button>
+                ) : null}
+                {selectedRepresentativeAssignment ? (
+                  <>
+                    <Button
+                      loading={isSubmitting}
+                      onClick={() =>
+                        void applyRepresentativeDecision(
+                          selectedServiceRequest,
+                          selectedRepresentativeAssignment,
+                          "accept",
+                        )
+                      }
+                      type="primary"
+                    >
+                      Accept assignment
+                    </Button>
+                    <Button
+                      danger
+                      loading={isSubmitting}
+                      onClick={() =>
+                        void applyRepresentativeDecision(
+                          selectedServiceRequest,
+                          selectedRepresentativeAssignment,
+                          "reject",
+                        )
+                      }
+                    >
+                      Reject assignment
+                    </Button>
+                  </>
+                ) : null}
+                <Button
+                  icon={<SendOutlined />}
+                  onClick={() => openServiceRequestReplyComposer(selectedServiceRequest)}
+                >
+                  Reply
+                </Button>
+              </Space>
+            </div>
+
+            <div className={`${styles.conversationBubble} ${styles.conversationBubbleClient}`}>
+              <Typography.Text className={styles.conversationMeta}>
+                Client · {selectedServiceRequest.createdAt.split("T")[0]} · {selectedServiceRequest.status}
+              </Typography.Text>
+              <Typography.Paragraph className={styles.messageText}>
+                {selectedServiceRequest.description}
+              </Typography.Paragraph>
+            </div>
+
+            {selectedServiceRequestDetail?.events.map((event) => (
+              <div
+                className={`${styles.conversationBubble} ${
+                  event.actorType === "client"
+                    ? styles.conversationBubbleClient
+                    : styles.conversationBubbleWorkspace
+                }`}
+                key={event.id}
+              >
+                <Typography.Text className={styles.conversationMeta}>
+                  {event.actorType} · {event.createdAt.split("T")[0]} ·{" "}
+                  {event.eventType === "service_request_message_added"
+                    ? getServiceRequestMessageRecipientSummary(event.payloadJson)
+                    : event.eventType}
+                </Typography.Text>
+                <Typography.Paragraph className={styles.messageText}>
+                  {event.eventType === "service_request_message_added"
+                    ? String(event.payloadJson.content ?? "")
+                    : event.eventType === "service_request_assignments_created"
+                    ? "Assignments were prepared and sent for client review."
+                    : event.eventType === "service_request_review_started"
+                      ? "Admin review started."
+                      : event.eventType === "service_request_client_decision"
+                        ? "The client responded to the proposed assignment."
+                        : event.eventType === "service_request_representative_decision"
+                          ? "A representative responded to the assignment."
+                          : "Workflow event recorded."}
+                </Typography.Paragraph>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : selectedConversationRoot ? (
+        <Card className={styles.card} title="Open conversation">
+          <div className={styles.conversationThread}>
+            <div className={styles.selectedConversationHeader}>
+              <div>
+                <Typography.Title className="!mb-0" level={4}>
+                  {selectedConversationRoot.title}
+                </Typography.Title>
+                <Typography.Text className={styles.metricText}>
+                  {clients.find((client) => client.id === selectedConversationRoot.clientId)?.name ??
+                    "Unlinked client"}
+                </Typography.Text>
+              </div>
+              <Space size="small" wrap>
+                {isClientRequestThread(selectedConversationRoot) &&
+                selectedConversationRoot.status === "Pending admin review" ? (
+                  <Button
+                    icon={<TeamOutlined />}
+                    onClick={() => openAssignModal(selectedConversationRoot)}
+                    type="primary"
+                  >
+                    Assign reps
+                  </Button>
+                ) : null}
+                <Button
+                  icon={<SendOutlined />}
+                  onClick={() => openReplyComposer(selectedConversationRoot)}
+                >
+                  Reply
+                </Button>
+              </Space>
+            </div>
+
+            {selectedConversationMessages.map((note) => {
+              const isWorkspaceMessage = note.source === "workspace" || note.source === "assistant";
+
+              return (
+                <div
+                  className={`${styles.conversationBubble} ${
+                    isWorkspaceMessage
+                      ? styles.conversationBubbleWorkspace
+                      : styles.conversationBubbleClient
+                  }`}
+                  key={note.id}
+                >
+                  <Typography.Text className={styles.conversationMeta}>
+                    {isWorkspaceMessage
+                      ? note.source === "assistant"
+                        ? "Assistant"
+                        : note.representativeName ?? "Workspace"
+                      : note.submittedBy ?? "Client"}{" "}
+                    · {note.createdDate} · {note.status ?? "Sent"}
+                  </Typography.Text>
+                  <Typography.Paragraph className={styles.messageText}>
+                    {note.content}
+                  </Typography.Paragraph>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      ) : null}
+
+      <div className={styles.cardGridFour}>
+        <Card className={styles.card}>
+          <Typography.Text className={styles.metricLabel}>Client threads</Typography.Text>
+          <Typography.Title className={styles.metricTitle} level={3}>
+            {uniqueClientCount}
+          </Typography.Title>
+          <Typography.Text className={styles.metricText}>
+            Accounts with at least one message thread.
+          </Typography.Text>
+        </Card>
+        <Card className={styles.card}>
+          <Typography.Text className={styles.metricLabel}>Needs assignment</Typography.Text>
+          <Typography.Title className={styles.metricTitle} level={3}>
+            {pendingAdminReviewCount}
+          </Typography.Title>
+          <Typography.Text className={styles.metricText}>
+            Client requests waiting for admin assignment.
+          </Typography.Text>
+        </Card>
+        <Card className={styles.card}>
+          <Typography.Text className={styles.metricLabel}>Waiting on client</Typography.Text>
+          <Typography.Title className={styles.metricTitle} level={3}>
+            {pendingClientResponseCount}
+          </Typography.Title>
+          <Typography.Text className={styles.metricText}>
+            Assigned reps still awaiting client acceptance.
+          </Typography.Text>
+        </Card>
+        <Card className={styles.card}>
+          <Typography.Text className={styles.metricLabel}>Outbound replies</Typography.Text>
+          <Typography.Title className={styles.metricTitle} level={3}>
+            {outboundCount}
+          </Typography.Title>
+          <Typography.Text className={styles.metricText}>
+            Workspace-originated updates recorded in notes.
+          </Typography.Text>
+        </Card>
+      </div>
+
+      <Card
+        className={styles.card}
+        extra={
+          <Button icon={<MailOutlined />} onClick={() => openReplyComposer()} type="primary">
+            Reply from workspace
+          </Button>
+        }
+        title="Client conversations"
+      >
+        <div className={styles.filterBar}>
+          <Space size="middle" wrap>
+            <Select
+              className={styles.filterSelect}
+              onChange={setSelectedClientId}
+              options={[{ label: "All clients", value: "all" }, ...visibleClientOptions]}
+              value={resolvedSelectedClientId}
+            />
+            <Select
+              className={styles.filterSelect}
+              onChange={setSelectedRepresentativeId}
+              options={[
+                { label: "All representatives", value: "all" },
+                ...visibleRepresentativeOptions,
+              ]}
+              value={resolvedSelectedRepresentativeId}
+            />
+            <Select
+              className={styles.filterSelect}
+              onChange={setSelectedSource}
+              options={[
+                { label: "All sources", value: "all" },
+                { label: "Client", value: "client_portal" },
+                { label: "Workspace", value: "workspace" },
+                { label: "Assistant", value: "assistant" },
+              ]}
+              value={resolvedSelectedSource}
+            />
+          </Space>
+          <Link href="/dashboard/clients" className="text-[#355c7d] hover:text-[#f28c28]">
+            View client records
+          </Link>
+        </div>
+
+        <div className={styles.tableWrap}>
+          <AnimatedDashboardTable
+            columns={columns}
+            dataSource={visibleThreads}
+            emptyDescription="No client messages match the current filters."
+            rowKey="id"
+            scroll={{ x: 980 }}
+          />
+        </div>
+      </Card>
+
+      <Card className={styles.card} title="Latest threads">
+        {visibleThreads.length > 0 ? (
+          <div className={styles.messageList}>
+            {visibleThreads.slice(0, 6).map((note) => (
+              <div className={styles.messageCard} key={note.id}>
+                <div className={styles.messageHeader}>
+                  <div className="space-y-2">
+                    <Typography.Title className="!m-0" level={5}>
+                      {note.title}
+                    </Typography.Title>
+                    <Space size="small" wrap>
+                      <Tag color="geekblue">
+                        {clients.find((client) => client.id === note.clientId)?.name ??
+                          "Unlinked client"}
+                      </Tag>
+                      <Tag color={note.source === "workspace" ? "gold" : "blue"}>
+                        {note.source === "workspace" ? "Workspace" : "Client"}
+                      </Tag>
+                      <Tag
+                        color={
+                          note.status === "Accepted"
+                            ? "green"
+                            : note.status === "Rejected"
+                              ? "red"
+                              : note.status === "Pending admin review"
+                                ? "orange"
+                                : note.status === "Pending client response"
+                                  ? "gold"
+                                  : note.status === "Acknowledged"
+                                    ? "green"
+                                    : "blue"
+                        }
+                      >
+                        {note.status ?? "Sent"}
+                      </Tag>
+                    </Space>
+                  </div>
+                  {isClientRequestThread(note) && note.status === "Pending admin review" ? (
+                    <Space size="small" wrap>
+                      <Button onClick={() => openConversation(note)} type="default">
+                        Open chat
+                      </Button>
+                      <Button icon={<TeamOutlined />} onClick={() => openAssignModal(note)} type="primary">
+                        Assign reps
+                      </Button>
+                    </Space>
+                  ) : (
+                    <Space size="small" wrap>
+                      <Button onClick={() => openConversation(note)} type="default">
+                        Open chat
+                      </Button>
+                      <Button icon={<SendOutlined />} onClick={() => openReplyComposer(note)}>
+                        Reply
+                      </Button>
+                    </Space>
+                  )}
+                </div>
+                <Typography.Paragraph className={styles.messageText}>
+                  {note.content}
+                </Typography.Paragraph>
+                <Typography.Text className={styles.messageFooter}>
+                  {(note.representativeName ?? "Unassigned") + " · " + note.createdDate}
+                </Typography.Text>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Empty
+            description="No client messages are available right now."
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+          />
+        )}
+      </Card>
+
+      {mounted ? (
+        <>
+          <Modal
+            onCancel={closeReplyComposer}
+            onOk={() => replyForm.submit()}
+            okButtonProps={{ loading: isSubmitting }}
+            okText="Send reply"
+            open={isReplyModalOpen}
+            title="Reply from workspace"
+          >
+            <Form className={styles.modalForm} form={replyForm} layout="vertical" onFinish={handleReplySubmit}>
+              {activeServiceRequest ? null : (
+                <>
+                  <Form.Item
+                    label="Client"
+                    name="clientId"
+                  >
+                    <Select allowClear options={clientOptions} placeholder="No client selected" />
+                  </Form.Item>
+                  <Form.Item
+                    label="Representative"
+                    name="representativeId"
+                  >
+                    <Select
+                      allowClear
+                      options={representativeOptions}
+                      placeholder="No representative selected"
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    label="Subject"
+                    name="subject"
+                    rules={[{ message: "Add a subject", required: true }]}
+                  >
+                    <Input placeholder="Message subject" />
+                  </Form.Item>
+                </>
+              )}
+              {activeServiceRequest ? (
+                <>
+                  <Form.Item
+                    label="Send to"
+                    name="recipientType"
+                    rules={[{ message: "Choose who should receive the reply", required: true }]}
+                  >
+                    <Select
+                      options={[
+                        { label: "Client", value: "client" },
+                        { label: "Representative", value: "representative" },
+                        { label: "Client and representative", value: "both" },
+                      ]}
+                      placeholder="Choose the message audience"
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    dependencies={["recipientType"]}
+                    label="Representatives"
+                    name="representativeIds"
+                    rules={[
+                      ({ getFieldValue }) => ({
+                        validator(_, value: string[] | undefined) {
+                          const recipientType = getFieldValue("recipientType");
+
+                          if (
+                            recipientType !== "representative" &&
+                            recipientType !== "both"
+                          ) {
+                            return Promise.resolve();
+                          }
+
+                          if (Array.isArray(value) && value.length > 0) {
+                            return Promise.resolve();
+                          }
+
+                          return Promise.reject(
+                            new Error("Choose at least one representative recipient."),
+                          );
+                        },
+                      }),
+                    ]}
+                  >
+                    <Select
+                      mode="multiple"
+                      options={
+                        (
+                          activeServiceRequest
+                            ? serviceRequestDetailsById[activeServiceRequest.id]?.assignments ?? []
+                            : []
+                        ).map((assignment) => ({
+                          label: assignment.representativeName,
+                          value: assignment.representativeUserId,
+                        }))
+                      }
+                      placeholder="Choose one or more assigned representatives"
+                    />
+                  </Form.Item>
+                </>
+              ) : null}
+              <Form.Item
+                label={activeServiceRequest ? "Reply" : "Message"}
+                name="content"
+                rules={[{ message: "Enter the message", required: true }]}
+              >
+                <Input.TextArea
+                  placeholder={
+                    activeServiceRequest
+                      ? "Write your response to this request"
+                      : "Write the reply"
+                  }
+                  rows={5}
+                />
+              </Form.Item>
+            </Form>
+          </Modal>
+
+          <Modal
+            onCancel={closeAssignModal}
+            onOk={() => assignmentForm.submit()}
+            okButtonProps={{ loading: isSubmitting }}
+            okText="Assign reps"
+            open={isAssignModalOpen}
+            title="Assign the right sales reps"
+          >
+            <Form className={styles.modalForm} form={assignmentForm} layout="vertical" onFinish={handleAssignSubmit}>
+              {activeServiceRequestSummary ? (
+                <Alert
+                  className="mb-4"
+                  description={
+                    <Space direction="vertical" size={4}>
+                      <Typography.Text strong>{activeServiceRequestSummary.title}</Typography.Text>
+                      <Typography.Text type="secondary">
+                        {activeServiceRequestSummary.clientName}
+                      </Typography.Text>
+                      <Typography.Paragraph className="!mb-0">
+                        {activeServiceRequestSummary.description}
+                      </Typography.Paragraph>
+                    </Space>
+                  }
+                  message="Request summary"
+                  showIcon
+                  type="info"
+                />
+              ) : null}
+              <Form.Item
+                label="Representatives"
+                name="representativeIds"
+                rules={[{ message: "Choose at least one representative", required: true }]}
+              >
+                <Select
+                  mode="multiple"
+                  options={representativeOptions}
+                  placeholder="Select one or more representatives"
+                />
+              </Form.Item>
+            </Form>
+          </Modal>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+export function MessagesPanel() {
+  const searchParams = useSearchParams();
+  const selectedThreadId = searchParams.get("threadId");
+  const initialClientId = searchParams.get("clientId") ?? "all";
+  const initialRepresentativeId = searchParams.get("representativeId") ?? "all";
+  const initialSource = searchParams.get("source") ?? "all";
+  const panelKey = searchParams.toString();
+
+  return (
+    <MessagesPanelContent
+      initialClientId={initialClientId}
+      initialRepresentativeId={initialRepresentativeId}
+      initialSource={initialSource}
+      key={panelKey}
+      selectedThreadId={selectedThreadId}
+    />
+  );
+}

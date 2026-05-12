@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { AUTH_COOKIE_NAME } from "@/app/api/Auth/session-cookie";
 import { canAccessDashboardPath, DASHBOARD_HOME_PATH } from "@/lib/auth/dashboard-access";
+import { normalizeUserRole } from "@/lib/auth/roles";
 import { getUserFromSessionToken } from "@/lib/auth/session-user";
 
 export function proxy(request: NextRequest) {
@@ -18,7 +19,7 @@ export function proxy(request: NextRequest) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  if (!canAccessDashboardPath(pathname, user.role)) {
+  if (!canAccessDashboardPath(pathname, normalizeUserRole(user.role), user.clientIds)) {
     return NextResponse.redirect(new URL(DASHBOARD_HOME_PATH, request.url));
   }
 

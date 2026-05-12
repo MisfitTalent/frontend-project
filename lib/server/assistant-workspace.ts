@@ -1,110 +1,234 @@
 import "server-only";
 
 import type { IMockUser } from "@/app/api/Auth/mock-users";
-import { type IDocumentItem, type INoteItem } from "@/providers/domainSeeds";
-import type { IPricingRequest, ISalesData, UserRole } from "@/providers/salesTypes";
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getUserRoleLabel, normalizeUserRole } from "@/lib/auth/roles";
 import { getMockWorkspaceSnapshot } from "@/lib/server/mock-workspace-store";
+import { type IDocumentItem, type INoteItem } from "@/providers/domainSeeds";
+import type {
+  IAutomationEvent,
+  IPricingRequest,
+  ISalesData,
+  UserRole,
+} from "@/providers/salesTypes";
+import {
+  isMockAssistantSessionToken,
+  loadAssistantLiveWorkspace,
+} from "@/lib/server/assistant-backend";
+import { listLiveServiceRequests } from "@/lib/server/service-request-backend-store";
+import {
+  listServiceRequests,
+  type ServiceRequestRecord,
+} from "@/lib/server/service-request-store";
 
 export interface IAssistantWorkspace {
+  clientIds?: string[] | null;
   documents: IDocumentItem[];
   isClientScoped: boolean;
+  isLiveBackend?: boolean;
   notes: INoteItem[];
   pricingRequests: IPricingRequest[];
   role: UserRole;
   salesData: ISalesData;
+  sessionToken?: string;
+  serviceRequests: ServiceRequestRecord[];
   scopeLabel: string;
   tenantId: string;
   userDisplayName: string;
+  userEmail?: string;
+  userId?: string;
 }
 
-export const getAssistantWorkspaceForUser = (
-  user: IMockUser,
-): IAssistantWorkspace => {
-  const role: UserRole = normalizeUserRole(user.role);
-  const workspace = getMockWorkspaceSnapshot(user.tenantId);
-  const isClientScoped = (user.clientIds?.length ?? 0) > 0;
-
-  if (!isClientScoped) {
-    return {
-      documents: workspace.documents,
-      isClientScoped: false,
-      notes: workspace.notes,
-      pricingRequests: workspace.pricingRequests,
-      role,
-      salesData: workspace.salesData,
-      scopeLabel: `${getUserRoleLabel(role)} tenant scope`,
-      tenantId: user.tenantId,
-      userDisplayName: `${user.firstName} ${user.lastName}`.trim(),
-    };
+const getScopeLabel = (role: UserRole, clientIds?: string[] | null) => {
+  if (isClientScopedUser(clientIds)) {
+    return "Client workspace scope";
   }
 
-  const allowedClientIds = new Set(user.clientIds ?? []);
-  const scopedClients = workspace.salesData.clients.filter((client) => allowedClientIds.has(client.id));
-  const scopedContacts = workspace.salesData.contacts.filter((contact) =>
-    allowedClientIds.has(contact.clientId),
+  if (role === "SalesRep") {
+    return "Assigned sales workspace scope";
+  }
+
+  return `${getUserRoleLabel(role)} tenant scope`;
+};
+
+const filterAutomationFeed = (
+  automationFeed: IAutomationEvent[],
+  role: UserRole,
+  clientIds?: string[] | null,
+) => (role === "SalesRep" || isClientScopedUser(clientIds) ? [] : automationFeed);
+
+const buildScopedSalesData = (
+  salesData: ISalesData,
+  role: UserRole,
+  user: IMockUser,
+): ISalesData => {
+  if (role !== "SalesRep" && !isClientScopedUser(user.clientIds)) {
+    return salesData;
+  }
+
+  const scopedClientIds = new Set(
+    isClientScopedUser(user.clientIds)
+      ? user.clientIds
+      : salesData.opportunities
+          .filter((opportunity) => opportunity.ownerId === user.id)
+          .map((opportunity) => opportunity.clientId),
   );
-  const scopedOpportunities = workspace.salesData.opportunities.filter((opportunity) =>
-    allowedClientIds.has(opportunity.clientId),
-  );
-  const scopedProposals = workspace.salesData.proposals.filter((proposal) =>
-    allowedClientIds.has(proposal.clientId),
-  );
-  const scopedContracts = workspace.salesData.contracts.filter((contract) =>
-    allowedClientIds.has(contract.clientId),
-  );
-  const scopedContractIds = new Set(scopedContracts.map((contract) => contract.id));
-  const scopedRenewals = workspace.salesData.renewals.filter((renewal) =>
-    scopedContractIds.has(renewal.contractId),
+
+  const scopedOpportunities = salesData.opportunities.filter((opportunity) =>
+    isClientScopedUser(user.clientIds)
+      ? scopedClientIds.has(opportunity.clientId)
+      : opportunity.ownerId === user.id,
   );
   const scopedOpportunityIds = new Set(scopedOpportunities.map((opportunity) => opportunity.id));
-  const scopedProposalIds = new Set(scopedProposals.map((proposal) => proposal.id));
-  const scopedActivities = workspace.salesData.activities.filter(
-    (activity) =>
-      scopedOpportunityIds.has(activity.relatedToId) || scopedProposalIds.has(activity.relatedToId),
+  const scopedClients = salesData.clients.filter((client) => scopedClientIds.has(client.id));
+  const scopedContacts = salesData.contacts.filter((contact) => scopedClientIds.has(contact.clientId));
+  const scopedProposals = salesData.proposals.filter(
+    (proposal) =>
+      scopedOpportunityIds.has(proposal.opportunityId) || scopedClientIds.has(proposal.clientId),
   );
-  const scopedRepresentativeIds = new Set(
+  const scopedProposalIds = new Set(scopedProposals.map((proposal) => proposal.id));
+  const scopedContracts = salesData.contracts.filter(
+    (contract) =>
+      scopedClientIds.has(contract.clientId) ||
+      (contract.opportunityId ? scopedOpportunityIds.has(contract.opportunityId) : false) ||
+      (contract.proposalId ? scopedProposalIds.has(contract.proposalId) : false),
+  );
+  const scopedContractIds = new Set(scopedContracts.map((contract) => contract.id));
+  const scopedClientNames = new Set(scopedClients.map((client) => client.name.trim().toLowerCase()));
+  const scopedRenewals = salesData.renewals.filter(
+    (renewal) =>
+      scopedContractIds.has(renewal.contractId) ||
+      (renewal.renewalOpportunityId
+        ? scopedOpportunityIds.has(renewal.renewalOpportunityId)
+        : false) ||
+      (renewal.clientName ? scopedClientNames.has(renewal.clientName.trim().toLowerCase()) : false),
+  );
+  const scopedActivities = salesData.activities.filter((activity) =>
+    role === "SalesRep" && !isClientScopedUser(user.clientIds)
+      ? activity.assignedToId === user.id || scopedOpportunityIds.has(activity.relatedToId)
+      : scopedOpportunityIds.has(activity.relatedToId),
+  );
+  const scopedTeamMemberIds = new Set<string>(
     [
+      user.id,
       ...scopedOpportunities.map((opportunity) => opportunity.ownerId).filter(Boolean),
       ...scopedActivities.map((activity) => activity.assignedToId).filter(Boolean),
     ] as string[],
   );
-  const scopedTeamMembers = workspace.salesData.teamMembers.filter((member) =>
-    scopedRepresentativeIds.has(member.id),
+  const scopedTeamMembers = salesData.teamMembers.filter((member) =>
+    scopedTeamMemberIds.has(member.id),
   );
-  const scopedDocuments = workspace.documents.filter(
-    (document) => !document.clientId || allowedClientIds.has(document.clientId),
-  );
-  const scopedNotes = workspace.notes.filter(
-    (note) =>
-      note.category !== "Internal" &&
-      (!note.clientId || allowedClientIds.has(note.clientId)),
-  );
-  const scopedPricingRequests = workspace.pricingRequests.filter((request) =>
-    scopedOpportunityIds.has(request.opportunityId),
-  );
-  const scopedSalesData: ISalesData = {
+
+  return {
     activities: scopedActivities,
-    automationFeed: [],
+    automationFeed: filterAutomationFeed(salesData.automationFeed, role, user.clientIds),
     clients: scopedClients,
     contacts: scopedContacts,
     contracts: scopedContracts,
     opportunities: scopedOpportunities,
-    pricingRequests: scopedPricingRequests,
     proposals: scopedProposals,
     renewals: scopedRenewals,
     teamMembers: scopedTeamMembers,
   };
+};
+
+const buildScopedPricingRequests = (
+  pricingRequests: IPricingRequest[],
+  scopedSalesData: ISalesData,
+  role: UserRole,
+  user: IMockUser,
+) => {
+  if (role !== "SalesRep" && !isClientScopedUser(user.clientIds)) {
+    return pricingRequests;
+  }
+
+  const scopedOpportunityIds = new Set(
+    scopedSalesData.opportunities.map((opportunity) => opportunity.id),
+  );
+
+  return pricingRequests.filter(
+    (request) =>
+      scopedOpportunityIds.has(request.opportunityId) ||
+      request.assignedToId === user.id ||
+      request.requestedById === user.id,
+  );
+};
+
+const buildScopedNotes = (
+  notes: INoteItem[],
+  scopedSalesData: ISalesData,
+  role: UserRole,
+  user: IMockUser,
+) => {
+  if (role !== "SalesRep" && !isClientScopedUser(user.clientIds)) {
+    return notes;
+  }
+
+  const scopedClientIds = new Set(scopedSalesData.clients.map((client) => client.id));
+
+  return notes.filter(
+    (note) =>
+      (note.clientId ? scopedClientIds.has(note.clientId) : false) ||
+      note.representativeId === user.id ||
+      note.submittedBy === user.email,
+  );
+};
+
+const buildScopedDocuments = (
+  documents: IDocumentItem[],
+  scopedSalesData: ISalesData,
+  role: UserRole,
+  user: IMockUser,
+) => {
+  if (role !== "SalesRep" && !isClientScopedUser(user.clientIds)) {
+    return documents;
+  }
+
+  const scopedClientIds = new Set(scopedSalesData.clients.map((client) => client.id));
+
+  return documents.filter((document) =>
+    document.clientId ? scopedClientIds.has(document.clientId) : false,
+  );
+};
+
+export const getAssistantWorkspaceForUser = async (
+  user: IMockUser,
+  sessionToken?: string | null,
+): Promise<IAssistantWorkspace> => {
+  const role: UserRole = normalizeUserRole(user.role);
+  const workspace =
+    sessionToken && !isMockAssistantSessionToken(sessionToken)
+      ? await loadAssistantLiveWorkspace(user, sessionToken)
+      : getMockWorkspaceSnapshot(user.tenantId);
+  const salesData = buildScopedSalesData(workspace.salesData, role, user);
+  const documents = buildScopedDocuments(workspace.documents, salesData, role, user);
+  const notes = buildScopedNotes(workspace.notes, salesData, role, user);
+  const pricingRequests = buildScopedPricingRequests(
+    workspace.pricingRequests,
+    salesData,
+    role,
+    user,
+  );
+  const serviceRequests =
+    sessionToken && !isMockAssistantSessionToken(sessionToken)
+      ? await listLiveServiceRequests(user, sessionToken)
+      : listServiceRequests(user);
 
   return {
-    documents: scopedDocuments,
-    isClientScoped: true,
-    notes: scopedNotes,
-    pricingRequests: scopedPricingRequests,
+    clientIds: user.clientIds ?? null,
+    documents,
+    isClientScoped: isClientScopedUser(user.clientIds),
+    notes,
+    pricingRequests,
     role,
-    salesData: scopedSalesData,
-    scopeLabel: "Client account scope",
+    salesData,
+    sessionToken: sessionToken ?? undefined,
+    serviceRequests,
+    isLiveBackend: Boolean(sessionToken && !isMockAssistantSessionToken(sessionToken)),
+    scopeLabel: getScopeLabel(role, user.clientIds),
     tenantId: user.tenantId,
     userDisplayName: `${user.firstName} ${user.lastName}`.trim(),
+    userEmail: user.email,
+    userId: user.id,
   };
 };

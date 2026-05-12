@@ -31,10 +31,10 @@ export const LoginForm = () => {
           Welcome back
         </Typography.Title>
         <Typography.Paragraph className={styles.mutedText}>
-          Sign in with your organisation account to manage your sales workspace. For local testing, use one of the local mock accounts below.
+          Sign in with your organisation account to manage your sales workspace. For local testing, use the shared demo admin account below or one of the local mock inboxes.
         </Typography.Paragraph>
         <Typography.Text className={styles.helperRow}>
-          Mock admin: <strong>admin@autosales.com</strong> / <strong>Admin123</strong>
+          Shared demo admin: <strong>admin@autosales.com</strong> / <strong>Admin123</strong>
         </Typography.Text>
         <Typography.Text className={styles.helperRow}>
           Mock client viewer: <strong>clients@autosales.com</strong> / <strong>Clients123</strong>

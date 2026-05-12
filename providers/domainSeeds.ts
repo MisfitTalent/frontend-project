@@ -21,17 +21,38 @@ export interface IDocumentItem {
   uploadedDate: string;
 }
 
+export type INoteKind =
+  | "client_feedback"
+  | "client_message"
+  | "general"
+  | "team_assignment";
+
+export type INoteSource = "assistant" | "client_portal" | "workspace";
+
+export type INoteStatus =
+  | "Acknowledged"
+  | "Accepted"
+  | "Pending admin review"
+  | "Pending client response"
+  | "Rejected"
+  | "Sent";
+
 export interface INoteItem {
+  assignedByUserId?: string;
+  assignedByUserName?: string;
   category: string;
   clientId?: string;
   content: string;
   createdDate: string;
   id: string;
-  kind?: "client_feedback" | "client_message" | "general";
+  kind?: INoteKind;
+  linkedRequestId?: string;
   representativeId?: string;
   representativeName?: string;
-  source?: "assistant" | "client_portal" | "workspace";
-  status?: "Acknowledged" | "Sent";
+  requestType?: "client_request" | "team_assignment";
+  submittedBy?: string;
+  source?: INoteSource;
+  status?: INoteStatus;
   title: string;
 }
 

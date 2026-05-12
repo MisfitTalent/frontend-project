@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { useAuthState } from "@/providers/authProvider";
 import {
   type BackendClientDto,
@@ -14,6 +15,7 @@ import {
   isMockSessionToken,
   mapBackendClient,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { initialClients } from "@/providers/domainSeeds";
 import { ClientActionContext, ClientStateContext } from "./context";
 import type { IClient } from "@/providers/salesTypes";
@@ -45,17 +47,36 @@ type ClientProviderProps = Readonly<{
 export default function ClientProvider({
   children,
 }: ClientProviderProps) {
-  const { isAuthenticated } = useAuthState();
-  const [clients, setClients] = useState<IClient[]>([]);
+  const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
+  const isScopedClient = isClientScopedUser(user?.clientIds);
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("clients", user?.tenantId, user?.userId),
+    [user?.tenantId, user?.userId],
+  );
+  const cachedClients = useMemo(() => readProviderCache<IClient[]>(cacheKey), [cacheKey]);
+  const [clients, setClients] = useState<IClient[]>(
+    () => cachedClients ?? [],
+  );
+
+  const scopeClients = useCallback(
+    (items: IClient[]) =>
+      isScopedClient ? items.filter((client) => scopedClientIds.has(client.id)) : items,
+    [isScopedClient, scopedClientIds],
+  );
 
   const loadClients = useCallback(async () => {
     const payload = await backendRequest<BackendPagedResult<BackendClientDto> | BackendClientDto[]>(
       "/api/Clients?pageNumber=1&pageSize=100",
     );
 
-    setClients(coerceItems(payload).map(mapBackendClient));
-  }, []);
+    setClients(writeProviderCache(cacheKey, scopeClients(coerceItems(payload).map(mapBackendClient))));
+  }, [cacheKey, scopeClients]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, clients);
+  }, [cacheKey, clients]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -70,7 +91,7 @@ export default function ClientProvider({
           console.error(error);
 
           if (isActive) {
-            setClients(initialClients());
+            setClients(writeProviderCache(cacheKey, scopeClients(initialClients())));
           }
         });
       }, 0);
@@ -90,6 +111,12 @@ export default function ClientProvider({
       };
     }
 
+    if (cachedClients && cachedClients.length > 0) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     const timer = window.setTimeout(() => {
       void loadClients().catch((error) => {
         console.error(error);
@@ -100,7 +127,7 @@ export default function ClientProvider({
       isActive = false;
       window.clearTimeout(timer);
     };
-  }, [isAuthenticated, isDemoMode, loadClients]);
+  }, [cacheKey, cachedClients, isAuthenticated, isDemoMode, loadClients, scopeClients]);
 
   return (
     <ClientStateContext.Provider value={{ clients: isAuthenticated ? clients : [] }}>

@@ -1,13 +1,15 @@
 "use client";
 
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import {
   backendRequest,
   coerceItems,
   getSessionToken,
   isMockSessionToken,
 } from "@/lib/client/backend-api";
+import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
 import { useAuthState } from "@/providers/authProvider";
 import { initialNotes, type INoteItem } from "@/providers/domainSeeds";
 import { NoteActionContext, NoteStateContext } from "./context";
@@ -35,14 +37,35 @@ export const useNoteActions = () => {
 export default function NoteProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  const { isAuthenticated } = useAuthState();
-  const [notes, setNotes] = useState<INoteItem[]>([]);
+  const { isAuthenticated, user } = useAuthState();
   const isDemoMode = isMockSessionToken(getSessionToken());
+  const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
+  const isScopedClient = isClientScopedUser(user?.clientIds);
+  const cacheKey = useMemo(
+    () => createProviderCacheKey("notes", user?.tenantId, user?.userId),
+    [user?.tenantId, user?.userId],
+  );
+  const cachedNotes = useMemo(() => readProviderCache<INoteItem[]>(cacheKey), [cacheKey]);
+  const [notes, setNotes] = useState<INoteItem[]>(
+    () => cachedNotes ?? [],
+  );
+
+  const scopeNotes = useCallback(
+    (items: INoteItem[]) =>
+      isScopedClient
+        ? items.filter((note) => Boolean(note.clientId) && scopedClientIds.has(note.clientId as string))
+        : items,
+    [isScopedClient, scopedClientIds],
+  );
 
   const loadNotes = useCallback(async () => {
     const payload = await backendRequest<{ items?: INoteItem[] } | INoteItem[]>("/api/Notes");
-    setNotes(coerceItems(payload));
-  }, []);
+    setNotes(writeProviderCache(cacheKey, scopeNotes(coerceItems(payload))));
+  }, [cacheKey, scopeNotes]);
+
+  useEffect(() => {
+    writeProviderCache(cacheKey, notes);
+  }, [cacheKey, notes]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -50,6 +73,19 @@ export default function NoteProvider({
     }
 
     let isActive = true;
+    let pollTimer: number | null = null;
+
+    const schedulePolling = () => {
+      if (!isDemoMode) {
+        return;
+      }
+
+      pollTimer = window.setInterval(() => {
+        void loadNotes().catch((error) => {
+          console.error(error);
+        });
+      }, 5000);
+    };
 
     if (isDemoMode) {
       const timer = window.setTimeout(() => {
@@ -57,7 +93,7 @@ export default function NoteProvider({
           console.error(error);
 
           if (isActive) {
-            setNotes(initialNotes());
+            setNotes(writeProviderCache(cacheKey, scopeNotes(initialNotes())));
           }
         });
       }, 0);
@@ -68,23 +104,30 @@ export default function NoteProvider({
         });
       };
 
+      schedulePolling();
       window.addEventListener("mock-workspace-updated", handleWorkspaceUpdate);
 
       return () => {
         isActive = false;
         window.clearTimeout(timer);
+        if (pollTimer !== null) {
+          window.clearInterval(pollTimer);
+        }
         window.removeEventListener("mock-workspace-updated", handleWorkspaceUpdate);
       };
     }
 
-    void loadNotes().catch((error) => {
-      console.error(error);
-    });
+    const timer = window.setTimeout(() => {
+      void loadNotes().catch((error) => {
+        console.error(error);
+      });
+    }, 0);
 
     return () => {
       isActive = false;
+      window.clearTimeout(timer);
     };
-  }, [isAuthenticated, isDemoMode, loadNotes]);
+  }, [cacheKey, isAuthenticated, isDemoMode, loadNotes, scopeNotes]);
 
   return (
     <NoteStateContext.Provider value={{ notes: isAuthenticated ? notes : [] }}>
