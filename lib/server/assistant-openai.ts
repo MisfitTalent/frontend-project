@@ -300,6 +300,21 @@ type PendingOpportunityEditRequest = {
   title: string | null;
 };
 
+type SalesSetupWorkflowRequest = {
+  autoAssignBestOwner?: boolean;
+  clientName: string | null;
+  companySize?: string | null;
+  estimatedValue: number | null;
+  expectedCloseDate: string | null;
+  industry?: string | null;
+  opportunityTitle: string | null;
+  ownerId?: string | null;
+  ownerName?: string | null;
+  proposalTitle: string | null;
+  proposalValidUntil: string | null;
+  website?: string | null;
+};
+
 type OpportunityCreateSlotUpdate = Partial<PendingOpportunityCreateRequest>;
 
 type PendingServiceRequestCreateRequest = {
@@ -386,7 +401,9 @@ class AssistantProviderRequestError extends Error {
 }
 
 const MAX_TOOL_ROUNDS = 3;
+const MAX_CONFIRMED_TOOL_ROUNDS = 8;
 const MAX_TRACE_PREVIEW_LENGTH = 320;
+const MAX_PROVIDER_MESSAGE_COUNT = 10;
 
 const summarizeWorkspace = (workspace: IAssistantWorkspace) => {
   const { salesData } = workspace;
@@ -447,6 +464,7 @@ Behavior rules:
 - Before you create, update, delete, reassign, approve, reject, send, or otherwise mutate workspace records, pause and ask for confirmation first.
 - When the latest user message is a confirmation such as "confirm", "yes", or "go ahead", use the recent conversation context to complete the previously proposed action.
 - Do not turn generic user intent into a fake fully specified draft. If you do not have a real target record or enough grounded context, ask one focused follow-up question.
+- When the user asks for a whole sales setup in one request, such as creating a new client, opportunity, proposal, and assigning the best owner, prefer handling it as one compound workflow instead of splitting it into many separate actions.
 
 Authorized scope summary:
 ${JSON.stringify(summarizeWorkspace(workspace), null, 2)}
@@ -676,6 +694,14 @@ const inferIndustryFromClientName = (clientName: string) => {
 
   return "General";
 };
+
+const buildClientWebsiteFromName = (clientName: string) => {
+  const domain = normalizeLookupValue(clientName).replace(/\s+/g, "");
+  return domain ? `https://${domain}.com` : "https://newclient.example";
+};
+
+const buildGeneratedSalesSetupClientName = (workspace: IAssistantWorkspace) =>
+  `New Client ${workspace.salesData.clients.length + 1}`;
 
 const parseCurrencyNumber = (value: string) => {
   const normalized = value.replace(/[^0-9.]/g, "");
@@ -2542,12 +2568,11 @@ const inferPendingOpportunityEditRequest = (
   };
 
   recentUserMessages.forEach((message) => {
-    const directOpportunity =
-      findOpportunityByReferenceInWorkspace(workspace, message.content) ??
-      null;
-    const owner =
-      findOwnerByReferenceInWorkspace(workspace, message.content) ??
-      null;
+    const directOpportunity = findOpportunityByReferenceInWorkspace(
+      workspace,
+      message.content,
+    );
+    const owner = findOwnerByReferenceInWorkspace(workspace, message.content);
 
     request.opportunityId = directOpportunity?.id ?? request.opportunityId;
     request.opportunityTitle = directOpportunity?.title ?? request.opportunityTitle;
@@ -3112,7 +3137,7 @@ const pickRepresentativesForClientRequest = (
   const clientFacingMembers = workspace.salesData.teamMembers.filter(isClientFacingRepresentative);
   const primaryRepresentative =
     (opportunity?.ownerId
-      ? clientFacingMembers.find((member) => member.id === opportunity.ownerId) ?? null
+      ? clientFacingMembers.find((member) => member.id === opportunity.ownerId)
       : null) ??
     getBestOwner(
       {
@@ -5188,7 +5213,12 @@ const getRecentConfirmedGenericMutationRequest = (messages: AssistantMessage[]) 
       ? confirmationStep.arguments.priorUserRequest
       : null;
 
-  return latestUserMessage ?? priorUserRequest ?? null;
+  if (latestUserMessage || priorUserRequest) {
+    return latestUserMessage ?? priorUserRequest ?? null;
+  }
+
+  const recentRequest = findRecentNonConfirmationUserMessage(messages);
+  return recentRequest?.content ?? null;
 };
 
 type ConfirmedGenericToolRequest = {
@@ -6392,8 +6422,11 @@ const createWorkloadBoostResult = (
   workspace: IAssistantWorkspace,
   messages: AssistantMessage[],
 ) => {
+  const recentNonConfirmationMessage = findRecentNonConfirmationUserMessage(messages);
   const requestMessage = isConfirmationMessage(latestUserMessage)
-    ? findRecentNonConfirmationUserMessage(messages)?.content ?? latestUserMessage
+    ? recentNonConfirmationMessage
+      ? recentNonConfirmationMessage.content
+      : latestUserMessage
     : latestUserMessage;
   const plan = createWorkloadBoostPlan(requestMessage, workspace, messages);
 
@@ -7195,6 +7228,145 @@ const createAutonomousSaleResult = (
   };
 };
 
+const createSalesSetupWorkflowForWorkspace = async (
+  workspace: IAssistantWorkspace,
+  input: SalesSetupWorkflowRequest,
+) => {
+  const actor = createAssistantActor(workspace);
+  const clientName = input.clientName?.trim() || buildGeneratedSalesSetupClientName(workspace);
+  const industry = input.industry?.trim() || inferIndustryFromClientName(clientName);
+  const estimatedValue =
+    typeof input.estimatedValue === "number" && input.estimatedValue > 0
+      ? input.estimatedValue
+      : 250_000;
+  const expectedCloseDate = input.expectedCloseDate || toIsoDate(addDays(new Date(), 30));
+  const proposalValidUntil =
+    input.proposalValidUntil || toIsoDate(addDays(new Date(`${expectedCloseDate}T00:00:00`), 14));
+  const opportunityTitle = input.opportunityTitle?.trim() || `${clientName} growth opportunity`;
+  const proposalTitle = input.proposalTitle?.trim() || `${clientName} proposal`;
+  const owner =
+    findBestReferenceMatch<ITeamMember>(
+      workspace.salesData.teamMembers,
+      input.ownerId ?? input.ownerName ?? null,
+      (member) => [member.id, member.name, member.role, ...member.skills],
+      58,
+    ) ??
+    getBestOwner(workspace.salesData, estimatedValue, industry, {
+      pricingRequests: workspace.pricingRequests,
+    });
+
+  const client =
+    workspace.isLiveBackend && workspace.sessionToken
+      ? await createLiveClient(workspace.sessionToken, {
+          billingAddress: undefined,
+          clientType: 2,
+          companySize: input.companySize?.trim() || "Growth",
+          createdAt: new Date().toISOString(),
+          id: "",
+          industry,
+          isActive: true,
+          name: clientName,
+          taxNumber: undefined,
+          website: input.website?.trim() || buildClientWebsiteFromName(clientName),
+        })
+      : createMockClient(actor, {
+          companySize: input.companySize?.trim() || "Growth",
+          industry,
+          name: clientName,
+          website: input.website?.trim() || buildClientWebsiteFromName(clientName),
+        });
+  upsertById(workspace.salesData.clients, client);
+
+  const opportunity =
+    workspace.isLiveBackend && workspace.sessionToken
+      ? await createLiveOpportunity(workspace.sessionToken, {
+          clientId: client.id,
+          createdDate: new Date().toISOString().split("T")[0],
+          currency: "ZAR",
+          estimatedValue,
+          expectedCloseDate,
+          id: "",
+          ownerId: owner?.id,
+          probability: 50,
+          source: 1,
+          stage: OpportunityStage.New,
+          title: opportunityTitle,
+          value: estimatedValue,
+        })
+      : createMockOpportunity(actor, {
+          clientId: client.id,
+          estimatedValue,
+          expectedCloseDate,
+          ownerId: owner?.id,
+          probability: 50,
+          stage: OpportunityStage.New,
+          title: opportunityTitle,
+        });
+  upsertById(workspace.salesData.opportunities, opportunity);
+
+  const proposal =
+    workspace.isLiveBackend && workspace.sessionToken
+      ? await createLiveProposal(workspace.sessionToken, {
+          clientId: client.id,
+          currency: "ZAR",
+          description: `Generated from assistant sales setup workflow for ${opportunityTitle}.`,
+          id: "",
+          opportunityId: opportunity.id,
+          status: ProposalStatus.Draft,
+          title: proposalTitle,
+          validUntil: proposalValidUntil,
+        })
+      : createMockProposal(actor, {
+          currency: "ZAR",
+          description: `Generated from assistant sales setup workflow for ${opportunityTitle}.`,
+          opportunityId: opportunity.id,
+          title: proposalTitle,
+          validUntil: proposalValidUntil,
+        });
+  upsertById(workspace.salesData.proposals, proposal);
+
+  const mutations: AssistantMutation[] = [
+    {
+      entityId: client.id,
+      entityType: "client",
+      operation: "create",
+      record: client as unknown as Record<string, unknown>,
+      title: client.name,
+    },
+    {
+      entityId: opportunity.id,
+      entityType: "opportunity",
+      operation: "create",
+      record: opportunity as unknown as Record<string, unknown>,
+      title: opportunity.title,
+    },
+    {
+      entityId: proposal.id,
+      entityType: "proposal",
+      operation: "create",
+      record: proposal as unknown as Record<string, unknown>,
+      title: proposal.title,
+    },
+  ];
+
+  return {
+    client,
+    mutation: mutations[0],
+    mutations,
+    opportunity,
+    owner: owner
+      ? {
+          id: owner.id,
+          name: owner.name,
+        }
+      : null,
+    proposal,
+    summary:
+      `Created client ${client.name}, opportunity ${opportunity.title}, and proposal ${proposal.title}` +
+      `${owner ? ` and assigned the work to ${owner.name}.` : "."}`,
+  };
+};
+
 const createToolset = (
   workspace: IAssistantWorkspace,
   messages: AssistantMessage[],
@@ -7234,6 +7406,7 @@ const createToolset = (
   const isConfirmedTurn = isConfirmationMessage(latestUserMessage);
   const mutatingToolNames = new Set([
     "create_client",
+    "create_sales_setup",
     "update_client",
     "create_contact",
     "update_contact",
@@ -8094,6 +8267,29 @@ const createToolset = (
           website: { type: "string" },
         },
         required: ["name"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Create a whole new sales setup in one confirmed action: a new client, a new opportunity for that client, a draft proposal for that opportunity, and a best-fit owner assignment. Prefer this when the user asks for the whole workflow in one prompt instead of separate CRUD steps.",
+      name: "create_sales_setup",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          autoAssignBestOwner: { type: "boolean" },
+          clientName: { type: "string" },
+          companySize: { type: "string" },
+          estimatedValue: { type: "number" },
+          expectedCloseDate: { type: "string" },
+          industry: { type: "string" },
+          opportunityTitle: { type: "string" },
+          ownerId: { type: "string" },
+          ownerName: { type: "string" },
+          proposalTitle: { type: "string" },
+          proposalValidUntil: { type: "string" },
+          website: { type: "string" },
+        },
         type: "object",
       },
     },
@@ -8969,6 +9165,29 @@ const createToolset = (
             title: client.name,
           },
         };
+      }
+      case "create_sales_setup": {
+        const workflow = await createSalesSetupWorkflowForWorkspace(workspace, {
+          autoAssignBestOwner:
+            typeof args.autoAssignBestOwner === "boolean" ? args.autoAssignBestOwner : true,
+          clientName: typeof args.clientName === "string" ? args.clientName : null,
+          companySize: typeof args.companySize === "string" ? args.companySize : null,
+          estimatedValue:
+            typeof args.estimatedValue === "number" ? args.estimatedValue : null,
+          expectedCloseDate:
+            typeof args.expectedCloseDate === "string" ? args.expectedCloseDate : null,
+          industry: typeof args.industry === "string" ? args.industry : null,
+          opportunityTitle:
+            typeof args.opportunityTitle === "string" ? args.opportunityTitle : null,
+          ownerId: typeof args.ownerId === "string" ? args.ownerId : null,
+          ownerName: typeof args.ownerName === "string" ? args.ownerName : null,
+          proposalTitle: typeof args.proposalTitle === "string" ? args.proposalTitle : null,
+          proposalValidUntil:
+            typeof args.proposalValidUntil === "string" ? args.proposalValidUntil : null,
+          website: typeof args.website === "string" ? args.website : null,
+        });
+
+        return workflow;
       }
       case "update_client": {
         const existingClient = resolveClient(args, { allowRecentFallback: true });
@@ -10413,8 +10632,13 @@ const createChatCompletionToolMetadata = (toolDefinitions: ToolDefinition[]) =>
 const filterGeminiToolDefinitions = (
   toolDefinitions: ToolDefinition[],
   latestUserMessage: string,
+  messages: AssistantMessage[],
 ) => {
   const normalized = normalizeLookupValue(latestUserMessage);
+  const recentAssistant = normalizeLookupValue(lastAssistantContent(messages));
+  const shortFollowUp =
+    normalized.split(" ").filter(Boolean).length <= 4 ||
+    ["create your own", "choose any", "assign the owner", "best fit"].includes(normalized);
   const selected = new Set<string>([
     "get_scope_overview",
     "list_opportunities",
@@ -10438,12 +10662,14 @@ const filterGeminiToolDefinitions = (
     normalized.includes("deal") ||
     normalized.includes("pipeline")
   ) {
+    selected.add("create_sales_setup");
     selected.add("create_opportunity");
     selected.add("update_opportunity");
     selected.add("delete_opportunity");
   }
 
   if (normalized.includes("proposal")) {
+    selected.add("create_sales_setup");
     selected.add("create_proposal");
     selected.add("update_proposal");
     selected.add("delete_proposal");
@@ -10485,6 +10711,7 @@ const filterGeminiToolDefinitions = (
     normalized.includes("account") ||
     normalized.includes("organization")
   ) {
+    selected.add("create_sales_setup");
     selected.add("create_client");
     selected.add("update_client");
     selected.add("delete_client");
@@ -10504,11 +10731,44 @@ const filterGeminiToolDefinitions = (
     selected.add("rebalance_responsibilities");
   }
 
+  if (
+    normalized.includes("assign") ||
+    normalized.includes("owner") ||
+    normalized.includes("best") ||
+    normalized.includes("suiting") ||
+    normalized.includes("suitable") ||
+    normalized.includes("lightest load")
+  ) {
+    selected.add("create_sales_setup");
+    selected.add("create_opportunity");
+    selected.add("create_proposal");
+    selected.add("rebalance_responsibilities");
+  }
+
+  if (
+    shortFollowUp &&
+    (
+      recentAssistant.includes("i ll create the client") ||
+      recentAssistant.includes("i ll create the client opportunity and proposal") ||
+      recentAssistant.includes("create the client opportunity and proposal") ||
+      recentAssistant.includes("assign the chosen owner") ||
+      recentAssistant.includes("assign the opportunity and proposal") ||
+      recentAssistant.includes("new records")
+    )
+  ) {
+    selected.add("create_sales_setup");
+    selected.add("create_client");
+    selected.add("create_opportunity");
+    selected.add("create_proposal");
+    selected.add("update_opportunity");
+    selected.add("update_proposal");
+  }
+
   return toolDefinitions.filter((tool) => selected.has(tool.name));
 };
 
 const mapMessagesToInput = (messages: AssistantMessage[]): AssistantInputMessage[] =>
-  messages.map((message) => ({
+  messages.slice(-MAX_PROVIDER_MESSAGE_COUNT).map((message) => ({
     content: message.content,
     role: message.role,
   }));
@@ -10582,6 +10842,13 @@ const mapMessagesToChatInput = (
     role: message.role,
   })),
 ];
+
+const getMaxProviderToolRounds = (messages: AssistantMessage[]) => {
+  const latestUserMessage = getRecentUserMessages(messages).slice(-1)[0]?.content ?? "";
+  return isConfirmationMessage(latestUserMessage)
+    ? MAX_CONFIRMED_TOOL_ROUNDS
+    : MAX_TOOL_ROUNDS;
+};
 
 const serializeFunctionCallsForInput = (
   calls: ResponseOutputItem[],
@@ -10763,8 +11030,9 @@ const runGeminiWithTools = async ({
   trace: AssistantTraceStep[];
 }) => {
   const chatMessages = mapMessagesToChatInput(systemPrompt, messages);
+  const maxToolRounds = getMaxProviderToolRounds(messages);
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+  for (let round = 0; round < maxToolRounds; round += 1) {
     const response = await callChatCompletionsApi(config, {
       messages: chatMessages,
       model: config.model,
@@ -10827,12 +11095,18 @@ const runGeminiWithTools = async ({
         ? (JSON.parse(call.arguments) as Record<string, unknown>)
         : {};
       const output = await runTool(call.name, call.arguments);
+      const outputMutations =
+        output && typeof output === "object" && "mutations" in output
+          ? (output as { mutations?: AssistantMutation[] }).mutations
+          : undefined;
       const mutation =
         output && typeof output === "object" && "mutation" in output
           ? (output as { mutation?: AssistantMutation }).mutation
           : undefined;
 
-      if (mutation) {
+      if (Array.isArray(outputMutations) && outputMutations.length > 0) {
+        mutations.push(...outputMutations);
+      } else if (mutation) {
         mutations.push(mutation);
       }
 
@@ -11611,8 +11885,12 @@ export const runSecureAssistant = async ({
   const initialInput = mapMessagesToProviderInput(messages, confirmedGenericMutationRequest);
   const providerErrors: AssistantProviderRequestError[] = [];
   const systemPrompt = createSystemPrompt(workspace);
-  const selectedToolDefinitions = filterGeminiToolDefinitions(toolDefinitions, latestUserMessage);
+  const selectedToolDefinitions =
+    isConfirmationMessage(latestUserMessage)
+      ? toolDefinitions
+      : filterGeminiToolDefinitions(toolDefinitions, latestUserMessage, messages);
   const reasoningEffort = getProviderReasoningEffort(workspace, messages);
+  const maxToolRounds = getMaxProviderToolRounds(messages);
 
   for (const config of configuredProviders) {
     const localTraceStart = trace.length;
@@ -11645,7 +11923,7 @@ export const runSecureAssistant = async ({
         tools: toolMetadata,
       });
 
-      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      for (let round = 0; round < maxToolRounds; round += 1) {
         const functionCalls = extractFunctionCalls(response);
 
         if (functionCalls.length === 0) {
@@ -11674,12 +11952,18 @@ export const runSecureAssistant = async ({
             ? (JSON.parse(call.arguments) as Record<string, unknown>)
             : {};
           const output = await runTool(call.name, call.arguments ?? "{}");
+          const outputMutations =
+            output && typeof output === "object" && "mutations" in output
+              ? (output as { mutations?: AssistantMutation[] }).mutations
+              : undefined;
           const mutation =
             output && typeof output === "object" && "mutation" in output
               ? (output as { mutation?: AssistantMutation }).mutation
               : undefined;
 
-          if (mutation) {
+          if (Array.isArray(outputMutations) && outputMutations.length > 0) {
+            mutations.push(...outputMutations);
+          } else if (mutation) {
             mutations.push(mutation);
           }
 
