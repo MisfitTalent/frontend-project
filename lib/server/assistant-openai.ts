@@ -9,7 +9,14 @@ import {
   getOpportunityInsights,
   getTeamCapacity,
 } from "@/providers/salesSelectors";
-import { OpportunityStage, ProposalStatus } from "@/providers/salesTypes";
+import {
+  OpportunityStage,
+  ProposalStatus,
+  type IClient,
+  type IOpportunity,
+  type IProposal,
+  type ITeamMember,
+} from "@/providers/salesTypes";
 
 import {
   getAssistantServerConfig,
@@ -248,8 +255,10 @@ type PendingOpportunityCreateRequest = {
   clientId: string | null;
   clientName: string | null;
   estimatedValue: number | null;
+  excludedOwnerIds?: string[];
   expectedCloseDate: string | null;
   ownerId: string | null;
+  ownerPreferenceHints?: string[];
   ownerName: string | null;
   stage: string | null;
   title: string | null;
@@ -1084,11 +1093,13 @@ const isProposalEditIntent = (message: string) => {
 };
 
 const extractProposalTitle = (message: string) =>
-  message.match(/\btitle\s+(?:is|to)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
-  message.match(/\b(?:rename|call)\s+(?:it|the proposal)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
-  message.match(/\bdraft proposal titled\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
-  message.match(/\bproposal(?: called| named| title is)?\s+["“]?(.+?)["”]?(?=\s+(?:for|with|valid until|expires|expiry|by)\b|$|\n)/i)?.[1]?.trim() ??
-  null;
+  sanitizeProposalGeneratedTitle(
+    message.match(/\btitle\s+(?:is|to)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+      message.match(/\b(?:rename|call)\s+(?:it|the proposal)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+      message.match(/\bdraft proposal titled\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
+      message.match(/\bproposal(?: called| named| title is)?\s+["“]?(.+?)["”]?(?=\s+(?:for|with|valid until|expires|expiry|by)\b|$|\n)/i)?.[1]?.trim() ??
+      null,
+  );
 
 const extractProposalValidUntil = (message: string) => {
   const raw =
@@ -1252,21 +1263,12 @@ const findClientByReferenceInWorkspace = (
   workspace: IAssistantWorkspace,
   reference: string | null,
 ) => {
-  if (!reference) {
-    return null;
-  }
-
-  const normalizedReference = normalizeLookupValue(reference);
-
   return (
-    workspace.salesData.clients.find(
-      (client) => normalizeLookupValue(client.id) === normalizedReference,
-    ) ??
-    workspace.salesData.clients.find(
-      (client) => normalizeLookupValue(client.name) === normalizedReference,
-    ) ??
-    workspace.salesData.clients.find((client) =>
-      normalizeLookupValue(client.name).includes(normalizedReference),
+    findBestReferenceMatch<IClient>(
+      workspace.salesData.clients,
+      reference,
+      (client) => [client.id, client.name, client.industry, client.segment ?? null],
+      52,
     ) ??
     null
   );
@@ -1276,21 +1278,12 @@ const findOwnerByReferenceInWorkspace = (
   workspace: IAssistantWorkspace,
   reference: string | null,
 ) => {
-  if (!reference) {
-    return null;
-  }
-
-  const normalizedReference = normalizeLookupValue(reference);
-
   return (
-    workspace.salesData.teamMembers.find(
-      (member) => normalizeLookupValue(member.id) === normalizedReference,
-    ) ??
-    workspace.salesData.teamMembers.find(
-      (member) => normalizeLookupValue(member.name) === normalizedReference,
-    ) ??
-    workspace.salesData.teamMembers.find((member) =>
-      normalizeLookupValue(member.name).includes(normalizedReference),
+    findBestReferenceMatch<ITeamMember>(
+      workspace.salesData.teamMembers,
+      reference,
+      (member) => [member.id, member.name, member.role, ...member.skills],
+      58,
     ) ??
     null
   );
@@ -1422,6 +1415,33 @@ const sanitizeWorkflowGeneratedTitle = (value: string | null) => {
   return trimmed;
 };
 
+const sanitizeProposalGeneratedTitle = (value: string | null) => {
+  const trimmed = sanitizeWorkflowGeneratedTitle(value);
+
+  if (!trimmed) {
+    return null;
+  }
+
+  const normalized = normalizeLookupValue(trimmed);
+
+  if (
+    normalized === "proposal" ||
+    normalized === "draft proposal" ||
+    normalized === "a draft proposal" ||
+    normalized === "new proposal" ||
+    normalized === "existing opportunity" ||
+    normalized === "an existing opportunity" ||
+    normalized === "for an existing opportunity" ||
+    normalized === "for existing opportunity" ||
+    normalized.endsWith("existing opportunity") ||
+    normalized.endsWith("current opportunity")
+  ) {
+    return null;
+  }
+
+  return trimmed;
+};
+
 const prefixClientNameOnce = (clientName: string | null, title: string) => {
   if (!clientName) {
     return title.trim();
@@ -1430,6 +1450,333 @@ const prefixClientNameOnce = (clientName: string | null, title: string) => {
   return normalizeLookupValue(title).startsWith(normalizeLookupValue(clientName))
     ? title.trim()
     : `${clientName} ${title}`.trim();
+};
+
+const LOOKUP_NOISE_TOKENS = new Set([
+  "a",
+  "an",
+  "and",
+  "any",
+  "client",
+  "deal",
+  "for",
+  "it",
+  "last",
+  "new",
+  "of",
+  "one",
+  "opportunity",
+  "proposal",
+  "quote",
+  "record",
+  "team",
+  "that",
+  "the",
+  "this",
+  "to",
+  "user",
+  "with",
+]);
+
+const tokenizeLookupValue = (value: string) =>
+  normalizeLookupValue(value)
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0 && !LOOKUP_NOISE_TOKENS.has(token));
+
+const scoreReferenceMatch = (candidate: string, reference: string) => {
+  const normalizedCandidate = normalizeLookupValue(candidate);
+  const normalizedReference = normalizeLookupValue(reference);
+
+  if (!normalizedCandidate || !normalizedReference) {
+    return 0;
+  }
+
+  if (normalizedCandidate === normalizedReference) {
+    return 200;
+  }
+
+  let score = 0;
+
+  if (normalizedCandidate.startsWith(normalizedReference)) {
+    score += 120;
+  } else if (normalizedCandidate.includes(normalizedReference)) {
+    score += 90;
+  }
+
+  const candidateTokens = tokenizeLookupValue(candidate);
+  const referenceTokens = tokenizeLookupValue(reference);
+
+  if (referenceTokens.length === 0) {
+    return score;
+  }
+
+  let overlap = 0;
+
+  referenceTokens.forEach((token) => {
+    if (
+      candidateTokens.some(
+        (candidateToken) =>
+          candidateToken === token ||
+          candidateToken.startsWith(token) ||
+          token.startsWith(candidateToken),
+      )
+    ) {
+      overlap += 1;
+    }
+  });
+
+  if (overlap > 0) {
+    score += overlap * 28;
+    if (overlap === referenceTokens.length) {
+      score += 24;
+    }
+  }
+
+  return score;
+};
+
+const findBestReferenceMatch = <T>(
+  items: T[],
+  reference: string | null,
+  getCandidates: (item: T) => Array<string | null | undefined>,
+  minimumScore = 60,
+): T | null => {
+  if (!reference) {
+    return null;
+  }
+
+  let bestItem: T | null = null;
+  let bestScore = 0;
+
+  items.forEach((item) => {
+    const itemScore = getCandidates(item).reduce((highest, candidate) => {
+      if (typeof candidate !== "string" || !candidate.trim()) {
+        return highest;
+      }
+
+      return Math.max(highest, scoreReferenceMatch(candidate, reference));
+    }, 0);
+
+    if (itemScore > bestScore) {
+      bestScore = itemScore;
+      bestItem = item;
+    }
+  });
+
+  return bestScore >= minimumScore ? bestItem : null;
+};
+
+const extractOwnerPreferenceHints = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+  const hints = new Set<string>();
+
+  if (
+    /(?:tech|technical|integration|api|automation|cloud|engineering)/i.test(normalized)
+  ) {
+    hints.add("Technology");
+    hints.add("Cloud");
+    hints.add("Automation");
+  }
+
+  if (/(?:proposal|quote|rfp|commercial pack)/i.test(normalized)) {
+    hints.add("Proposals");
+    hints.add("RFP");
+  }
+
+  if (/(?:pricing|commercial|deal desk|contract)/i.test(normalized)) {
+    hints.add("Pricing");
+    hints.add("Commercial");
+    hints.add("Contracts");
+  }
+
+  if (/(?:renewal|retention|upsell)/i.test(normalized)) {
+    hints.add("Renewals");
+    hints.add("Retention");
+  }
+
+  if (/(?:prospect|outbound|discovery|pipeline creation)/i.test(normalized)) {
+    hints.add("Prospecting");
+    hints.add("Discovery");
+    hints.add("Pipeline Creation");
+  }
+
+  if (/\benterprise\b/i.test(normalized)) {
+    hints.add("Enterprise");
+  }
+
+  if (/\bhealth(?:care)?\b/i.test(normalized)) {
+    hints.add("Healthcare");
+  }
+
+  if (/\bretail\b/i.test(normalized)) {
+    hints.add("Retail");
+  }
+
+  if (/\btechnology\b/i.test(normalized)) {
+    hints.add("Technology");
+  }
+
+  return [...hints];
+};
+
+const shouldResetOwnerSelection = (message: string) =>
+  /\b(?:not her|not him|not them|someone else|another owner|more suitable|better fit)\b/i.test(
+    message,
+  );
+
+const isAutonomousDefaultsInstruction = (message: string) =>
+  /\b(?:your own|whatever you want|choose whatever|pick whatever|you decide|make your own|any values|sensible defaults|best guess)\b/i.test(
+    message,
+  );
+
+const inferOpportunityTheme = (message: string) => {
+  const normalized = normalizeLookupValue(message);
+
+  if (normalized.includes("renewal")) {
+    return "Renewal Opportunity";
+  }
+
+  if (normalized.includes("expansion")) {
+    return "Expansion Opportunity";
+  }
+
+  if (normalized.includes("rollout")) {
+    return "Rollout Opportunity";
+  }
+
+  if (normalized.includes("integration")) {
+    return "Integration Opportunity";
+  }
+
+  if (normalized.includes("automation")) {
+    return "Automation Opportunity";
+  }
+
+  if (normalized.includes("upgrade")) {
+    return "Upgrade Opportunity";
+  }
+
+  return "Growth Opportunity";
+};
+
+const roundCurrencyValue = (value: number) => Math.max(50_000, Math.round(value / 10_000) * 10_000);
+
+const inferOpportunityValueForClient = (
+  workspace: IAssistantWorkspace,
+  clientId: string,
+) => {
+  const clientOpportunities = workspace.salesData.opportunities.filter(
+    (opportunity) => opportunity.clientId === clientId,
+  );
+
+  const values = clientOpportunities
+    .map((opportunity) => opportunity.value ?? opportunity.estimatedValue)
+    .filter((value): value is number => Number.isFinite(value) && value > 0);
+
+  if (values.length > 0) {
+    const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+    return roundCurrencyValue(average);
+  }
+
+  const industry = workspace.salesData.clients.find((client) => client.id === clientId)?.industry;
+  const peerValues = workspace.salesData.opportunities
+    .filter((opportunity) => {
+      const peerClient = workspace.salesData.clients.find((client) => client.id === opportunity.clientId);
+      return peerClient?.industry === industry;
+    })
+    .map((opportunity) => opportunity.value ?? opportunity.estimatedValue)
+    .filter((value): value is number => Number.isFinite(value) && value > 0);
+
+  if (peerValues.length > 0) {
+    const average = peerValues.reduce((sum, value) => sum + value, 0) / peerValues.length;
+    return roundCurrencyValue(average);
+  }
+
+  return 250_000;
+};
+
+const inferOpportunityCloseDateForClient = (
+  workspace: IAssistantWorkspace,
+  clientId: string,
+) => {
+  const clientDurations = workspace.salesData.opportunities
+    .filter((opportunity) => opportunity.clientId === clientId)
+    .map((opportunity) => {
+      const created = new Date(`${opportunity.createdDate}T00:00:00`);
+      const close = new Date(`${opportunity.expectedCloseDate}T00:00:00`);
+      const days = Math.round((close.getTime() - created.getTime()) / 86_400_000);
+      return Number.isFinite(days) && days > 0 ? days : null;
+    })
+    .filter((value): value is number => value !== null);
+
+  const averageDuration =
+    clientDurations.length > 0
+      ? Math.round(clientDurations.reduce((sum, value) => sum + value, 0) / clientDurations.length)
+      : 30;
+
+  return toIsoDate(addDays(new Date(), Math.min(Math.max(averageDuration, 14), 60)));
+};
+
+const inferOpportunityTitleForClient = (
+  clientName: string,
+  message: string,
+) => prefixClientNameOnce(clientName, inferOpportunityTheme(message));
+
+const chooseBestOwnerForClientRequest = (
+  workspace: IAssistantWorkspace,
+  options: {
+    clientId: string;
+    estimatedValue: number;
+    excludedOwnerIds?: string[];
+    preferredHints?: string[];
+  },
+) => {
+  const client = workspace.salesData.clients.find((item) => item.id === options.clientId) ?? null;
+  const preferredHints = (options.preferredHints ?? []).map((hint) => normalizeLookupValue(hint));
+  const excluded = new Set(options.excludedOwnerIds ?? []);
+  const targetSegment = options.estimatedValue >= 1_000_000 ? "enterprise" : "smb";
+
+  const rankedMembers = [...workspace.salesData.teamMembers]
+    .filter((member) => !excluded.has(member.id))
+    .map((member) => {
+      const normalizedSkills = member.skills.map((skill) => normalizeLookupValue(skill));
+      const normalizedRole = normalizeLookupValue(member.role);
+      let score = getAvailableCapacity(workspace.salesData, member, {
+        pricingRequests: workspace.pricingRequests,
+      });
+
+      if (
+        client?.industry &&
+        normalizedSkills.includes(normalizeLookupValue(client.industry))
+      ) {
+        score += 28;
+      }
+
+      if (normalizedSkills.includes(targetSegment)) {
+        score += 18;
+      }
+
+      preferredHints.forEach((hint) => {
+        if (normalizedSkills.includes(hint)) {
+          score += 22;
+        } else if (normalizedRole.includes(hint)) {
+          score += 14;
+        }
+      });
+
+      if (
+        preferredHints.includes("technology") &&
+        normalizedRole.includes(normalizeLookupValue("sales consultant"))
+      ) {
+        score += 8;
+      }
+
+      return { member, score };
+    })
+    .sort((left, right) => right.score - left.score);
+
+  return rankedMembers[0]?.member ?? null;
 };
 
 const extractOpportunityStage = (message: string) => {
@@ -1586,27 +1933,53 @@ const parseOpportunityCreateTurn = (
   workspace: IAssistantWorkspace,
   current: PendingOpportunityCreateRequest,
 ): OpportunityCreateSlotUpdate => {
-  const normalized = normalizeLookupValue(message);
-  const client =
-    workspace.salesData.clients.find((item) =>
-      normalized.includes(normalizeLookupValue(item.name)),
-    ) ??
-    workspace.salesData.clients.find((item) =>
-      normalized.includes(normalizeLookupValue(item.id)),
-    ) ??
+  const client = (
     findClientByReferenceInWorkspace(workspace, extractPlainEnglishClientName(message)) ??
-    null;
-  const owner =
-    workspace.salesData.teamMembers.find((item) =>
-      normalized.includes(normalizeLookupValue(item.name)),
+    findBestReferenceMatch<IClient>(
+      workspace.salesData.clients,
+      message,
+      (item) => [item.id, item.name, item.industry, item.segment ?? null],
+      72,
     ) ??
-    workspace.salesData.teamMembers.find((item) =>
-      normalized.includes(normalizeLookupValue(item.name.split(" ")[0] ?? "")),
+    null
+  ) as IClient | null;
+  const owner = (
+    findOwnerByReferenceInWorkspace(workspace, message) ??
+    findBestReferenceMatch<ITeamMember>(
+      workspace.salesData.teamMembers,
+      message,
+      (item) => [item.id, item.name, item.role, ...item.skills],
+      84,
     ) ??
-    workspace.salesData.teamMembers.find((item) =>
-      normalized.includes(normalizeLookupValue(item.id)),
-    ) ??
-    null;
+    null
+  ) as ITeamMember | null;
+  const shouldClearOwner = shouldResetOwnerSelection(message);
+  const ownerPreferenceHints = [
+    ...(current.ownerPreferenceHints ?? []),
+    ...extractOwnerPreferenceHints(message),
+  ];
+  const excludedOwnerIds = new Set(current.excludedOwnerIds ?? []);
+
+  if (shouldClearOwner && current.ownerId) {
+    excludedOwnerIds.add(current.ownerId);
+  }
+
+  workspace.salesData.teamMembers.forEach((member) => {
+    const escapedFullName = member.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedFirstName = (member.name.split(" ")[0] ?? "").replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&",
+    );
+
+    if (
+      (escapedFullName &&
+        new RegExp(`\\bnot\\s+${escapedFullName}\\b`, "i").test(message)) ||
+      (escapedFirstName &&
+        new RegExp(`\\bnot\\s+${escapedFirstName}\\b`, "i").test(message))
+    ) {
+      excludedOwnerIds.add(member.id);
+    }
+  });
   const explicitOpportunityName =
     message.match(/\b(?:opp|opportunity|deal)\s+name\s+(?:should be|must be|is|to)\s+["“]?(.+?)["”]?(?:$|\n)/i)?.[1]?.trim() ??
     null;
@@ -1615,8 +1988,8 @@ const parseOpportunityCreateTurn = (
       extractOpportunityTitle(
         message,
         workspace,
-        current.clientName ?? client?.name ?? null,
-        current.ownerName ?? owner?.name ?? null,
+        current.clientName ?? ((client as IClient | null)?.name ?? null),
+        current.ownerName ?? ((owner as ITeamMember | null)?.name ?? null),
       ),
   );
   const hasExplicitTitleRefinement =
@@ -1625,14 +1998,24 @@ const parseOpportunityCreateTurn = (
     );
 
   return {
-    autoAssignBestOwner: isBestFitOwnerInstruction(message) || current.autoAssignBestOwner,
+    autoAssignBestOwner:
+      isBestFitOwnerInstruction(message) ||
+      isAutonomousDefaultsInstruction(message) ||
+      ownerPreferenceHints.length > 0 ||
+      shouldClearOwner ||
+      current.autoAssignBestOwner,
     clientId: client?.id ?? current.clientId,
     clientName: client?.name ?? current.clientName,
     estimatedValue: extractOpportunityEstimatedValue(message) ?? current.estimatedValue,
+    excludedOwnerIds: [...excludedOwnerIds],
     expectedCloseDate:
       extractOpportunityExpectedCloseDate(message) ?? current.expectedCloseDate,
-    ownerId: owner?.id ?? current.ownerId,
-    ownerName: owner?.name ?? current.ownerName,
+    ownerId: shouldClearOwner ? null : owner?.id ?? current.ownerId,
+    ownerName: shouldClearOwner ? null : owner?.name ?? current.ownerName,
+    ownerPreferenceHints:
+      ownerPreferenceHints.length > 0
+        ? [...new Set(ownerPreferenceHints)]
+        : current.ownerPreferenceHints,
     stage: extractOpportunityStage(message) ?? current.stage,
     title:
       extractedTitle &&
@@ -1755,25 +2138,121 @@ const extractOpportunityTitle = (
   return remainder.length > 0 ? remainder : null;
 };
 
+const inferOpportunityCreateDefaults = (
+  workspace: IAssistantWorkspace,
+  request: PendingOpportunityCreateRequest,
+  messages: AssistantMessage[],
+) => {
+  const workflowContext = getRecentWorkflowContext(workspace, messages);
+  const client =
+    findClientByReferenceInWorkspace(workspace, request.clientId ?? request.clientName) ??
+    workflowContext.client ??
+    null;
+
+  if (!client) {
+    return request;
+  }
+
+  const recentUserMessage =
+    getRecentUserMessages(messages)
+      .filter((message) => !isConfirmationMessage(message.content))
+      .slice(-1)[0]?.content ?? "";
+
+  const estimatedValue =
+    request.estimatedValue ?? inferOpportunityValueForClient(workspace, client.id);
+  const expectedCloseDate =
+    request.expectedCloseDate ?? inferOpportunityCloseDateForClient(workspace, client.id);
+  const preferredHints = [
+    ...(request.ownerPreferenceHints ?? []),
+    ...extractOwnerPreferenceHints(recentUserMessage),
+  ];
+  const autoAssignBestOwner =
+    request.autoAssignBestOwner ||
+    preferredHints.length > 0 ||
+    !request.ownerId ||
+    isAutonomousDefaultsInstruction(recentUserMessage);
+  const owner =
+    findOwnerByReferenceInWorkspace(workspace, request.ownerId ?? request.ownerName) ??
+    (estimatedValue
+      ? chooseBestOwnerForClientRequest(workspace, {
+          clientId: client.id,
+          estimatedValue,
+          excludedOwnerIds: request.excludedOwnerIds,
+          preferredHints,
+        })
+      : null);
+
+  return {
+    ...request,
+    autoAssignBestOwner,
+    clientId: client.id,
+    clientName: client.name,
+    estimatedValue,
+    expectedCloseDate,
+    ownerId: owner?.id ?? request.ownerId,
+    ownerName: owner?.name ?? request.ownerName,
+    ownerPreferenceHints: preferredHints.length > 0 ? [...new Set(preferredHints)] : request.ownerPreferenceHints,
+    stage: request.stage ?? OpportunityStage.New,
+    title:
+      request.title ??
+      inferOpportunityTitleForClient(client.name, recentUserMessage),
+  } satisfies PendingOpportunityCreateRequest;
+};
+
+const inferProposalDraftDefaults = (
+  workspace: IAssistantWorkspace,
+  request: PendingProposalDraftRequest,
+  messages: AssistantMessage[],
+) => {
+  const workflowContext = getRecentWorkflowContext(workspace, messages);
+  const opportunity =
+    findOpportunityByReferenceInWorkspace(
+      workspace,
+      request.opportunityId ?? request.opportunityTitle,
+    ) ??
+    workflowContext.opportunity ??
+    null;
+
+  if (!opportunity) {
+    return request;
+  }
+
+  const client =
+    workspace.salesData.clients.find((item) => item.id === opportunity.clientId) ?? null;
+  const title =
+    sanitizeProposalGeneratedTitle(request.title) ??
+    sanitizeProposalGeneratedTitle(
+      client ? `${client.name} proposal` : `${opportunity.title} proposal`,
+    );
+  const validUntil =
+    request.validUntil ??
+    opportunity.expectedCloseDate ??
+    toIsoDate(addDays(new Date(), 14));
+
+  return {
+    ...request,
+    opportunityId: opportunity.id,
+    opportunityTitle: opportunity.title,
+    title,
+    validUntil,
+  } satisfies PendingProposalDraftRequest;
+};
+
 const findOpportunityByReferenceInWorkspace = (
   workspace: IAssistantWorkspace,
   reference: string | null,
 ) => {
-  if (!reference) {
-    return null;
-  }
-
-  const normalizedReference = normalizeLookupValue(reference);
-
   return (
-    workspace.salesData.opportunities.find(
-      (opportunity) => normalizeLookupValue(opportunity.id) === normalizedReference,
-    ) ??
-    workspace.salesData.opportunities.find(
-      (opportunity) => normalizeLookupValue(opportunity.title) === normalizedReference,
-    ) ??
-    workspace.salesData.opportunities.find((opportunity) =>
-      normalizeLookupValue(opportunity.title).includes(normalizedReference),
+    findBestReferenceMatch<IOpportunity>(
+      workspace.salesData.opportunities,
+      reference,
+      (opportunity) => [
+        opportunity.id,
+        opportunity.title,
+        opportunity.name ?? null,
+        opportunity.description ?? null,
+      ],
+      52,
     ) ??
     null
   );
@@ -1783,21 +2262,12 @@ const findProposalByReferenceInWorkspace = (
   workspace: IAssistantWorkspace,
   reference: string | null,
 ) => {
-  if (!reference) {
-    return null;
-  }
-
-  const normalizedReference = normalizeLookupValue(reference);
-
   return (
-    workspace.salesData.proposals.find(
-      (proposal) => normalizeLookupValue(proposal.id) === normalizedReference,
-    ) ??
-    workspace.salesData.proposals.find(
-      (proposal) => normalizeLookupValue(proposal.title) === normalizedReference,
-    ) ??
-    workspace.salesData.proposals.find((proposal) =>
-      normalizeLookupValue(proposal.title).includes(normalizedReference),
+    findBestReferenceMatch<IProposal>(
+      workspace.salesData.proposals,
+      reference,
+      (proposal) => [proposal.id, proposal.title],
+      52,
     ) ??
     null
   );
@@ -1806,10 +2276,16 @@ const findProposalByReferenceInWorkspace = (
 const extractOpportunityReference = (
   message: string,
   workspace: IAssistantWorkspace,
-) =>
-  workspace.salesData.opportunities.find((opportunity) =>
-    normalizeLookupValue(message).includes(normalizeLookupValue(opportunity.title)),
-  )?.title ?? null;
+) => {
+  const opportunity = findBestReferenceMatch<IOpportunity>(
+    workspace.salesData.opportunities,
+    message,
+    (item) => [item.id, item.title, item.name ?? null],
+    72,
+  );
+
+  return opportunity ? opportunity.title : null;
+};
 
 const inferPendingProposalDraftRequest = (
   messages: AssistantMessage[],
@@ -1842,8 +2318,11 @@ const inferPendingProposalDraftRequest = (
           workspace,
           extractPlainEnglishClientName(message.content),
         ) ??
-        workspace.salesData.clients.find((item) =>
-          normalizeLookupValue(message.content).includes(normalizeLookupValue(item.name)),
+        findBestReferenceMatch<IClient>(
+          workspace.salesData.clients,
+          message.content,
+          (item) => [item.id, item.name, item.industry, item.segment ?? null],
+          72,
         ) ??
         null;
 
@@ -1863,8 +2342,9 @@ const inferPendingProposalDraftRequest = (
 
   const opportunity = findOpportunityByReferenceInWorkspace(workspace, request.opportunityTitle);
   request.opportunityId = opportunity?.id ?? null;
+  request.title = sanitizeProposalGeneratedTitle(request.title);
 
-  return request;
+  return inferProposalDraftDefaults(workspace, request, messages);
 };
 
 const inferPendingProposalEditRequest = (
@@ -2111,32 +2591,7 @@ const inferPendingOpportunityCreateRequest = (
     );
   });
 
-  if (request.clientName && !request.clientId) {
-    request.clientId = findClientByReferenceInWorkspace(workspace, request.clientName)?.id ?? null;
-  }
-
-  if (request.ownerName && !request.ownerId) {
-    request.ownerId = findOwnerByReferenceInWorkspace(workspace, request.ownerName)?.id ?? null;
-  }
-
-  if (
-    request.autoAssignBestOwner &&
-    !request.ownerId &&
-    request.clientId &&
-    request.estimatedValue
-  ) {
-    const client = findClientByReferenceInWorkspace(workspace, request.clientId);
-    const bestOwner = client
-      ? getBestOwner(workspace.salesData, request.estimatedValue, client.industry ?? "General", {
-          pricingRequests: workspace.pricingRequests,
-        })
-      : null;
-
-    request.ownerId = bestOwner?.id ?? request.ownerId;
-    request.ownerName = bestOwner?.name ?? request.ownerName;
-  }
-
-  return request;
+  return inferOpportunityCreateDefaults(workspace, request, messages);
 };
 
 const createOpportunityMissingFieldsMessage = (
@@ -2150,10 +2605,6 @@ const createOpportunityMissingFieldsMessage = (
 
   if (!request.title) {
     missing.push("the opportunity name");
-  }
-
-  if (!request.ownerId && !request.ownerName && !request.autoAssignBestOwner) {
-    missing.push("the owner name or id");
   }
 
   if (!request.estimatedValue) {
@@ -2220,11 +2671,21 @@ const getRecentPendingOpportunityCreateRequest = (
       typeof traceStep.arguments.estimatedValue === "number"
         ? traceStep.arguments.estimatedValue
         : null,
+    excludedOwnerIds: Array.isArray(traceStep.arguments.excludedOwnerIds)
+      ? traceStep.arguments.excludedOwnerIds.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
     expectedCloseDate:
       typeof traceStep.arguments.expectedCloseDate === "string"
         ? traceStep.arguments.expectedCloseDate
         : null,
     ownerId: typeof traceStep.arguments.ownerId === "string" ? traceStep.arguments.ownerId : null,
+    ownerPreferenceHints: Array.isArray(traceStep.arguments.ownerPreferenceHints)
+      ? traceStep.arguments.ownerPreferenceHints.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
     ownerName:
       typeof traceStep.arguments.ownerName === "string" ? traceStep.arguments.ownerName : null,
     stage: typeof traceStep.arguments.stage === "string" ? traceStep.arguments.stage : null,
@@ -3988,8 +4449,11 @@ const createConfirmedOpportunityCreateResult = async (
   const owner =
     findOwnerByReferenceInWorkspace(workspace, request.ownerId ?? request.ownerName) ??
     (request.autoAssignBestOwner
-      ? getBestOwner(workspace.salesData, request.estimatedValue, client.industry ?? "General", {
-          pricingRequests: workspace.pricingRequests,
+      ? chooseBestOwnerForClientRequest(workspace, {
+          clientId: client.id,
+          estimatedValue: request.estimatedValue,
+          excludedOwnerIds: request.excludedOwnerIds,
+          preferredHints: request.ownerPreferenceHints,
         })
       : null) ??
     null;
@@ -6695,85 +7159,52 @@ const createToolset = (workspace: IAssistantWorkspace, messages: AssistantMessag
   };
 
   const findClientByReference = (reference: unknown) => {
-    if (typeof reference !== "string" || !reference.trim()) {
-      return null;
-    }
-
-    const normalizedReference = normalizeLookupValue(reference);
-
-    return (
-      salesData.clients.find((client) => normalizeLookupValue(client.id) === normalizedReference) ??
-      salesData.clients.find((client) => normalizeLookupValue(client.name) === normalizedReference) ??
-      salesData.clients.find((client) =>
-        normalizeLookupValue(client.name).includes(normalizedReference),
-      ) ??
-      null
-    );
+    return typeof reference === "string"
+      ? findBestReferenceMatch<IClient>(
+          salesData.clients,
+          reference,
+          (client) => [client.id, client.name, client.industry, client.segment ?? null],
+          52,
+        )
+      : null;
   };
 
   const findOpportunityByReference = (reference: unknown) => {
-    if (typeof reference !== "string" || !reference.trim()) {
-      return null;
-    }
-
-    const normalizedReference = normalizeLookupValue(reference);
-
-    return (
-      salesData.opportunities.find(
-        (opportunity) => normalizeLookupValue(opportunity.id) === normalizedReference,
-      ) ??
-      salesData.opportunities.find(
-        (opportunity) => normalizeLookupValue(opportunity.title) === normalizedReference,
-      ) ??
-      salesData.opportunities.find(
-        (opportunity) => normalizeLookupValue(opportunity.name ?? "") === normalizedReference,
-      ) ??
-      salesData.opportunities.find((opportunity) =>
-        normalizeLookupValue(opportunity.title).includes(normalizedReference),
-      ) ??
-      salesData.opportunities.find((opportunity) =>
-        normalizeLookupValue(opportunity.name ?? "").includes(normalizedReference),
-      ) ??
-      null
-    );
+    return typeof reference === "string"
+      ? findBestReferenceMatch<IOpportunity>(
+          salesData.opportunities,
+          reference,
+          (opportunity) => [
+            opportunity.id,
+            opportunity.title,
+            opportunity.name ?? null,
+            opportunity.description ?? null,
+          ],
+          52,
+        )
+      : null;
   };
 
   const findOwnerByReference = (reference: unknown) => {
-    if (typeof reference !== "string" || !reference.trim()) {
-      return null;
-    }
-
-    const normalizedReference = normalizeLookupValue(reference);
-
-    return (
-      salesData.teamMembers.find((member) => normalizeLookupValue(member.id) === normalizedReference) ??
-      salesData.teamMembers.find((member) => normalizeLookupValue(member.name) === normalizedReference) ??
-      salesData.teamMembers.find((member) =>
-        normalizeLookupValue(member.name).includes(normalizedReference),
-      ) ??
-      null
-    );
+    return typeof reference === "string"
+      ? findBestReferenceMatch<ITeamMember>(
+          salesData.teamMembers,
+          reference,
+          (member) => [member.id, member.name, member.role, ...member.skills],
+          58,
+        )
+      : null;
   };
 
   const findProposalByReference = (reference: unknown) => {
-    if (typeof reference !== "string" || !reference.trim()) {
-      return null;
-    }
-
-    const normalizedReference = normalizeLookupValue(reference);
-
-    return (
-      salesData.proposals.find(
-        (proposal) => normalizeLookupValue(proposal.id) === normalizedReference,
-      ) ??
-      salesData.proposals.find(
-        (proposal) => normalizeLookupValue(proposal.title) === normalizedReference,
-      ) ??
-      salesData.proposals.find((proposal) =>
-        normalizeLookupValue(proposal.title).includes(normalizedReference),
-      ) ??
-      null
-    );
+    return typeof reference === "string"
+      ? findBestReferenceMatch<IProposal>(
+          salesData.proposals,
+          reference,
+          (proposal) => [proposal.id, proposal.title],
+          52,
+        )
+      : null;
   };
 
   const findActivityByReference = (reference: unknown) => {
