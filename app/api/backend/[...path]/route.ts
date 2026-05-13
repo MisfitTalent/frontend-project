@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { readMockUsersFromCookies } from "@/app/api/Auth/mock-user-cookie";
 import { AUTH_COOKIE_NAME, AUTH_COOKIE_OPTIONS } from "@/app/api/Auth/session-cookie";
 import { type IMockUser } from "@/app/api/Auth/mock-users";
 import { getUserFromSessionToken } from "@/lib/auth/session-user";
@@ -111,8 +112,11 @@ const proxyRequest = async (
   const { path } = await context.params;
   const cookieToken = request.cookies.get(AUTH_COOKIE_NAME)?.value;
   const bearerToken = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  const browserMockUsers = readMockUsersFromCookies(request.cookies);
   const sessionToken = cookieToken || bearerToken || "";
-  const mockUser = sessionToken ? getUserFromSessionToken(sessionToken) : null;
+  const mockUser = sessionToken
+    ? getUserFromSessionToken(sessionToken, browserMockUsers)
+    : null;
 
   if (mockUser && sessionToken.startsWith("mock-token::")) {
     return handleMockRequest(request, path, mockUser);
