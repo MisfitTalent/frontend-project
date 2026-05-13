@@ -12106,6 +12106,18 @@ export const runSecureAssistant = async ({
     return confirmedMessageSendResult;
   }
 
+  const confirmedServiceRequestCreateResult = shouldRunConfirmedServiceRequestCreateWorkflow(
+    latestUserMessage,
+    messages,
+    workspace,
+  )
+    ? await createConfirmedServiceRequestCreateResult(workspace, messages)
+    : null;
+
+  if (confirmedServiceRequestCreateResult) {
+    return confirmedServiceRequestCreateResult;
+  }
+
   const clientScopedMutationRefusal =
     isClientScopedInternalRecordMutationIntent(latestUserMessage, workspace) ||
     (isConfirmationMessage(latestUserMessage) &&
@@ -12137,18 +12149,6 @@ export const runSecureAssistant = async ({
   }
 
   if (!prefersLiveProvider) {
-    const confirmedServiceRequestCreateResult = shouldRunConfirmedServiceRequestCreateWorkflow(
-      latestUserMessage,
-      messages,
-      workspace,
-    )
-      ? await createConfirmedServiceRequestCreateResult(workspace, messages)
-      : null;
-
-    if (confirmedServiceRequestCreateResult) {
-      return confirmedServiceRequestCreateResult;
-    }
-
     const confirmedAdminRequestHandlingResult = shouldRunConfirmedAdminRequestHandlingWorkflow(
       latestUserMessage,
       messages,
