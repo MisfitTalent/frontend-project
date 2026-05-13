@@ -75,6 +75,7 @@ import {
   updateMockProposal,
 } from "@/lib/server/mock-workspace-store";
 import {
+  addServiceRequestMessage,
   applyServiceRequestClientDecision,
   applyServiceRequestRepDecision,
   attachOpportunityToServiceRequest,
@@ -87,6 +88,7 @@ import {
   updateServiceRequest,
 } from "@/lib/server/service-request-store";
 import {
+  addLiveServiceRequestMessage,
   applyLiveServiceRequestClientDecision,
   applyLiveServiceRequestRepDecision,
   attachLiveOpportunityToServiceRequest,
@@ -572,6 +574,24 @@ const createServiceRequestForWorkspace = async (
         input,
       )
     : Promise.resolve(createServiceRequest(createAssistantActor(workspace), input));
+
+const addServiceRequestMessageForWorkspace = async (
+  workspace: IAssistantWorkspace,
+  requestId: string,
+  input: {
+    content: string;
+    recipientType: "client" | "representative" | "both";
+    representativeUserIds?: string[];
+  },
+) =>
+  workspace.isLiveBackend && workspace.sessionToken
+    ? addLiveServiceRequestMessage(
+        createAssistantActor(workspace),
+        workspace.sessionToken,
+        requestId,
+        input,
+      )
+    : Promise.resolve(addServiceRequestMessage(createAssistantActor(workspace), requestId, input));
 
 const attachOpportunityToServiceRequestForWorkspace = async (
   workspace: IAssistantWorkspace,
@@ -3654,6 +3674,67 @@ const createConfirmedMessageSendResult = async (
 
     if (!clientId) {
       throw new Error("No client workspace is linked to this account.");
+    }
+
+    const openClientRequests = workspace.serviceRequests.filter(
+      (request) =>
+        request.clientId === clientId &&
+        !["closed", "cancelled"].includes(request.status),
+    );
+    const appendTarget =
+      openClientRequests.length === 1
+        ? openClientRequests[0]
+        : openClientRequests.length > 1
+          ? openClientRequests.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]
+          : null;
+
+    if (appendTarget) {
+      const detail = await addServiceRequestMessageForWorkspace(workspace, appendTarget.id, {
+        content: pendingRequest.content,
+        recipientType: "representative",
+        representativeUserIds: pendingRequest.recipientId ? [pendingRequest.recipientId] : [],
+      });
+
+      workspace.serviceRequests = workspace.serviceRequests
+        .filter((item) => item.id !== detail.request.id)
+        .concat(detail.request);
+
+      return {
+        message:
+          `Added your message to the existing request thread ${detail.request.title}.` +
+          ` The account team can continue from the same shared conversation.`,
+        mode: "workflow" as const,
+        model: "client-request-message-workflow",
+        reason:
+          "Confirmed client-scoped message send appended to an existing shared service request thread.",
+        mutations: [
+          {
+            entityId: detail.request.id,
+            entityType: "note" as const,
+            operation: "update" as const,
+            record: detail.request as unknown as Record<string, unknown>,
+            title: detail.request.title,
+          },
+        ] satisfies AssistantMutation[],
+        trace: [
+          {
+            arguments: {
+              clientId,
+              content: pendingRequest.content,
+              recipientId: pendingRequest.recipientId,
+              recipientName: pendingRequest.recipientName,
+              requestId: detail.request.id,
+              title: detail.request.title,
+            },
+            outputPreview: createTracePreview({
+              requestId: detail.request.id,
+              requestTitle: detail.request.title,
+              updatedEventCount: detail.events.length,
+            }),
+            tool: "message_send_on_existing_service_request_workflow",
+          },
+        ] satisfies AssistantTraceStep[],
+      };
     }
 
     const serviceRequest = await createServiceRequestForWorkspace(workspace, {
