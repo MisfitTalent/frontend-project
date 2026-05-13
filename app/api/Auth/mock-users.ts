@@ -1,4 +1,5 @@
 import type { AuthSessionUser } from "@/lib/auth/auth-contract";
+import { readLocalStateSnapshot, writeLocalStateSnapshot } from "@/lib/server/local-state-store";
 import { MOCK_TEAM_MEMBERS } from "@/providers/salesFixtures";
 
 export type MockUserRole =
@@ -104,7 +105,7 @@ const validateMockUserConfiguration = (entries: Map<string, IMockUser>) => {
   }
 };
 
-const users = new Map<string, IMockUser>([
+const seedUsers = new Map<string, IMockUser>([
   [
     "admin@autosales.com",
     createAutoSalesUser({
@@ -180,9 +181,54 @@ const users = new Map<string, IMockUser>([
   ...autoSalesRepUsers.map((user) => [user.email, user] as const),
 ]);
 
+const clone = <T,>(value: T): T => structuredClone(value);
+
+const persistedMockUsers = readLocalStateSnapshot().mockUserStore;
+const persistedUsers = new Map<string, IMockUser>(
+  Object.entries(persistedMockUsers.users).map(([email, user]) => [
+    email,
+    user as IMockUser,
+  ]),
+);
+
+const users = new Map<string, IMockUser>([...seedUsers, ...persistedUsers]);
+
+const deriveNextId = () => {
+  const numericIds = [...users.values()]
+    .map((user) => Number(user.id))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  const maxId = numericIds.length > 0 ? Math.max(...numericIds) : 0;
+
+  return Math.max(maxId + 1, persistedMockUsers.nextId || 1);
+};
+
+const findTenantNameById = (tenantId: string) =>
+  [...users.values()].find((user) => user.tenantId === tenantId)?.tenantName;
+
+const createGeneratedTenantId = (tenantName: string) => {
+  const slug = tenantName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+
+  return `mock-tenant-${slug || "workspace"}-${Date.now()}`;
+};
+
+const persistMockUsers = (nextId: number) => {
+  writeLocalStateSnapshot((state) => {
+    state.mockUserStore = {
+      nextId,
+      users: Object.fromEntries(
+        [...users.entries()].map(([email, user]) => [email, clone(user)]),
+      ),
+    };
+  });
+};
+
 validateMockUserConfiguration(users);
 
-let nextId = 3;
+let nextId = deriveNextId();
 
 export const findUserByEmail = (email: string) => users.get(email.toLowerCase());
 
@@ -202,6 +248,7 @@ export const registerMockUser = ({
   lastName,
   password,
   role,
+  tenantId,
   tenantName,
 }: {
   email: string;
@@ -209,6 +256,7 @@ export const registerMockUser = ({
   lastName: string;
   password: string;
   role: MockUserRole;
+  tenantId?: string;
   tenantName?: string;
 }) => {
   const normalizedEmail = email.toLowerCase();
@@ -216,6 +264,15 @@ export const registerMockUser = ({
   if (users.has(normalizedEmail)) {
     return null;
   }
+
+  const normalizedTenantId = tenantId?.trim();
+  const normalizedTenantName = tenantName?.trim();
+  const resolvedTenantId =
+    normalizedTenantId ||
+    (normalizedTenantName ? createGeneratedTenantId(normalizedTenantName) : SHARED_DEMO_TENANT_ID);
+  const resolvedTenantName =
+    normalizedTenantName ||
+    (normalizedTenantId ? findTenantNameById(normalizedTenantId) || normalizedTenantId : SHARED_DEMO_TENANT_NAME);
 
   const user: IMockUser = {
     clientIds: [],
@@ -225,11 +282,13 @@ export const registerMockUser = ({
     lastName,
     password,
     role,
-    tenantId: SHARED_DEMO_TENANT_ID,
-    tenantName: tenantName || SHARED_DEMO_TENANT_NAME,
+    tenantId: resolvedTenantId,
+    tenantName: resolvedTenantName,
   };
 
   users.set(normalizedEmail, user);
+  validateMockUserConfiguration(users);
+  persistMockUsers(nextId);
 
   return user;
 };
@@ -253,6 +312,8 @@ export const updateMockUser = (
   };
 
   users.set(normalizedEmail, nextUser);
+  validateMockUserConfiguration(users);
+  persistMockUsers(nextId);
 
   return nextUser;
 };

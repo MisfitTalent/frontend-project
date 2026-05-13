@@ -4,6 +4,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import path from "node:path";
 
 type PersistedLocalState = {
+  mockUserStore: {
+    nextId: number;
+    users: Record<string, unknown>;
+  };
   mockWorkspaceStore: Record<string, unknown>;
   schema: "autosales-local-state-v1";
   serviceRequestStore: Record<string, unknown>;
@@ -18,6 +22,10 @@ let cachedState: PersistedLocalState | null = null;
 const clone = <T,>(value: T): T => structuredClone(value);
 
 const createEmptyState = (): PersistedLocalState => ({
+  mockUserStore: {
+    nextId: 1,
+    users: {},
+  },
   mockWorkspaceStore: {},
   schema: "autosales-local-state-v1",
   serviceRequestStore: {},
@@ -35,6 +43,23 @@ const normalizePersistedState = (value: unknown): PersistedLocalState => {
   }
 
   return {
+    mockUserStore:
+      candidate.mockUserStore &&
+      typeof candidate.mockUserStore === "object" &&
+      candidate.mockUserStore.users &&
+      typeof candidate.mockUserStore.users === "object"
+        ? {
+            nextId:
+              typeof candidate.mockUserStore.nextId === "number" &&
+              Number.isFinite(candidate.mockUserStore.nextId)
+                ? Math.max(1, Math.floor(candidate.mockUserStore.nextId))
+                : 1,
+            users: candidate.mockUserStore.users,
+          }
+        : {
+            nextId: 1,
+            users: {},
+          },
     mockWorkspaceStore:
       candidate.mockWorkspaceStore && typeof candidate.mockWorkspaceStore === "object"
         ? candidate.mockWorkspaceStore

@@ -34,6 +34,7 @@ export async function POST(request: NextRequest) {
       lastName?: unknown;
       password?: unknown;
       role?: unknown;
+      tenantId?: unknown;
       tenantName?: unknown;
     };
     const email = String(payload.email ?? "").trim().toLowerCase();
@@ -48,6 +49,7 @@ export async function POST(request: NextRequest) {
       payload.role === "Client"
         ? (payload.role as MockUserRole)
         : "SalesRep";
+    const tenantId = String(payload.tenantId ?? "").trim();
     const tenantName = String(payload.tenantName ?? "").trim();
 
     if (!email || !firstName || !lastName || !password) {
@@ -66,6 +68,7 @@ export async function POST(request: NextRequest) {
       lastName,
       password,
       role,
+      tenantId,
       tenantName,
     });
 
