@@ -624,16 +624,16 @@ const applyClientDecisionForWorkspace = async (
     decision: "approve" | "reject";
   },
 ) =>
-  workspace.isLiveBackend && workspace.sessionToken
-    ? applyLiveServiceRequestClientDecision(
-        createAssistantActor(workspace),
-        workspace.sessionToken,
-        requestId,
-        input,
-      )
-    : Promise.resolve(
-        applyServiceRequestClientDecision(createAssistantActor(workspace), requestId, input),
-      );
+  (
+    workspace.isLiveBackend && workspace.sessionToken
+      ? await applyLiveServiceRequestClientDecision(
+          createAssistantActor(workspace),
+          workspace.sessionToken,
+          requestId,
+          input,
+        )
+      : applyServiceRequestClientDecision(createAssistantActor(workspace), requestId, input)
+  ).request;
 
 const applyRepresentativeDecisionForWorkspace = async (
   workspace: IAssistantWorkspace,
@@ -643,16 +643,16 @@ const applyRepresentativeDecisionForWorkspace = async (
     decision: "accept" | "reject";
   },
 ) =>
-  workspace.isLiveBackend && workspace.sessionToken
-    ? applyLiveServiceRequestRepDecision(
-        createAssistantActor(workspace),
-        workspace.sessionToken,
-        requestId,
-        input,
-      )
-    : Promise.resolve(
-        applyServiceRequestRepDecision(createAssistantActor(workspace), requestId, input),
-      );
+  (
+    workspace.isLiveBackend && workspace.sessionToken
+      ? await applyLiveServiceRequestRepDecision(
+          createAssistantActor(workspace),
+          workspace.sessionToken,
+          requestId,
+          input,
+        )
+      : applyServiceRequestRepDecision(createAssistantActor(workspace), requestId, input)
+  ).request;
 
 const toIsoDate = (value: Date) => value.toISOString().split("T")[0];
 

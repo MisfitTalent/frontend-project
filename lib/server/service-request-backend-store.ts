@@ -369,6 +369,37 @@ const appendEvent = async (
   return event;
 };
 
+const deriveRequestStatusFromAssignments = (
+  assignments: ServiceRequestAssignmentRecord[],
+  fallbackStatus: ServiceRequestStatus,
+): ServiceRequestStatus => {
+  if (assignments.length === 0) {
+    return fallbackStatus;
+  }
+
+  if (assignments.some((assignment) => assignment.status === "pending_client_approval")) {
+    return "awaiting_client_assignment_approval";
+  }
+
+  if (assignments.some((assignment) => assignment.status === "pending_rep_response")) {
+    return "awaiting_rep_acceptance";
+  }
+
+  if (assignments.some((assignment) => assignment.status === "rep_accepted")) {
+    return "active";
+  }
+
+  if (assignments.some((assignment) => assignment.status === "rep_rejected")) {
+    return "rep_rejected_assignment";
+  }
+
+  if (assignments.every((assignment) => assignment.status === "client_rejected")) {
+    return "client_rejected_assignment";
+  }
+
+  return fallbackStatus;
+};
+
 export const listLiveServiceRequests = async (
   user: IMockUser,
   token: string,
@@ -599,7 +630,7 @@ export const applyLiveServiceRequestClientDecision = async (
     throw new Error("No matching assignments were found for this request.");
   }
 
-  const nextAssignmentStatus =
+  const nextAssignmentStatus: ServiceRequestAssignmentRecord["status"] =
     input.decision === "approve" ? "pending_rep_response" : "client_rejected";
 
   for (const stored of matchingAssignments) {
@@ -618,12 +649,23 @@ export const applyLiveServiceRequestClientDecision = async (
     });
   }
 
+  const nextState = await loadLiveWorkflowState(user, token);
+  const nextAssignments = nextState.assignments
+    .filter((item) => item.assignment.serviceRequestId === request.request.id)
+    .map((item) =>
+      matchingAssignments.some((match) => match.assignment.id === item.assignment.id)
+        ? {
+            ...item.assignment,
+            decisionNote: input.note?.trim() || item.assignment.decisionNote,
+            status: nextAssignmentStatus,
+            updatedAt: nowIso(),
+          }
+        : item.assignment,
+    );
+
   const updatedRequest: ServiceRequestRecord = {
     ...request.request,
-    status:
-      input.decision === "approve"
-        ? "awaiting_rep_acceptance"
-        : "client_rejected_assignment",
+    status: deriveRequestStatusFromAssignments(nextAssignments, request.request.status),
     updatedAt: nowIso(),
   };
 
@@ -640,7 +682,7 @@ export const applyLiveServiceRequestClientDecision = async (
     note: input.note?.trim() || null,
   });
 
-  return clone(updatedRequest);
+  return getLiveServiceRequestDetail(user, token, requestId);
 };
 
 export const applyLiveServiceRequestRepDecision = async (
@@ -688,19 +730,10 @@ export const applyLiveServiceRequestRepDecision = async (
     .map((item) =>
       item.assignment.id === updatedAssignment.id ? updatedAssignment : item.assignment,
     );
-  const hasAccepted = allAssignments.some((item) => item.status === "rep_accepted");
-  const hasPending = allAssignments.some((item) => item.status === "pending_rep_response");
-  const hasRejected = allAssignments.some((item) => item.status === "rep_rejected");
 
   const updatedRequest: ServiceRequestRecord = {
     ...request.request,
-    status: hasRejected
-      ? "rep_rejected_assignment"
-      : hasPending
-        ? "awaiting_rep_acceptance"
-        : hasAccepted
-          ? "active"
-          : request.request.status,
+    status: deriveRequestStatusFromAssignments(allAssignments, request.request.status),
     updatedAt: nowIso(),
   };
 
@@ -717,7 +750,7 @@ export const applyLiveServiceRequestRepDecision = async (
     note: input.note?.trim() || null,
   });
 
-  return clone(updatedRequest);
+  return getLiveServiceRequestDetail(user, token, requestId);
 };
 
 export const addLiveServiceRequestMessage = async (
@@ -741,15 +774,15 @@ export const addLiveServiceRequestMessage = async (
   const representativeUserIds = [
     ...new Set((input.representativeUserIds ?? []).map((value) => value.trim()).filter(Boolean)),
   ];
+  const targetsRepresentatives =
+    recipientType === "representative" || recipientType === "both";
+  const requiresExplicitRepresentatives = user.role !== "Client" && targetsRepresentatives;
 
   if (!["client", "representative", "both"].includes(recipientType)) {
     throw new Error("A valid recipientType is required.");
   }
 
-  if (
-    (recipientType === "representative" || recipientType === "both") &&
-    representativeUserIds.length === 0
-  ) {
+  if (requiresExplicitRepresentatives && representativeUserIds.length === 0) {
     throw new Error("At least one representative recipient is required.");
   }
 
@@ -761,10 +794,7 @@ export const addLiveServiceRequestMessage = async (
     )
     .map((item) => item.assignment.representativeName);
 
-  if (
-    (recipientType === "representative" || recipientType === "both") &&
-    representativeNames.length !== representativeUserIds.length
-  ) {
+  if (representativeUserIds.length > 0 && representativeNames.length !== representativeUserIds.length) {
     throw new Error("Representative recipients must belong to this request.");
   }
 

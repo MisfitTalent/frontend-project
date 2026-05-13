@@ -158,7 +158,7 @@ const getServiceRequestMessageRecipientSummary = (payload: Record<string, unknow
   if (recipientType === "representative") {
     return representativeNames.length > 0
       ? `To reps: ${representativeNames.join(", ")}`
-      : "To reps";
+      : "To workspace";
   }
 
   return "To client";
@@ -219,7 +219,17 @@ function MessagesPanelContent({
       const clientName =
         clients.find((client) => client.id === request.clientId)?.name ?? "the client";
 
-      return `Review the client request "${request.title}" for ${clientName} (request id ${request.id}), create the right opportunity and proposal if needed, and assign the best reps for this request only.`;
+      return [
+        `Review this exact client request only.`,
+        `Request id: ${request.id}`,
+        `Client: ${clientName}`,
+        `Title: ${request.title}`,
+        `Status: ${request.status}`,
+        `Request type: ${request.requestType}`,
+        `Description: ${request.description}`,
+        `If the workflow needs an opportunity or proposal, create the right ones and assign the best reps for this request only.`,
+        `Ask me to confirm before executing changes.`,
+      ].join("\n");
     },
     [clients],
   );
@@ -1005,17 +1015,7 @@ function MessagesPanelContent({
                       Handle with AI
                     </Button>
                     <Button
-                      onClick={() =>
-                        openReplyComposer({
-                          category: CLIENT_MESSAGE_CATEGORY,
-                          clientId: request.clientId,
-                          content: request.description,
-                          createdDate: request.createdAt.split("T")[0],
-                          id: request.id,
-                          source: request.source,
-                          title: request.title,
-                        } as INoteItem)
-                      }
+                      onClick={() => openServiceRequestReplyComposer(request)}
                     >
                       Reply first
                     </Button>

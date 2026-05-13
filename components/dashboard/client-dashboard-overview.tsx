@@ -4,14 +4,13 @@ import { FileTextOutlined, FolderOpenOutlined, MessageOutlined, ProfileOutlined 
 import { Card, Col, Empty, Row, Space, Tag, Typography } from "antd";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { listServiceRequests, type ServiceRequestRecord } from "@/lib/client/service-request-api";
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
 import { useContractState } from "@/providers/contractProvider";
 import { useDocumentState } from "@/providers/documentProvider";
-import type { INoteItem } from "@/providers/domainSeeds";
-import { useNoteState } from "@/providers/noteProvider";
 import { useProposalState } from "@/providers/proposalProvider";
 
 const ClientMessageCenter = dynamic(
@@ -30,21 +29,13 @@ const ClientMessageCenter = dynamic(
   },
 );
 
-const CLIENT_MESSAGE_CATEGORY = "Client Message";
-const LEGACY_CLIENT_MESSAGE_PREFIX = `${CLIENT_MESSAGE_CATEGORY} `;
-
-const isClientMessage = (note: INoteItem) =>
-  note.kind === "client_message" ||
-  note.category === CLIENT_MESSAGE_CATEGORY ||
-  note.category?.startsWith(LEGACY_CLIENT_MESSAGE_PREFIX);
-
 export function ClientDashboardOverview() {
   const { user } = useAuthState();
   const { clients } = useClientState();
   const { contracts } = useContractState();
   const { documents } = useDocumentState();
-  const { notes } = useNoteState();
   const { proposals } = useProposalState();
+  const [serviceRequests, setServiceRequests] = useState<ServiceRequestRecord[]>([]);
 
   const primaryClientId = user?.clientIds?.[0];
   const client = clients.find((item) => item.id === primaryClientId) ?? null;
@@ -57,10 +48,34 @@ export function ClientDashboardOverview() {
     () => documents.filter((item) => item.clientId === client?.id),
     [client?.id, documents],
   );
-  const clientMessages = useMemo(
-    () => notes.filter((item) => item.clientId === client?.id && isClientMessage(item)),
-    [client?.id, notes],
-  );
+  useEffect(() => {
+    if (!client?.id) {
+      setServiceRequests([]);
+      return;
+    }
+
+    let isActive = true;
+
+    void listServiceRequests()
+      .then((items) => {
+        if (!isActive) {
+          return;
+        }
+
+        setServiceRequests(items.filter((item) => item.clientId === client.id));
+      })
+      .catch((error) => {
+        console.error(error);
+
+        if (isActive) {
+          setServiceRequests([]);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [client?.id]);
   const clientProposals = useMemo(
     () => proposals.filter((item) => item.clientId === client?.id),
     [client?.id, proposals],
@@ -70,8 +85,8 @@ export function ClientDashboardOverview() {
   const latestDocument = [...clientDocuments].sort((left, right) =>
     right.uploadedDate.localeCompare(left.uploadedDate),
   )[0];
-  const latestMessage = [...clientMessages].sort((left, right) =>
-    right.createdDate.localeCompare(left.createdDate),
+  const latestMessage = [...serviceRequests].sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt),
   )[0];
   const latestProposal = [...clientProposals].sort((left, right) =>
     right.validUntil.localeCompare(left.validUntil),
@@ -130,10 +145,10 @@ export function ClientDashboardOverview() {
                 <MessageOutlined className="text-lg text-[#355c7d]" />
                 <Typography.Text className="!text-slate-500">Messages</Typography.Text>
                 <Typography.Title className="!m-0" level={3}>
-                  {clientMessages.length}
+                  {serviceRequests.length}
                 </Typography.Title>
                 <Typography.Text className="!text-slate-500">
-                  {latestMessage ? `${latestMessage.title} is the latest thread.` : "No account messages yet."}
+                  {latestMessage ? `${latestMessage.title} is the latest request thread.` : "No account requests yet."}
                 </Typography.Text>
               </Space>
             </Card>
