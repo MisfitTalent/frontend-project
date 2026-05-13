@@ -14,11 +14,12 @@ import { INITIAL_SALES_DATA } from "./salesFixtures";
 
 export interface IDocumentItem {
   clientId?: string;
-  dataUrl?: string;
+  fileContentBase64?: string;
   id: string;
   mimeType?: string;
   name: string;
   size: string;
+  sizeInBytes?: number;
   type: string;
   uploadedDate: string;
 }

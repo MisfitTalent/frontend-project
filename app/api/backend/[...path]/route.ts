@@ -10,6 +10,7 @@ import {
   createMockActivity,
   createMockClient,
   createMockContact,
+  createMockDocument,
   createMockNote,
   createMockOpportunity,
   createMockPricingRequest,
@@ -17,6 +18,7 @@ import {
   deleteMockActivity,
   deleteMockClient,
   deleteMockContact,
+  deleteMockDocument,
   deleteMockNote,
   deleteMockOpportunity,
   deleteMockPricingRequest,
@@ -26,6 +28,7 @@ import {
   listMockActivities,
   listMockClients,
   listMockContacts,
+  listMockDocuments,
   listMockNotes,
   listMockOpportunities,
   listMockPricingRequests,
@@ -52,12 +55,21 @@ const shouldPersistSession = (segments: string[]) =>
   segments[1] === "Auth" &&
   (segments[2] === "login" || segments[2] === "register");
 
-const copyContentType = (upstream: Response, response: NextResponse) => {
-  const contentType = upstream.headers.get("content-type");
+const copyProxyHeaders = (upstream: Response, response: NextResponse) => {
+  const passthroughHeaders = [
+    "cache-control",
+    "content-disposition",
+    "content-length",
+    "content-type",
+  ];
 
-  if (contentType) {
-    response.headers.set("content-type", contentType);
-  }
+  passthroughHeaders.forEach((headerName) => {
+    const value = upstream.headers.get(headerName);
+
+    if (value) {
+      response.headers.set(headerName, value);
+    }
+  });
 };
 
 const createProxyResponse = async (upstream: Response, pathSegments: string[]) => {
@@ -66,15 +78,17 @@ const createProxyResponse = async (upstream: Response, pathSegments: string[]) =
   }
 
   const contentType = upstream.headers.get("content-type") ?? "";
-  const text = await upstream.text();
 
   if (!contentType.includes("application/json")) {
-    const response = new NextResponse(text, { status: upstream.status });
+    const body = await upstream.arrayBuffer();
+    const response = new NextResponse(body.byteLength > 0 ? body : null, { status: upstream.status });
 
-    copyContentType(upstream, response);
+    copyProxyHeaders(upstream, response);
 
     return response;
   }
+
+  const text = await upstream.text();
 
   const payload = text ? (JSON.parse(text) as Record<string, unknown>) : null;
   const response = NextResponse.json(payload, { status: upstream.status });
@@ -85,7 +99,7 @@ const createProxyResponse = async (upstream: Response, pathSegments: string[]) =
     response.cookies.set(AUTH_COOKIE_NAME, token, AUTH_COOKIE_OPTIONS);
   }
 
-  copyContentType(upstream, response);
+  copyProxyHeaders(upstream, response);
 
   return response;
 };
@@ -119,11 +133,20 @@ const proxyRequest = async (
     headers.set("authorization", `Bearer ${cookieToken}`);
   }
 
+  const contentType = request.headers.get("content-type") ?? "";
+  const isBodylessMethod = request.method === "GET" || request.method === "HEAD";
+  const requestBody = isBodylessMethod
+    ? undefined
+    : contentType.includes("multipart/form-data")
+      ? await request.formData()
+      : await request.text();
+
+  if (contentType.includes("multipart/form-data")) {
+    headers.delete("content-type");
+  }
+
   const upstream = await fetch(targetUrl, {
-    body:
-      request.method === "GET" || request.method === "HEAD"
-        ? undefined
-        : await request.text(),
+    body: requestBody,
     headers,
     method: request.method,
     redirect: "manual",
@@ -333,6 +356,16 @@ const toNoteDto = (note: ReturnType<typeof listMockNotes>[number]) => ({
   ...note,
 });
 
+const toDocumentDto = (document: ReturnType<typeof listMockDocuments>[number]) => ({
+  contentType: document.mimeType ?? null,
+  createdAt: `${document.uploadedDate}T09:00:00`,
+  fileName: document.name,
+  fileSizeBytes: document.sizeInBytes ?? null,
+  id: document.id,
+  relatedToId: document.clientId ?? null,
+  relatedToType: 1,
+});
+
 const toUserDto = (member: ReturnType<typeof listMockTeamMembers>[number]) => ({
   availabilityPercent: member.availabilityPercent,
   email: null,
@@ -357,10 +390,71 @@ const handleMockRequest = async (
     return json({ message: "Unsupported mock path." }, 404);
   }
 
+  const contentType = request.headers.get("content-type") ?? "";
   const body =
-    request.method === "GET" || request.method === "HEAD"
+    request.method === "GET" || request.method === "HEAD" || contentType.includes("multipart/form-data")
       ? null
       : ((await request.json().catch(() => null)) as Record<string, unknown> | null);
+  const formData =
+    request.method === "GET" || request.method === "HEAD" || !contentType.includes("multipart/form-data")
+      ? null
+      : await request.formData().catch(() => null);
+
+  if (resource === "Documents") {
+    if (!id && request.method === "GET") {
+      const relatedToId = request.nextUrl.searchParams.get("relatedToId");
+      const items = listMockDocuments(user.tenantId).filter((item) =>
+        relatedToId ? item.clientId === relatedToId : true,
+      );
+
+      return json({ items: items.map(toDocumentDto) });
+    }
+
+    if (id === "upload" && request.method === "POST" && formData) {
+      const file = formData.get("File");
+      const relatedToId = formData.get("RelatedToId");
+
+      if (!(file instanceof File)) {
+        return json({ message: "A file is required." }, 400);
+      }
+
+      const fileBuffer = Buffer.from(await file.arrayBuffer());
+
+      const document = createMockDocument(user, {
+        clientId: typeof relatedToId === "string" ? relatedToId : undefined,
+        fileContentBase64: fileBuffer.toString("base64"),
+        mimeType: file.type || undefined,
+        name: file.name,
+        sizeInBytes: file.size,
+        type: file.name.split(".").pop()?.trim().toUpperCase() || file.type || "FILE",
+      });
+
+      return json(toDocumentDto(document), 201);
+    }
+
+    if (id && nested === "download" && request.method === "GET") {
+      const document = listMockDocuments(user.tenantId).find((item) => item.id === id);
+
+      if (!document) {
+        return json({ message: "Document not found." }, 404);
+      }
+
+      const body = document.fileContentBase64
+        ? Buffer.from(document.fileContentBase64, "base64")
+        : Buffer.from(`Mock file download for ${document.name}`, "utf-8");
+      const response = new NextResponse(body, { status: 200 });
+
+      response.headers.set("content-type", document.mimeType ?? "text/plain; charset=utf-8");
+      response.headers.set("content-disposition", `attachment; filename="${document.name}"`);
+
+      return response;
+    }
+
+    if (id && request.method === "DELETE") {
+      deleteMockDocument(user.tenantId, id);
+      return new NextResponse(null, { status: 204 });
+    }
+  }
 
   if (resource === "Opportunities" || resource === "opportunities") {
     if (!id && request.method === "GET") {

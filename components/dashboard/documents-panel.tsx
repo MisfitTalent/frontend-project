@@ -1,12 +1,13 @@
 "use client";
 
-import { Button, Empty, Form, Input, Modal, Select, Space, Table, Tag, Typography } from "antd";
+import { Button, Empty, Form, Modal, Select, Space, Spin, Table, Tag, Typography, message } from "antd";
 import { DeleteOutlined, DownloadOutlined, PlusOutlined, UploadOutlined } from "@ant-design/icons";
 import { useRef, useState } from "react";
 import type { ColumnsType } from "antd/es/table";
 
-import { isClientScopedUser } from "@/lib/auth/dashboard-access";
+import { getSessionToken } from "@/lib/client/backend-api";
 import { useMounted } from "@/lib/client/use-mounted";
+import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { useAuthState } from "@/providers/authProvider";
 import { type IDocumentItem } from "@/providers/domainSeeds";
 import { useClientState } from "@/providers/clientProvider";
@@ -28,44 +29,25 @@ const formatFileSize = (sizeInBytes: number) => {
   return `${(sizeInBytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-const inferDocumentType = (file: File) => {
-  const extension = file.name.split(".").pop()?.trim().toUpperCase();
-
-  if (extension) {
-    return extension;
-  }
-
-  if (file.type) {
-    return file.type;
-  }
-
-  return "FILE";
-};
-
-const readFileAsDataUrl = (file: File) =>
-  new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(new Error("The selected file could not be read."));
-    reader.readAsDataURL(file);
-  });
-
 export function DocumentsPanel() {
+  const [messageApi, contextHolder] = message.useMessage();
   const { user } = useAuthState();
   const { clients } = useClientState();
-  const { documents } = useDocumentState();
+  const { documents, isLoading } = useDocumentState();
   const { addDocument, deleteDocument } = useDocumentActions();
   const mounted = useMounted();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [activeDownloadId, setActiveDownloadId] = useState<string | null>(null);
+  const [activeDeleteId, setActiveDeleteId] = useState<string | null>(null);
   const [form] = Form.useForm<DocumentFormValues>();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isScopedClient = isClientScopedUser(user?.clientIds);
   const availableClients = isScopedClient
     ? clients.filter((client) => user?.clientIds?.includes(client.id))
     : clients;
+
   const columns: ColumnsType<IDocumentItem> = [
     { dataIndex: "name", key: "name", title: "File name" },
     ...(!isScopedClient
@@ -91,9 +73,9 @@ export function DocumentsPanel() {
       render: (_: unknown, record: IDocumentItem) => (
         <Space>
           <Button
-            disabled={!record.dataUrl}
             icon={<DownloadOutlined />}
-            onClick={() => handleDownload(record)}
+            loading={activeDownloadId === record.id}
+            onClick={() => void handleDownload(record)}
             size="small"
             type="text"
           />
@@ -101,7 +83,8 @@ export function DocumentsPanel() {
             <Button
               danger
               icon={<DeleteOutlined />}
-              onClick={() => deleteDocument(record.id)}
+              loading={activeDeleteId === record.id}
+              onClick={() => void handleDelete(record.id)}
               size="small"
               type="text"
             />
@@ -128,42 +111,80 @@ export function DocumentsPanel() {
   };
 
   const handleUpload = async (values: DocumentFormValues) => {
-    if (!selectedFile) {
+    if (!selectedFile || !values.clientId) {
       return;
     }
 
     setIsSaving(true);
 
-    const dataUrl = await readFileAsDataUrl(selectedFile);
-    addDocument({
-      id: Date.now().toString(),
-      clientId: values.clientId,
-      dataUrl,
-      mimeType: selectedFile.type || undefined,
-      name: selectedFile.name,
-      size: formatFileSize(selectedFile.size),
-      type: inferDocumentType(selectedFile),
-      uploadedDate: new Date().toISOString().split("T")[0],
-    });
-    closeModal();
+    try {
+      await addDocument({
+        clientId: values.clientId,
+        file: selectedFile,
+      });
+      closeModal();
+      messageApi.success("Document uploaded.");
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Document upload failed.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleDownload = (document: IDocumentItem) => {
-    if (!document.dataUrl) {
-      return;
-    }
+  const handleDelete = async (id: string) => {
+    setActiveDeleteId(id);
 
-    const link = window.document.createElement("a");
-    link.href = document.dataUrl;
-    link.download = document.name;
-    link.rel = "noreferrer";
-    window.document.body.appendChild(link);
-    link.click();
-    window.document.body.removeChild(link);
+    try {
+      await deleteDocument(id);
+      messageApi.success("Document deleted.");
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Document delete failed.");
+    } finally {
+      setActiveDeleteId(null);
+    }
+  };
+
+  const handleDownload = async (document: IDocumentItem) => {
+    setActiveDownloadId(document.id);
+
+    try {
+      const headers = new Headers();
+      const token = getSessionToken();
+
+      if (token) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+
+      const response = await fetch(`/api/backend/api/Documents/${document.id}/download`, {
+        credentials: "same-origin",
+        headers,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Download failed with status ${response.status}.`);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = window.document.createElement("a");
+
+      link.href = objectUrl;
+      link.download = document.name;
+      link.rel = "noreferrer";
+      window.document.body.appendChild(link);
+      link.click();
+      window.document.body.removeChild(link);
+      window.URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Document download failed.");
+    } finally {
+      setActiveDownloadId(null);
+    }
   };
 
   return (
     <div className="space-y-4">
+      {contextHolder}
       <div className="flex justify-between items-center">
         <Typography.Title className="!m-0" level={4}>
           Documents ({documents.length})
@@ -174,15 +195,14 @@ export function DocumentsPanel() {
           </Button>
         ) : null}
       </div>
-      {documents.length === 0 ? (
+      {isLoading ? (
+        <div className="flex justify-center py-12">
+          <Spin />
+        </div>
+      ) : documents.length === 0 ? (
         <Empty description="No documents yet" />
       ) : (
-        <Table
-          columns={columns}
-          dataSource={documents}
-          pagination={false}
-          rowKey="id"
-        />
+        <Table columns={columns} dataSource={documents} pagination={false} rowKey="id" />
       )}
       {!isScopedClient && mounted ? (
         <Modal
@@ -208,10 +228,10 @@ export function DocumentsPanel() {
               />
             </Form.Item>
             <Form.Item
+              help={selectedFile ? `${selectedFile.name} selected` : "Choose a file to upload."}
               label="File"
               required
               validateStatus={selectedFile ? undefined : "error"}
-              help={selectedFile ? `${selectedFile.name} selected` : "Choose a file to upload."}
             >
               <input
                 hidden
@@ -220,10 +240,7 @@ export function DocumentsPanel() {
                 type="file"
               />
               <Space direction="vertical" size={8}>
-                <Button
-                  icon={<UploadOutlined />}
-                  onClick={() => fileInputRef.current?.click()}
-                >
+                <Button icon={<UploadOutlined />} onClick={() => fileInputRef.current?.click()}>
                   Choose file
                 </Button>
                 {selectedFile ? (
