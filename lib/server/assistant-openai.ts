@@ -3633,7 +3633,7 @@ const shouldRunConfirmedMessageSendWorkflow = (
   isConfirmationMessage(latestUserMessage) &&
   Boolean(getRecentPendingMessageSendRequest(messages, workspace));
 
-const createConfirmedMessageSendResult = (
+const createConfirmedMessageSendResult = async (
   workspace: IAssistantWorkspace,
   messages: AssistantMessage[],
 ) => {
@@ -3641,6 +3641,70 @@ const createConfirmedMessageSendResult = (
 
   if (!pendingRequest?.recipientName || !pendingRequest.content) {
     return null;
+  }
+
+  const title = pendingRequest.subject ?? buildMessageSubject(pendingRequest.recipientName);
+
+  if (isClientScopedUser(workspace.clientIds)) {
+    const clientId =
+      pendingRequest.clientId ??
+      workspace.clientIds?.[0] ??
+      workspace.salesData.clients[0]?.id ??
+      null;
+
+    if (!clientId) {
+      throw new Error("No client workspace is linked to this account.");
+    }
+
+    const serviceRequest = await createServiceRequestForWorkspace(workspace, {
+      clientId,
+      description: pendingRequest.content,
+      priority: "medium",
+      requestType: "service_request",
+      source: "client_portal",
+      title,
+    });
+
+    workspace.serviceRequests = [
+      serviceRequest,
+      ...workspace.serviceRequests.filter((item) => item.id !== serviceRequest.id),
+    ];
+
+    return {
+      message:
+        `Submitted ${serviceRequest.title} to the account team as a shared request.` +
+        ` Both sides can now continue on the same request thread.`,
+      mode: "workflow" as const,
+      model: "client-request-message-workflow",
+      reason:
+        "Confirmed client-scoped message send executed as a shared service request so internal users can see it.",
+      mutations: [
+        {
+          entityId: serviceRequest.id,
+          entityType: "note" as const,
+          operation: "create" as const,
+          record: serviceRequest as unknown as Record<string, unknown>,
+          title: serviceRequest.title,
+        },
+      ] satisfies AssistantMutation[],
+      trace: [
+        {
+          arguments: {
+            clientId,
+            content: pendingRequest.content,
+            recipientId: pendingRequest.recipientId,
+            recipientName: pendingRequest.recipientName,
+            title: serviceRequest.title,
+          },
+          outputPreview: createTracePreview({
+            clientId,
+            requestId: serviceRequest.id,
+            requestTitle: serviceRequest.title,
+          }),
+          tool: "message_send_as_service_request_workflow",
+        },
+      ] satisfies AssistantTraceStep[],
+    };
   }
 
   const actor = createAssistantActor(workspace);
@@ -3652,10 +3716,10 @@ const createConfirmedMessageSendResult = (
     kind: "client_message",
     representativeId: pendingRequest.recipientId ?? undefined,
     representativeName: pendingRequest.recipientName,
-    source: isClientScopedUser(workspace.clientIds) ? "client_portal" : "workspace",
+    source: "workspace",
     status: "Sent",
     submittedBy: workspace.userEmail ?? undefined,
-    title: pendingRequest.subject ?? buildMessageSubject(pendingRequest.recipientName),
+    title,
   });
 
   workspace.notes = listMockNotes(workspace.tenantId);
@@ -3681,12 +3745,12 @@ const createConfirmedMessageSendResult = (
           content: pendingRequest.content,
           recipientId: pendingRequest.recipientId,
           recipientName: pendingRequest.recipientName,
-          subject: note.title,
+          subject: title,
         },
         outputPreview: createTracePreview({
           content: pendingRequest.content,
           recipientName: pendingRequest.recipientName,
-          title: note.title,
+          title,
         }),
         tool: "message_send_workflow",
       },
@@ -12099,7 +12163,7 @@ export const runSecureAssistant = async ({
     messages,
     workspace,
   )
-    ? createConfirmedMessageSendResult(workspace, messages)
+    ? await createConfirmedMessageSendResult(workspace, messages)
     : null;
 
   if (confirmedMessageSendResult) {
