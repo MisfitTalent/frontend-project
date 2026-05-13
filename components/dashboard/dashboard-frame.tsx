@@ -14,7 +14,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { backendRequest, coerceItems, getSessionToken } from "@/lib/client/backend-api";
+import { backendRequest, coerceItems } from "@/lib/client/backend-api";
 import { listServiceRequests } from "@/lib/client/service-request-api";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
 import { dashboardNavItems } from "@/constants/dashboard-nav";
@@ -83,7 +83,7 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
       return;
     }
 
-    if (!isAuthenticated && !getSessionToken()) {
+    if (!isAuthenticated) {
       router.replace("/login");
       return;
     }

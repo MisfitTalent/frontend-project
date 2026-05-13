@@ -14,8 +14,7 @@ import {
   buildUpdateOpportunityPayload,
   buildUpdateOpportunityStagePayload,
   coerceItems,
-  getSessionToken,
-  isMockSessionToken,
+  isStoredMockSession,
   mapBackendOpportunity,
 } from "@/lib/client/backend-api";
 import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
@@ -47,7 +46,7 @@ export default function OpportunityProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const { isAuthenticated, user } = useAuthState();
-  const isDemoMode = isMockSessionToken(getSessionToken());
+  const isDemoMode = isStoredMockSession();
   const role = getPrimaryUserRole(user?.roles);
   const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
   const isScopedClient = isClientScopedUser(user?.clientIds);
