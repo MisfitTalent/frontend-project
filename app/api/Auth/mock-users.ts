@@ -232,14 +232,28 @@ let nextId = deriveNextId();
 
 export const findUserByEmail = (email: string) => users.get(email.toLowerCase());
 
+export const findMockUserByEmail = (
+  email: string,
+  additionalUsers: IMockUser[] = [],
+) =>
+  additionalUsers.find((user) => user.email.toLowerCase() === email.toLowerCase()) ??
+  findUserByEmail(email);
+
 export const createMockToken = (email: string) =>
   `mock-token::${email.toLowerCase()}::${Date.now()}`;
 
-export const getUserFromToken = (token: string) => {
+export const getMockUserEmailFromToken = (token: string) => {
   const parts = token.split("::");
-  const email = parts[1];
+  return parts[1]?.toLowerCase() ?? "";
+};
 
-  return email ? findUserByEmail(email) : undefined;
+export const getUserFromToken = (
+  token: string,
+  additionalUsers: IMockUser[] = [],
+) => {
+  const email = getMockUserEmailFromToken(token);
+
+  return email ? findMockUserByEmail(email, additionalUsers) : undefined;
 };
 
 export const registerMockUser = ({
@@ -247,6 +261,7 @@ export const registerMockUser = ({
   firstName,
   lastName,
   password,
+  clientIds,
   role,
   tenantId,
   tenantName,
@@ -255,6 +270,7 @@ export const registerMockUser = ({
   firstName: string;
   lastName: string;
   password: string;
+  clientIds?: string[];
   role: MockUserRole;
   tenantId?: string;
   tenantName?: string;
@@ -275,7 +291,7 @@ export const registerMockUser = ({
     (normalizedTenantId ? findTenantNameById(normalizedTenantId) || normalizedTenantId : SHARED_DEMO_TENANT_NAME);
 
   const user: IMockUser = {
-    clientIds: [],
+    clientIds: clientIds ?? [],
     email: normalizedEmail,
     firstName,
     id: String(nextId++),
@@ -295,7 +311,7 @@ export const registerMockUser = ({
 
 export const updateMockUser = (
   email: string,
-  updates: Partial<Pick<IMockUser, "firstName" | "lastName" | "tenantName">>,
+  updates: Partial<Pick<IMockUser, "clientIds" | "firstName" | "lastName" | "tenantName">>,
 ) => {
   const normalizedEmail = email.toLowerCase();
   const existingUser = users.get(normalizedEmail);
@@ -306,6 +322,7 @@ export const updateMockUser = (
 
   const nextUser: IMockUser = {
     ...existingUser,
+    clientIds: updates.clientIds ?? existingUser.clientIds,
     firstName: updates.firstName ?? existingUser.firstName,
     lastName: updates.lastName ?? existingUser.lastName,
     tenantName: updates.tenantName ?? existingUser.tenantName,

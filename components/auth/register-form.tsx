@@ -6,7 +6,6 @@ import { useAuthActions, useAuthState } from "@/providers/authProvider";
 import { useStyles } from "./register-form.styles";
 
 type RegistrationScenario = "existing-tenant" | "new-tenant" | "shared-tenant";
-type RegistrationRole = "SalesRep" | "SalesManager" | "BusinessDevelopmentManager";
 
 type RegisterValues = {
   email: string;
@@ -14,7 +13,6 @@ type RegisterValues = {
   lastName: string;
   password: string;
   phoneNumber?: string;
-  role?: RegistrationRole;
   scenario: RegistrationScenario;
   tenantId?: string;
   tenantName?: string;
@@ -24,8 +22,15 @@ export const RegisterForm = () => {
   const { styles } = useStyles();
   const [form] = Form.useForm<RegisterValues>();
   const { register } = useAuthActions();
-  const { isError, isPending } = useAuthState();
+  const { errorMessage, isError, isPending } = useAuthState();
   const scenario = Form.useWatch("scenario", form) ?? "new-tenant";
+
+  const scenarioDescription =
+    scenario === "new-tenant"
+      ? "Create a client account and a client workspace for your organisation. Internal employee accounts should be created by an admin."
+      : scenario === "existing-tenant"
+        ? "Use this if someone has already given you a tenant ID and you need client access to that existing workspace."
+        : "Use the shared demo workspace for testing the product without creating a separate organisation.";
 
   const onFinish = async (values: RegisterValues) => {
     const { scenario: nextScenario, ...rest } = values;
@@ -33,7 +38,7 @@ export const RegisterForm = () => {
     if (nextScenario === "new-tenant") {
       await register({
         ...rest,
-        role: undefined,
+        role: "Client",
         tenantId: undefined,
         tenantName: values.tenantName,
       });
@@ -43,7 +48,7 @@ export const RegisterForm = () => {
     if (nextScenario === "existing-tenant") {
       await register({
         ...rest,
-        role: values.role,
+        role: "Client",
         tenantId: values.tenantId,
         tenantName: undefined,
       });
@@ -52,7 +57,7 @@ export const RegisterForm = () => {
 
     await register({
       ...rest,
-      role: values.role,
+      role: "Client",
       tenantId: undefined,
       tenantName: undefined,
     });
@@ -62,24 +67,24 @@ export const RegisterForm = () => {
     <Card className={styles.card}>
       <div className={styles.intro}>
         <Typography.Title level={2} className={styles.title}>
-          Create your workspace
+          Create your client account
         </Typography.Title>
         <Typography.Paragraph className={styles.mutedText}>
-          Create a new organisation, join an existing tenant, or use the shared test workspace.
+          Register for client access to messages, documents, proposals, contracts, profile, and assistant support.
         </Typography.Paragraph>
       </div>
 
       {isError ? (
         <Alert
           className={styles.alert}
-          message="We could not create your account right now."
+          message={errorMessage || "We could not create your account right now."}
           type="error"
         />
       ) : null}
 
       <Form
         form={form}
-        initialValues={{ role: "SalesRep", scenario: "new-tenant" }}
+        initialValues={{ scenario: "new-tenant" }}
         layout="vertical"
         onFinish={onFinish}
         requiredMark={false}
@@ -98,6 +103,12 @@ export const RegisterForm = () => {
             size="large"
           />
         </Form.Item>
+        <Typography.Paragraph className={styles.helperText}>
+          {scenarioDescription}
+        </Typography.Paragraph>
+        <Typography.Paragraph className={styles.helperText}>
+          Public signup creates client-scoped access only. Employee and admin accounts must be created internally by an administrator.
+        </Typography.Paragraph>
 
         <div className={styles.fieldsGrid}>
           <Form.Item
@@ -149,27 +160,6 @@ export const RegisterForm = () => {
             >
               <Input
                 placeholder="11111111-1111-1111-1111-111111111111"
-                size="large"
-              />
-            </Form.Item>
-          ) : null}
-
-          {scenario !== "new-tenant" ? (
-            <Form.Item
-              label="Role"
-              name="role"
-              rules={[{ message: "Role is required", required: true }]}
-            >
-              <Select
-                options={[
-                  { label: "Sales Rep", value: "SalesRep" },
-                  { label: "Sales Manager", value: "SalesManager" },
-                  {
-                    label: "Business Development Manager",
-                    value: "BusinessDevelopmentManager",
-                  },
-                ]}
-                placeholder="Choose a role"
                 size="large"
               />
             </Form.Item>

@@ -6,6 +6,7 @@ import { shouldUseUpstreamAuth } from "@/lib/server/auth-mode";
 import { createBackendUrl } from "@/lib/server/backend-url";
 import { syncMockUserWorkspaceProfile } from "@/lib/server/mock-workspace-store";
 
+import { readMockUsersFromCookies, upsertMockUserCookie } from "../mock-user-cookie";
 import { toAuthPayload, updateMockUser } from "../mock-users";
 import {
   AUTH_COOKIE_NAME,
@@ -16,9 +17,10 @@ import {
 export const GET = async (request: NextRequest) => {
   const authHeader = request.headers.get("authorization");
   const cookieToken = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+  const browserMockUsers = readMockUsersFromCookies(request.cookies);
   const token =
     authHeader?.replace(/^Bearer\s+/i, "").trim() || cookieToken || "";
-  const mockUser = token ? getUserFromSessionToken(token) : null;
+  const mockUser = token ? getUserFromSessionToken(token, browserMockUsers) : null;
 
   if (mockUser && token.startsWith("mock-token::")) {
     return NextResponse.json(sanitizeAuthPayload(toAuthPayload(mockUser)), {
@@ -67,9 +69,10 @@ export const GET = async (request: NextRequest) => {
 export const PATCH = async (request: NextRequest) => {
   const authHeader = request.headers.get("authorization");
   const cookieToken = request.cookies.get(AUTH_COOKIE_NAME)?.value;
+  const browserMockUsers = readMockUsersFromCookies(request.cookies);
   const token =
     authHeader?.replace(/^Bearer\s+/i, "").trim() || cookieToken || "";
-  const mockUser = token ? getUserFromSessionToken(token) : null;
+  const mockUser = token ? getUserFromSessionToken(token, browserMockUsers) : null;
   const body = (await request.json().catch(() => null)) as
     | { firstName?: unknown; lastName?: unknown; organizationName?: unknown }
     | null;
@@ -98,10 +101,13 @@ export const PATCH = async (request: NextRequest) => {
 
     syncMockUserWorkspaceProfile(updatedUser, { organizationName });
 
-    return NextResponse.json(
+    const response = NextResponse.json(
       sanitizeAuthPayload(toAuthPayload(updatedUser)),
       { status: 200 },
     );
+    upsertMockUserCookie(response.cookies, browserMockUsers, updatedUser);
+
+    return response;
   }
 
   if (!shouldUseUpstreamAuth()) {

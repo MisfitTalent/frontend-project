@@ -151,5 +151,8 @@ const getJwtUserFromToken = (token: string): IMockUser | null => {
   };
 };
 
-export const getUserFromSessionToken = (token: string): IMockUser | null =>
-  getUserFromToken(token) ?? getJwtUserFromToken(token) ?? null;
+export const getUserFromSessionToken = (
+  token: string,
+  additionalUsers: IMockUser[] = [],
+): IMockUser | null =>
+  getUserFromToken(token, additionalUsers) ?? getJwtUserFromToken(token) ?? null;

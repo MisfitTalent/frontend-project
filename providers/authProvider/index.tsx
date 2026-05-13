@@ -44,6 +44,18 @@ class AuthRequestError extends Error {
   }
 }
 
+const getErrorMessage = (error: unknown, fallback: string) => {
+  if (error instanceof AuthRequestError) {
+    return error.message || fallback;
+  }
+
+  if (error instanceof Error) {
+    return error.message || fallback;
+  }
+
+  return fallback;
+};
+
 export const useAuthState = () => {
   const context = useContext(AuthStateContext);
 
@@ -145,7 +157,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         );
       })
       .catch((error: unknown) => {
-        dispatch(loginError());
+        dispatch(loginError(getErrorMessage(error, "Unable to sign in.")));
         console.error(error);
       });
   };
@@ -165,7 +177,9 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         );
       })
       .catch((error: unknown) => {
-        dispatch(registerError());
+        dispatch(
+          registerError(getErrorMessage(error, "We could not create your account right now.")),
+        );
         console.error(error);
       });
   };

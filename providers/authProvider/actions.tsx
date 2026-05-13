@@ -23,6 +23,7 @@ export enum AuthActionEnums {
 export const loginPending = createAction<Partial<IAuthStateContext>>(
   AuthActionEnums.loginPending,
   () => ({
+    errorMessage: null,
     isError: false,
     isPending: true,
     isSuccess: false,
@@ -44,9 +45,13 @@ export const loginSuccess = createAction<
   }),
 );
 
-export const loginError = createAction<Partial<IAuthStateContext>>(
+export const loginError = createAction<
+  Partial<IAuthStateContext>,
+  string | undefined
+>(
   AuthActionEnums.loginError,
-  () => ({
+  (errorMessage?: string) => ({
+    errorMessage: errorMessage ?? "Unable to sign in.",
     isAuthenticated: false,
     isError: true,
     isPending: false,
@@ -58,6 +63,7 @@ export const loginError = createAction<Partial<IAuthStateContext>>(
 export const registerPending = createAction<Partial<IAuthStateContext>>(
   AuthActionEnums.registerPending,
   () => ({
+    errorMessage: null,
     isError: false,
     isPending: true,
     isSuccess: false,
@@ -79,9 +85,13 @@ export const registerSuccess = createAction<
   }),
 );
 
-export const registerError = createAction<Partial<IAuthStateContext>>(
+export const registerError = createAction<
+  Partial<IAuthStateContext>,
+  string | undefined
+>(
   AuthActionEnums.registerError,
-  () => ({
+  (errorMessage?: string) => ({
+    errorMessage: errorMessage ?? "Unable to create your account.",
     isAuthenticated: false,
     isError: true,
     isPending: false,
@@ -93,6 +103,7 @@ export const registerError = createAction<Partial<IAuthStateContext>>(
 export const logoutPending = createAction<Partial<IAuthStateContext>>(
   AuthActionEnums.logoutPending,
   () => ({
+    errorMessage: null,
     isAuthenticated: false,
     isError: false,
     isPending: true,
@@ -103,6 +114,7 @@ export const logoutPending = createAction<Partial<IAuthStateContext>>(
 export const logoutSuccess = createAction<Partial<IAuthStateContext>>(
   AuthActionEnums.logoutSuccess,
   () => ({
+    errorMessage: null,
     isAuthenticated: false,
     isError: false,
     isPending: false,
@@ -114,6 +126,7 @@ export const logoutSuccess = createAction<Partial<IAuthStateContext>>(
 export const logoutError = createAction<Partial<IAuthStateContext>>(
   AuthActionEnums.logoutError,
   () => ({
+    errorMessage: null,
     isAuthenticated: false,
     isError: true,
     isPending: false,
@@ -125,6 +138,7 @@ export const logoutError = createAction<Partial<IAuthStateContext>>(
 export const getMePending = createAction<Partial<IAuthStateContext>>(
   AuthActionEnums.getMePending,
   () => ({
+    errorMessage: null,
     isAuthenticated: false,
     isError: false,
     isPending: true,
@@ -138,6 +152,7 @@ export const getMeSuccess = createAction<
 >(
   AuthActionEnums.getMeSuccess,
   (user: IUserLoginResponse) => ({
+    errorMessage: null,
     isAuthenticated: true,
     isError: false,
     isPending: false,
@@ -149,6 +164,7 @@ export const getMeSuccess = createAction<
 export const getMeError = createAction<Partial<IAuthStateContext>>(
   AuthActionEnums.getMeError,
   () => ({
+    errorMessage: null,
     isAuthenticated: false,
     isError: true,
     isPending: false,

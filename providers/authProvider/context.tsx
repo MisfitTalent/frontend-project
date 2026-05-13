@@ -13,6 +13,7 @@ export type IUserRegisterRequest = AuthRegisterRequestDto;
 export type IUserLoginResponse = AuthSessionUser;
 
 export interface IAuthStateContext {
+  errorMessage?: string | null;
   isAuthenticated: boolean;
   isError: boolean;
   isPending: boolean;
@@ -28,6 +29,7 @@ export interface IAuthActionContext {
 }
 
 export const INITIAL_STATE: IAuthStateContext = {
+  errorMessage: null,
   isAuthenticated: false,
   isError: false,
   isPending: true,
