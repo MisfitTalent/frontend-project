@@ -163,6 +163,25 @@ export const createServiceRequest = async (payload: {
 export const getServiceRequestDetail = async (requestId: string) =>
   serviceRequestApi<ServiceRequestDetail>(`/api/service-requests/${requestId}`);
 
+export const updateServiceRequest = async (
+  requestId: string,
+  payload: {
+    description?: string;
+    priority?: ServiceRequestPriority;
+    requestType?: string;
+    title?: string;
+  },
+) =>
+  serviceRequestApi<ServiceRequestRecord>(`/api/service-requests/${requestId}`, {
+    body: JSON.stringify(payload),
+    method: "PATCH",
+  });
+
+export const deleteServiceRequest = async (requestId: string) =>
+  serviceRequestApi<ServiceRequestRecord>(`/api/service-requests/${requestId}`, {
+    method: "DELETE",
+  });
+
 export const createServiceRequestAssignments = async (
   requestId: string,
   payload: {
@@ -216,3 +235,26 @@ export const addServiceRequestMessage = async (
     body: JSON.stringify(payload),
     method: "POST",
   });
+
+export const updateServiceRequestMessage = async (
+  requestId: string,
+  messageId: string,
+  payload: {
+    content: string;
+  },
+) =>
+  serviceRequestApi<ServiceRequestDetail>(
+    `/api/service-requests/${requestId}/messages/${messageId}`,
+    {
+      body: JSON.stringify(payload),
+      method: "PATCH",
+    },
+  );
+
+export const deleteServiceRequestMessage = async (requestId: string, messageId: string) =>
+  serviceRequestApi<ServiceRequestDetail>(
+    `/api/service-requests/${requestId}/messages/${messageId}`,
+    {
+      method: "DELETE",
+    },
+  );

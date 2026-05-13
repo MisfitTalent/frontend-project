@@ -81,8 +81,10 @@ import {
   attachProposalToServiceRequest,
   createServiceRequest,
   createServiceRequestAssignments,
+  deleteServiceRequest,
   getServiceRequestDetail,
   markServiceRequestUnderReview,
+  updateServiceRequest,
 } from "@/lib/server/service-request-store";
 import {
   applyLiveServiceRequestClientDecision,
@@ -91,8 +93,10 @@ import {
   attachLiveProposalToServiceRequest,
   createLiveServiceRequest,
   createLiveServiceRequestAssignments,
+  deleteLiveServiceRequest,
   getLiveServiceRequestDetail,
   markLiveServiceRequestUnderReview,
+  updateLiveServiceRequest,
 } from "@/lib/server/service-request-backend-store";
 
 export type AssistantMessage = {
@@ -7531,6 +7535,9 @@ const createToolset = (
     "create_pricing_request",
     "update_pricing_request",
     "delete_pricing_request",
+    "create_service_request",
+    "update_service_request",
+    "delete_service_request",
     "create_note",
     "create_message",
     "update_note",
@@ -8219,6 +8226,70 @@ const createToolset = (
     );
   };
 
+  const findServiceRequestByReference = (reference: unknown) => {
+    if (typeof reference !== "string" || !reference.trim()) {
+      return null;
+    }
+
+    const normalizedReference = normalizeLookupValue(reference);
+
+    return (
+      workspace.serviceRequests.find(
+        (request) => normalizeLookupValue(request.id) === normalizedReference,
+      ) ??
+      workspace.serviceRequests.find(
+        (request) => normalizeLookupValue(request.title) === normalizedReference,
+      ) ??
+      workspace.serviceRequests.find((request) =>
+        [request.title, request.description, request.requestType]
+          .filter(Boolean)
+          .some((value) => normalizeLookupValue(String(value)).includes(normalizedReference)),
+      ) ??
+      null
+    );
+  };
+
+  const resolveServiceRequest = (
+    args: Record<string, unknown>,
+    options?: { allowRecentFallback?: boolean },
+  ) => {
+    const directRequest =
+      findServiceRequestByReference(args.requestId) ??
+      findServiceRequestByReference(args.requestTitle) ??
+      findServiceRequestByReference(args.title);
+
+    if (directRequest) {
+      return directRequest;
+    }
+
+    if (options?.allowRecentFallback) {
+      const recentRequest = workspace.serviceRequests[0] ?? null;
+
+      if (recentRequest) {
+        return recentRequest;
+      }
+    }
+
+    throw new Error(
+      "No matching service request was found in your current workspace. Provide a valid request title or id.",
+    );
+  };
+
+  const ensureMessageMutationAccess = (note: (typeof notes)[number]) => {
+    if (!isClientScopedActor) {
+      return;
+    }
+
+    const ownsMessage =
+      note.kind === "client_message" &&
+      note.source === "client_portal" &&
+      note.submittedBy === workspace.userEmail;
+
+    if (!ownsMessage) {
+      throw new Error("Clients can only update or delete their own sent messages.");
+    }
+  };
+
   const resolveOpportunityReferences = (references: unknown) => {
     if (!Array.isArray(references)) {
       return [];
@@ -8701,6 +8772,55 @@ const createToolset = (
         properties: {
           pricingRequestId: { type: "string" },
           pricingRequestTitle: { type: "string" },
+          title: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Create a client request or service request when the user explicitly asks to submit a request to the workspace or account team.",
+      name: "create_service_request",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          clientId: { type: "string" },
+          clientName: { type: "string" },
+          description: { type: "string" },
+          priority: { type: "string" },
+          requestType: { type: "string" },
+          title: { type: "string" },
+        },
+        required: ["description", "title"],
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Update an existing client request when the user explicitly asks to change its title, details, priority, or request type.",
+      name: "update_service_request",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          description: { type: "string" },
+          priority: { type: "string" },
+          requestId: { type: "string" },
+          requestTitle: { type: "string" },
+          requestType: { type: "string" },
+          title: { type: "string" },
+        },
+        type: "object",
+      },
+    },
+    {
+      description:
+        "Delete an existing client request when the user explicitly asks to remove it from the workspace queue.",
+      name: "delete_service_request",
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          requestId: { type: "string" },
+          requestTitle: { type: "string" },
           title: { type: "string" },
         },
         type: "object",
@@ -10023,6 +10143,135 @@ const createToolset = (
           },
         };
       }
+      case "create_service_request": {
+        const client =
+          hasValueReference(args.clientId) ||
+          hasValueReference(args.clientName) ||
+          hasValueReference(args.organizationName) ||
+          hasValueReference(args.accountName)
+            ? resolveClient(args, { allowRecentFallback: true })
+            : isClientScopedActor && workspace.clientIds?.[0]
+              ? salesData.clients.find((item) => item.id === workspace.clientIds?.[0]) ?? null
+              : null;
+
+        if (!client) {
+          throw new Error(
+            "No matching client was found for this request. Provide a valid client name first.",
+          );
+        }
+
+        const requestInput = {
+          clientId: client.id,
+          description: String(args.description ?? "").trim(),
+          priority:
+            typeof args.priority === "string" &&
+            ["low", "medium", "high", "critical"].includes(args.priority)
+              ? (args.priority as "low" | "medium" | "high" | "critical")
+              : "medium",
+          requestType:
+            typeof args.requestType === "string" && args.requestType.trim().length > 0
+              ? args.requestType.trim()
+              : "service_request",
+          source: (isClientScopedActor ? "client_portal" : "workspace") as
+            | "client_portal"
+            | "workspace",
+          title: String(args.title ?? "").trim(),
+        };
+
+        if (!requestInput.title || !requestInput.description) {
+          throw new Error("A service request needs both a title and a description.");
+        }
+
+        const serviceRequest =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await createLiveServiceRequest(actor, workspace.sessionToken, requestInput)
+            : createServiceRequest(actor, requestInput);
+
+        workspace.serviceRequests = [serviceRequest, ...workspace.serviceRequests.filter(
+          (item) => item.id !== serviceRequest.id,
+        )];
+
+        return {
+          mutation: {
+            entityId: serviceRequest.id,
+            entityType: "note" as const,
+            operation: "create" as const,
+            record: serviceRequest as unknown as Record<string, unknown>,
+            title: serviceRequest.title,
+          },
+          serviceRequest,
+        };
+      }
+      case "update_service_request": {
+        const existingRequest = resolveServiceRequest(args, { allowRecentFallback: true });
+        const serviceRequest =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await updateLiveServiceRequest(actor, workspace.sessionToken, existingRequest.id, {
+                description:
+                  typeof args.description === "string" ? args.description : undefined,
+                priority:
+                  typeof args.priority === "string" &&
+                  ["low", "medium", "high", "critical"].includes(args.priority)
+                    ? (args.priority as "low" | "medium" | "high" | "critical")
+                    : undefined,
+                requestType:
+                  typeof args.requestType === "string" ? args.requestType : undefined,
+                title: typeof args.title === "string" ? args.title : undefined,
+              })
+            : updateServiceRequest(actor, existingRequest.id, {
+                description:
+                  typeof args.description === "string" ? args.description : undefined,
+                priority:
+                  typeof args.priority === "string" &&
+                  ["low", "medium", "high", "critical"].includes(args.priority)
+                    ? (args.priority as "low" | "medium" | "high" | "critical")
+                    : undefined,
+                requestType:
+                  typeof args.requestType === "string" ? args.requestType : undefined,
+                title: typeof args.title === "string" ? args.title : undefined,
+              });
+
+        workspace.serviceRequests = workspace.serviceRequests
+          .filter((item) => item.id !== serviceRequest.id)
+          .concat(serviceRequest);
+
+        return {
+          mutation: {
+            entityId: serviceRequest.id,
+            entityType: "note" as const,
+            operation: "update" as const,
+            record: serviceRequest as unknown as Record<string, unknown>,
+            title: serviceRequest.title,
+          },
+          serviceRequest,
+        };
+      }
+      case "delete_service_request": {
+        const serviceRequest = resolveServiceRequest(args, { allowRecentFallback: true });
+
+        if (workspace.isLiveBackend && workspace.sessionToken) {
+          await deleteLiveServiceRequest(actor, workspace.sessionToken, serviceRequest.id);
+        } else {
+          deleteServiceRequest(actor, serviceRequest.id);
+        }
+
+        workspace.serviceRequests = workspace.serviceRequests.filter(
+          (item) => item.id !== serviceRequest.id,
+        );
+
+        return {
+          deletedServiceRequest: {
+            id: serviceRequest.id,
+            title: serviceRequest.title,
+          },
+          mutation: {
+            entityId: serviceRequest.id,
+            entityType: "note" as const,
+            operation: "delete" as const,
+            title: serviceRequest.title,
+          },
+        };
+      }
       case "create_note": {
         const client =
           hasValueReference(args.clientId) ||
@@ -10263,29 +10512,97 @@ const createToolset = (
         };
       }
       case "update_message": {
-        const message = await runTool(
-          "update_note",
-          JSON.stringify({
-            ...args,
+        const existingMessage = resolveNote(
+          {
             noteId: args.noteId ?? args.messageId,
             noteTitle: args.noteTitle ?? args.messageTitle ?? args.title,
             title: args.subject ?? args.title,
-          }),
+          },
+          { allowRecentFallback: true },
         );
+        ensureMessageMutationAccess(existingMessage);
+        const note =
+          workspace.isLiveBackend && workspace.sessionToken
+            ? await updateLiveNote(workspace.sessionToken, {
+                ...existingMessage,
+                content:
+                  typeof args.content === "string" ? args.content : existingMessage.content,
+                status:
+                  typeof args.status === "string" &&
+                  ["Acknowledged", "Sent"].includes(args.status)
+                    ? (args.status as "Acknowledged" | "Sent")
+                    : existingMessage.status,
+                title:
+                  typeof args.subject === "string"
+                    ? args.subject
+                    : typeof args.title === "string"
+                      ? args.title
+                      : existingMessage.title,
+              })
+            : updateMockNote(workspace.tenantId, existingMessage.id, {
+                content: typeof args.content === "string" ? args.content : undefined,
+                status:
+                  typeof args.status === "string" &&
+                  ["Acknowledged", "Sent"].includes(args.status)
+                    ? (args.status as "Acknowledged" | "Sent")
+                    : undefined,
+                title:
+                  typeof args.subject === "string"
+                    ? args.subject
+                    : typeof args.title === "string"
+                      ? args.title
+                      : undefined,
+              });
 
-        return message;
+        if (!note) {
+          throw new Error("The message could not be updated.");
+        }
+
+        workspace.notes = workspace.isLiveBackend
+          ? workspace.notes.filter((item) => item.id !== note.id).concat(note)
+          : listMockNotes(workspace.tenantId);
+
+        return {
+          message: note,
+          mutation: {
+            entityId: note.id,
+            entityType: "note" as const,
+            operation: "update" as const,
+            record: note as unknown as Record<string, unknown>,
+            title: note.title,
+          },
+        };
       }
       case "delete_message": {
-        const message = await runTool(
-          "delete_note",
-          JSON.stringify({
-            ...args,
+        const message = resolveNote(
+          {
             noteId: args.noteId ?? args.messageId,
             noteTitle: args.noteTitle ?? args.messageTitle ?? args.title,
-          }),
+            title: args.title,
+          },
+          { allowRecentFallback: true },
         );
+        ensureMessageMutationAccess(message);
 
-        return message;
+        if (workspace.isLiveBackend && workspace.sessionToken) {
+          await deleteLiveNote(workspace.sessionToken, message.id);
+        } else {
+          deleteMockNote(workspace.tenantId, message.id);
+        }
+        workspace.notes = workspace.notes.filter((item) => item.id !== message.id);
+
+        return {
+          deletedMessage: {
+            id: message.id,
+            title: message.title,
+          },
+          mutation: {
+            entityId: message.id,
+            entityType: "note" as const,
+            operation: "delete" as const,
+            title: message.title,
+          },
+        };
       }
       case "delete_opportunity": {
         const opportunity = resolveOpportunity(args, {
@@ -10472,7 +10789,12 @@ const createToolset = (
           "list_proposals",
           "list_follow_ups",
           "search_workspace_records",
+          "create_service_request",
+          "update_service_request",
+          "delete_service_request",
           "create_message",
+          "update_message",
+          "delete_message",
         ].includes(tool.name),
       );
 
@@ -10510,34 +10832,61 @@ async function createConfirmedGenericMutationLocalResult(
 
   const resultRecord = output as Record<string, unknown>;
   const responseMessage = (() => {
-    switch (localRequest.toolName) {
-      case "delete_client":
-        return `Deleted client ${String(mutation.title ?? "Untitled client")}.`;
-      case "delete_opportunity":
-        return `Deleted opportunity ${String(mutation.title ?? "Untitled opportunity")}.`;
-      case "delete_proposal":
-        return `Deleted proposal ${String(mutation.title ?? "Untitled proposal")}.`;
-      case "create_note":
-        return `Created note ${String(mutation.title ?? "Untitled note")}.`;
-      case "update_note":
-        return `Updated note ${String(mutation.title ?? "Untitled note")}.`;
-      case "delete_note":
-        return `Deleted note ${String(mutation.title ?? "Untitled note")}.`;
-      case "create_pricing_request":
-        return `Created pricing request ${String(mutation.title ?? "Untitled pricing request")}.`;
-      case "update_pricing_request":
-        return `Updated pricing request ${String(mutation.title ?? "Untitled pricing request")}.`;
-      case "delete_pricing_request":
-        return `Deleted pricing request ${String(mutation.title ?? "Untitled pricing request")}.`;
-      case "create_activity":
-        return `Created follow-up ${String(mutation.title ?? "Untitled activity")}.`;
-      case "update_activity":
-        return `Updated follow-up ${String(mutation.title ?? "Untitled activity")}.`;
-      case "delete_activity":
-        return `Deleted follow-up ${String(mutation.title ?? "Untitled activity")}.`;
-      default:
-        return "Completed the requested workspace change.";
+    const toolName = String(localRequest.toolName);
+
+    if (toolName === "delete_client") {
+      return `Deleted client ${String(mutation.title ?? "Untitled client")}.`;
     }
+    if (toolName === "delete_opportunity") {
+      return `Deleted opportunity ${String(mutation.title ?? "Untitled opportunity")}.`;
+    }
+    if (toolName === "delete_proposal") {
+      return `Deleted proposal ${String(mutation.title ?? "Untitled proposal")}.`;
+    }
+    if (toolName === "create_service_request") {
+      return `Created request ${String(mutation.title ?? "Untitled request")}.`;
+    }
+    if (toolName === "update_service_request") {
+      return `Updated request ${String(mutation.title ?? "Untitled request")}.`;
+    }
+    if (toolName === "delete_service_request") {
+      return `Deleted request ${String(mutation.title ?? "Untitled request")}.`;
+    }
+    if (toolName === "create_note") {
+      return `Created note ${String(mutation.title ?? "Untitled note")}.`;
+    }
+    if (toolName === "update_note") {
+      return `Updated note ${String(mutation.title ?? "Untitled note")}.`;
+    }
+    if (toolName === "delete_note") {
+      return `Deleted note ${String(mutation.title ?? "Untitled note")}.`;
+    }
+    if (toolName === "update_message") {
+      return `Updated message ${String(mutation.title ?? "Untitled message")}.`;
+    }
+    if (toolName === "delete_message") {
+      return `Deleted message ${String(mutation.title ?? "Untitled message")}.`;
+    }
+    if (toolName === "create_pricing_request") {
+      return `Created pricing request ${String(mutation.title ?? "Untitled pricing request")}.`;
+    }
+    if (toolName === "update_pricing_request") {
+      return `Updated pricing request ${String(mutation.title ?? "Untitled pricing request")}.`;
+    }
+    if (toolName === "delete_pricing_request") {
+      return `Deleted pricing request ${String(mutation.title ?? "Untitled pricing request")}.`;
+    }
+    if (toolName === "create_activity") {
+      return `Created follow-up ${String(mutation.title ?? "Untitled activity")}.`;
+    }
+    if (toolName === "update_activity") {
+      return `Updated follow-up ${String(mutation.title ?? "Untitled activity")}.`;
+    }
+    if (toolName === "delete_activity") {
+      return `Deleted follow-up ${String(mutation.title ?? "Untitled activity")}.`;
+    }
+
+    return "Completed the requested workspace change.";
   })();
 
   return {
@@ -10762,6 +11111,16 @@ const filterGeminiToolDefinitions = (
     selected.add("create_message");
     selected.add("update_message");
     selected.add("delete_message");
+  }
+
+  if (
+    normalized.includes("request") ||
+    normalized.includes("service request") ||
+    normalized.includes("account team")
+  ) {
+    selected.add("create_service_request");
+    selected.add("update_service_request");
+    selected.add("delete_service_request");
   }
 
   if (

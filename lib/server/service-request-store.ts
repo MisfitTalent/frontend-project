@@ -280,6 +280,19 @@ const requireClientUser = (user: IMockUser) => {
   }
 };
 
+const canManageRequest = (user: IMockUser, request: ServiceRequestRecord) =>
+  isInternalUser(user) || request.submittedByUserId === user.id;
+
+const canManageMessageEvent = (
+  user: IMockUser,
+  request: ServiceRequestRecord,
+  event: WorkflowEventRecord,
+) =>
+  isInternalUser(user) ||
+  (event.eventType === "service_request_message_added" &&
+    event.actorUserId === user.id &&
+    canManageRequest(user, request));
+
 const toServiceRequestDetail = (
   state: ServiceRequestState,
   request: ServiceRequestRecord,
@@ -860,6 +873,145 @@ export const addServiceRequestMessage = (
     representativeNames,
     representativeUserIds,
   });
+
+  return getServiceRequestDetail(user, requestId);
+};
+
+export const updateServiceRequest = (
+  user: IMockUser,
+  requestId: string,
+  input: {
+    description?: string;
+    priority?: ServiceRequestPriority;
+    requestType?: string;
+    title?: string;
+  },
+) => {
+  const { request, state } = getVisibleRequestOrThrow(user, requestId);
+
+  if (!canManageRequest(user, request)) {
+    throw new Error("You do not have access to update this service request.");
+  }
+
+  const title = typeof input.title === "string" ? input.title.trim() : request.title;
+  const description =
+    typeof input.description === "string" ? input.description.trim() : request.description;
+  const requestType =
+    typeof input.requestType === "string" && input.requestType.trim().length > 0
+      ? input.requestType.trim()
+      : request.requestType;
+  const priority = input.priority ?? request.priority;
+
+  if (!title || !description) {
+    throw new Error("title and description are required.");
+  }
+
+  const updated = updateRequestRecord(state, request.id, {
+    description,
+    priority,
+    requestType,
+    title,
+  });
+
+  if (!updated) {
+    throw new Error("Service request not found.");
+  }
+
+  appendEvent(state, updated, user, "service_request_updated", {
+    description,
+    priority,
+    requestType,
+    title,
+  });
+
+  return clone(updated);
+};
+
+export const deleteServiceRequest = (user: IMockUser, requestId: string) => {
+  const { request, state } = getVisibleRequestOrThrow(user, requestId);
+
+  if (!canManageRequest(user, request)) {
+    throw new Error("You do not have access to delete this service request.");
+  }
+
+  state.requests = state.requests.filter((item) => item.id !== request.id);
+  state.assignments = state.assignments.filter(
+    (assignment) => assignment.serviceRequestId !== request.id,
+  );
+  state.events = state.events.filter((event) => event.serviceRequestId !== request.id);
+  persistServiceRequestStore();
+
+  return clone(request);
+};
+
+export const updateServiceRequestMessage = (
+  user: IMockUser,
+  requestId: string,
+  messageId: string,
+  input: {
+    content: string;
+  },
+) => {
+  const content = input.content.trim();
+
+  if (!content) {
+    throw new Error("Message content is required.");
+  }
+
+  const { request, state } = getVisibleRequestOrThrow(user, requestId);
+  const eventIndex = state.events.findIndex(
+    (event) =>
+      event.id === messageId &&
+      event.serviceRequestId === request.id &&
+      event.eventType === "service_request_message_added",
+  );
+
+  if (eventIndex < 0) {
+    throw new Error("Service request message not found.");
+  }
+
+  const event = state.events[eventIndex];
+
+  if (!canManageMessageEvent(user, request, event)) {
+    throw new Error("You do not have access to update this service request message.");
+  }
+
+  state.events[eventIndex] = {
+    ...event,
+    payloadJson: {
+      ...event.payloadJson,
+      content,
+      editedAt: nowIso(),
+    },
+  };
+  persistServiceRequestStore();
+
+  return getServiceRequestDetail(user, requestId);
+};
+
+export const deleteServiceRequestMessage = (
+  user: IMockUser,
+  requestId: string,
+  messageId: string,
+) => {
+  const { request, state } = getVisibleRequestOrThrow(user, requestId);
+  const event = state.events.find(
+    (item) =>
+      item.id === messageId &&
+      item.serviceRequestId === request.id &&
+      item.eventType === "service_request_message_added",
+  );
+
+  if (!event) {
+    throw new Error("Service request message not found.");
+  }
+
+  if (!canManageMessageEvent(user, request, event)) {
+    throw new Error("You do not have access to delete this service request message.");
+  }
+
+  state.events = state.events.filter((item) => item.id !== messageId);
+  persistServiceRequestStore();
 
   return getServiceRequestDetail(user, requestId);
 };

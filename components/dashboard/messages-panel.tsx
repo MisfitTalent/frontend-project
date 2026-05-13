@@ -27,12 +27,16 @@ import {
   addServiceRequestMessage,
   applyServiceRequestRepresentativeDecision,
   createServiceRequestAssignments,
+  deleteServiceRequest,
+  deleteServiceRequestMessage,
   getServiceRequestDetail,
   listServiceRequests,
   type ServiceRequestMessageRecipientType,
   type ServiceRequestAssignmentRecord,
   type ServiceRequestDetail,
   type ServiceRequestRecord,
+  updateServiceRequest,
+  updateServiceRequestMessage,
 } from "@/lib/client/service-request-api";
 import { clearSessionDraft } from "@/lib/client/session-drafts";
 import { useMounted } from "@/lib/client/use-mounted";
@@ -68,6 +72,12 @@ type MessageFormValues = {
 type AssignmentFormValues = {
   representativeIds: string[];
 };
+
+type ReplyComposerMode =
+  | "create_note_reply"
+  | "create_service_request_reply"
+  | "edit_service_request"
+  | "edit_service_request_reply";
 
 const createMessageId = () =>
   `workspace-message-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -164,6 +174,15 @@ const getServiceRequestMessageRecipientSummary = (payload: Record<string, unknow
   return "To client";
 };
 
+const getLatestEditableServiceRequestMessage = (
+  detail: ServiceRequestDetail | null | undefined,
+  userId: string | undefined,
+) =>
+  detail?.events.find(
+    (event) =>
+      event.eventType === "service_request_message_added" && event.actorUserId === userId,
+  ) ?? null;
+
 type MessagePanelContentProps = Readonly<{
   initialClientId: string;
   initialRepresentativeId: string;
@@ -199,6 +218,11 @@ function MessagesPanelContent({
   const [activeServiceRequest, setActiveServiceRequest] = useState<ServiceRequestRecord | null>(
     null,
   );
+  const [activeServiceRequestMessageId, setActiveServiceRequestMessageId] = useState<string | null>(
+    null,
+  );
+  const [replyComposerMode, setReplyComposerMode] =
+    useState<ReplyComposerMode>("create_note_reply");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [serviceRequests, setServiceRequests] = useState<ServiceRequestRecord[]>([]);
   const [serviceRequestDetailsById, setServiceRequestDetailsById] = useState<
@@ -461,6 +485,14 @@ function MessagesPanelContent({
       ) ?? null
     );
   }, [selectedServiceRequestDetail, user]);
+  const selectedEditableServiceRequestMessage = useMemo(
+    () =>
+      getLatestEditableServiceRequestMessage(
+        selectedServiceRequestDetail,
+        user?.userId,
+      ),
+    [selectedServiceRequestDetail, user?.userId],
+  );
   const activeServiceRequestSummary = useMemo(() => {
     if (!activeServiceRequest) {
       return null;
@@ -563,6 +595,7 @@ function MessagesPanelContent({
       subject: note ? `Re: ${note.title}` : "Client follow-up",
     });
     setActiveThread(note ?? null);
+    setReplyComposerMode("create_note_reply");
     setIsReplyModalOpen(true);
   };
 
@@ -581,6 +614,56 @@ function MessagesPanelContent({
     });
     setActiveThread(null);
     setActiveServiceRequest(request);
+    setActiveServiceRequestMessageId(null);
+    setReplyComposerMode("create_service_request_reply");
+    setIsReplyModalOpen(true);
+  };
+
+  const openServiceRequestEditComposer = (request: ServiceRequestRecord) => {
+    replyForm.setFieldsValue({
+      clientId: request.clientId,
+      content: request.description,
+      recipientType: "client",
+      representativeId: "",
+      representativeIds: [],
+      subject: request.title,
+    });
+    setActiveThread(null);
+    setActiveServiceRequest(request);
+    setActiveServiceRequestMessageId(null);
+    setReplyComposerMode("edit_service_request");
+    setIsReplyModalOpen(true);
+  };
+
+  const openServiceRequestMessageEditComposer = (
+    request: ServiceRequestRecord,
+    detail: ServiceRequestDetail | null | undefined,
+  ) => {
+    const latestEditableMessage = getLatestEditableServiceRequestMessage(detail, user?.userId);
+
+    if (!latestEditableMessage) {
+      messageApi.error("There is no reply from your account on this request to edit.");
+      return;
+    }
+
+    replyForm.setFieldsValue({
+      clientId: request.clientId,
+      content: String(latestEditableMessage.payloadJson.content ?? ""),
+      recipientType: latestEditableMessage.payloadJson.recipientType as
+        | ServiceRequestMessageRecipientType
+        | undefined,
+      representativeId: "",
+      representativeIds: Array.isArray(latestEditableMessage.payloadJson.representativeUserIds)
+        ? latestEditableMessage.payloadJson.representativeUserIds.filter(
+            (value): value is string => typeof value === "string" && value.trim().length > 0,
+          )
+        : [],
+      subject: `Re: ${request.title}`,
+    });
+    setActiveThread(null);
+    setActiveServiceRequest(request);
+    setActiveServiceRequestMessageId(latestEditableMessage.id);
+    setReplyComposerMode("edit_service_request_reply");
     setIsReplyModalOpen(true);
   };
 
@@ -588,6 +671,8 @@ function MessagesPanelContent({
     setIsReplyModalOpen(false);
     setActiveThread(null);
     setActiveServiceRequest(null);
+    setActiveServiceRequestMessageId(null);
+    setReplyComposerMode("create_note_reply");
     replyForm.resetFields();
   };
 
@@ -596,24 +681,55 @@ function MessagesPanelContent({
       setIsSubmitting(true);
 
       try {
-        const detail = await addServiceRequestMessage(activeServiceRequest.id, {
-          content: values.content.trim(),
-          recipientType: values.recipientType ?? "client",
-          representativeUserIds:
-            values.recipientType === "representative" || values.recipientType === "both"
-              ? values.representativeIds ?? []
-              : [],
-        });
+        const detail =
+          replyComposerMode === "edit_service_request"
+            ? await getServiceRequestDetail(
+                (
+                  await updateServiceRequest(activeServiceRequest.id, {
+                    description: values.content.trim(),
+                    title: values.subject.trim(),
+                  })
+                ).id,
+              )
+            : replyComposerMode === "edit_service_request_reply" &&
+                activeServiceRequestMessageId
+              ? await updateServiceRequestMessage(
+                  activeServiceRequest.id,
+                  activeServiceRequestMessageId,
+                  {
+                    content: values.content.trim(),
+                  },
+                )
+              : await addServiceRequestMessage(activeServiceRequest.id, {
+                  content: values.content.trim(),
+                  recipientType: values.recipientType ?? "client",
+                  representativeUserIds:
+                    values.recipientType === "representative" || values.recipientType === "both"
+                      ? values.representativeIds ?? []
+                      : [],
+                });
         setServiceRequestDetailsById((current) => ({
           ...current,
           [activeServiceRequest.id]: detail,
         }));
         await loadServiceRequests();
-        messageApi.success("Reply added to the request conversation.");
+        messageApi.success(
+          replyComposerMode === "edit_service_request"
+            ? "Request updated."
+            : replyComposerMode === "edit_service_request_reply"
+              ? "Reply updated."
+              : "Reply added to the request conversation.",
+        );
         closeReplyComposer();
       } catch (error) {
         console.error(error);
-        messageApi.error("Could not save the request reply.");
+        messageApi.error(
+          replyComposerMode === "edit_service_request"
+            ? "Could not update the request."
+            : replyComposerMode === "edit_service_request_reply"
+              ? "Could not update the request reply."
+              : "Could not save the request reply.",
+        );
       } finally {
         setIsSubmitting(false);
       }
@@ -654,6 +770,50 @@ function MessagesPanelContent({
     } catch (error) {
       console.error(error);
       messageApi.error("Could not save the workspace reply.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteServiceRequest = async (request: ServiceRequestRecord) => {
+    setIsSubmitting(true);
+
+    try {
+      await deleteServiceRequest(request.id);
+      await loadServiceRequests();
+      messageApi.success("Request deleted.");
+    } catch (error) {
+      console.error(error);
+      messageApi.error("Could not delete the request.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteServiceRequestReply = async (
+    request: ServiceRequestRecord,
+    detail: ServiceRequestDetail | null | undefined,
+  ) => {
+    const latestEditableMessage = getLatestEditableServiceRequestMessage(detail, user?.userId);
+
+    if (!latestEditableMessage) {
+      messageApi.error("There is no reply from your account on this request to delete.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const nextDetail = await deleteServiceRequestMessage(request.id, latestEditableMessage.id);
+      setServiceRequestDetailsById((current) => ({
+        ...current,
+        [request.id]: nextDetail,
+      }));
+      await loadServiceRequests();
+      messageApi.success("Reply deleted.");
+    } catch (error) {
+      console.error(error);
+      messageApi.error("Could not delete the request reply.");
     } finally {
       setIsSubmitting(false);
     }
@@ -1142,11 +1302,51 @@ function MessagesPanelContent({
                   </>
                 ) : null}
                 <Button
+                  loading={isSubmitting}
+                  onClick={() => openServiceRequestEditComposer(selectedServiceRequest)}
+                >
+                  Edit request
+                </Button>
+                <Button
+                  danger
+                  loading={isSubmitting}
+                  onClick={() => void handleDeleteServiceRequest(selectedServiceRequest)}
+                >
+                  Delete request
+                </Button>
+                <Button
                   icon={<SendOutlined />}
                   onClick={() => openServiceRequestReplyComposer(selectedServiceRequest)}
                 >
                   Reply
                 </Button>
+                {selectedEditableServiceRequestMessage ? (
+                  <>
+                    <Button
+                      loading={isSubmitting}
+                      onClick={() =>
+                        openServiceRequestMessageEditComposer(
+                          selectedServiceRequest,
+                          selectedServiceRequestDetail,
+                        )
+                      }
+                    >
+                      Edit reply
+                    </Button>
+                    <Button
+                      danger
+                      loading={isSubmitting}
+                      onClick={() =>
+                        void handleDeleteServiceRequestReply(
+                          selectedServiceRequest,
+                          selectedServiceRequestDetail,
+                        )
+                      }
+                    >
+                      Delete reply
+                    </Button>
+                  </>
+                ) : null}
               </Space>
             </div>
 
@@ -1427,39 +1627,26 @@ function MessagesPanelContent({
             onCancel={closeReplyComposer}
             onOk={() => replyForm.submit()}
             okButtonProps={{ loading: isSubmitting }}
-            okText="Send reply"
+            okText={
+              replyComposerMode === "edit_service_request"
+                ? "Save request"
+                : replyComposerMode === "edit_service_request_reply"
+                  ? "Save reply"
+                  : "Send reply"
+            }
             open={isReplyModalOpen}
-            title="Reply from workspace"
+            title={
+              replyComposerMode === "edit_service_request"
+                ? "Edit request"
+                : replyComposerMode === "edit_service_request_reply"
+                  ? "Edit request reply"
+                  : "Reply from workspace"
+            }
           >
             <Form className={styles.modalForm} form={replyForm} layout="vertical" onFinish={handleReplySubmit}>
-              {activeServiceRequest ? null : (
-                <>
-                  <Form.Item
-                    label="Client"
-                    name="clientId"
-                  >
-                    <Select allowClear options={clientOptions} placeholder="No client selected" />
-                  </Form.Item>
-                  <Form.Item
-                    label="Representative"
-                    name="representativeId"
-                  >
-                    <Select
-                      allowClear
-                      options={representativeOptions}
-                      placeholder="No representative selected"
-                    />
-                  </Form.Item>
-                  <Form.Item
-                    label="Subject"
-                    name="subject"
-                    rules={[{ message: "Add a subject", required: true }]}
-                  >
-                    <Input placeholder="Message subject" />
-                  </Form.Item>
-                </>
-              )}
-              {activeServiceRequest ? (
+              {activeServiceRequest &&
+              (replyComposerMode === "create_service_request_reply" ||
+                replyComposerMode === "edit_service_request_reply") ? (
                 <>
                   <Form.Item
                     label="Send to"
@@ -1518,17 +1705,63 @@ function MessagesPanelContent({
                     />
                   </Form.Item>
                 </>
-              ) : null}
+              ) : activeServiceRequest ? (
+                <Form.Item
+                  label="Subject"
+                  name="subject"
+                  rules={[{ message: "Add a subject", required: true }]}
+                >
+                  <Input placeholder="Request subject" />
+                </Form.Item>
+              ) : (
+                <>
+                  <Form.Item
+                    label="Client"
+                    name="clientId"
+                  >
+                    <Select allowClear options={clientOptions} placeholder="No client selected" />
+                  </Form.Item>
+                  <Form.Item
+                    label="Representative"
+                    name="representativeId"
+                  >
+                    <Select
+                      allowClear
+                      options={representativeOptions}
+                      placeholder="No representative selected"
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    label="Subject"
+                    name="subject"
+                    rules={[{ message: "Add a subject", required: true }]}
+                  >
+                    <Input placeholder="Message subject" />
+                  </Form.Item>
+                </>
+              )}
               <Form.Item
-                label={activeServiceRequest ? "Reply" : "Message"}
+                label={
+                  activeServiceRequest &&
+                  (replyComposerMode === "create_service_request_reply" ||
+                    replyComposerMode === "edit_service_request_reply")
+                    ? "Reply"
+                    : activeServiceRequest
+                      ? "Request details"
+                      : "Message"
+                }
                 name="content"
                 rules={[{ message: "Enter the message", required: true }]}
               >
                 <Input.TextArea
                   placeholder={
-                    activeServiceRequest
+                    activeServiceRequest &&
+                    (replyComposerMode === "create_service_request_reply" ||
+                      replyComposerMode === "edit_service_request_reply")
                       ? "Write your response to this request"
-                      : "Write the reply"
+                      : activeServiceRequest
+                        ? "Update the request details"
+                        : "Write the reply"
                   }
                   rows={5}
                 />
