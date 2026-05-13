@@ -71,7 +71,8 @@ export function DashboardRouteProviders({
     isTeamMembersRoute;
   const needsSalesRepDashboard = isDashboardHome && !isScopedClientUser && role === "SalesRep";
   const needsClientDashboard = isDashboardHome && isScopedClientUser;
-  const needsDashboardProvider = needsManagementDashboard || needsSalesRepDashboard;
+  const needsDashboardProvider =
+    needsManagementDashboard || needsSalesRepDashboard || needsClientDashboard;
   const needsTeamMembersProvider =
     needsDashboardProvider ||
     needsClientDashboard ||
