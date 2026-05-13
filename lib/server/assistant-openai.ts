@@ -8996,11 +8996,8 @@ const createToolset = (
       "update_pricing_request",
       "delete_pricing_request",
       "create_note",
-      "create_message",
       "update_note",
-      "update_message",
       "delete_note",
-      "delete_message",
       "delete_client",
       "delete_opportunity",
       "delete_proposal",
@@ -11738,6 +11735,18 @@ export const runSecureAssistant = async ({
     throw new Error("The assistant requires a user message.");
   }
 
+  const confirmedMessageSendResult = shouldRunConfirmedMessageSendWorkflow(
+    latestUserMessage,
+    messages,
+    workspace,
+  )
+    ? createConfirmedMessageSendResult(workspace, messages)
+    : null;
+
+  if (confirmedMessageSendResult) {
+    return confirmedMessageSendResult;
+  }
+
   const clientScopedMutationRefusal =
     isClientScopedInternalRecordMutationIntent(latestUserMessage, workspace) ||
     (isConfirmationMessage(latestUserMessage) &&
@@ -11791,18 +11800,6 @@ export const runSecureAssistant = async ({
 
     if (confirmedAdminRequestHandlingResult) {
       return confirmedAdminRequestHandlingResult;
-    }
-
-    const confirmedMessageSendResult = shouldRunConfirmedMessageSendWorkflow(
-      latestUserMessage,
-      messages,
-      workspace,
-    )
-      ? createConfirmedMessageSendResult(workspace, messages)
-      : null;
-
-    if (confirmedMessageSendResult) {
-      return confirmedMessageSendResult;
     }
 
     const confirmedProposalDraftResult = shouldRunConfirmedProposalDraftWorkflow(
