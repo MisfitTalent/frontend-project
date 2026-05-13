@@ -111,6 +111,19 @@ const requireClientUser = (user: IMockUser) => {
   }
 };
 
+const canManageRequest = (user: IMockUser, request: ServiceRequestRecord) =>
+  user.role !== "Client" || request.submittedByUserId === user.id;
+
+const canManageMessageEvent = (
+  user: IMockUser,
+  request: ServiceRequestRecord,
+  event: WorkflowEventRecord,
+) =>
+  user.role !== "Client" ||
+  (event.eventType === "service_request_message_added" &&
+    event.actorUserId === user.id &&
+    canManageRequest(user, request));
+
 const extractErrorMessage = (value: unknown) => {
   if (typeof value === "string" && value.trim()) {
     return value;
@@ -242,6 +255,12 @@ const updateWorkflowNote = async (
       isPrivate: false,
     }),
     method: "PUT",
+  });
+};
+
+const deleteWorkflowNote = async (token: string, noteId: string) => {
+  await fetchBackend<void>(token, `/api/Notes/${noteId}`, {
+    method: "DELETE",
   });
 };
 
@@ -804,6 +823,169 @@ export const addLiveServiceRequestMessage = async (
     representativeNames,
     representativeUserIds,
   });
+
+  return getLiveServiceRequestDetail(user, token, requestId);
+};
+
+export const updateLiveServiceRequest = async (
+  user: IMockUser,
+  token: string,
+  requestId: string,
+  input: {
+    description?: string;
+    priority?: ServiceRequestPriority;
+    requestType?: string;
+    title?: string;
+  },
+) => {
+  const { request } = await getVisibleRequestOrThrow(user, token, requestId);
+
+  if (!canManageRequest(user, request.request)) {
+    throw new Error("You do not have access to update this service request.");
+  }
+
+  const title = typeof input.title === "string" ? input.title.trim() : request.request.title;
+  const description =
+    typeof input.description === "string"
+      ? input.description.trim()
+      : request.request.description;
+  const requestType =
+    typeof input.requestType === "string" && input.requestType.trim().length > 0
+      ? input.requestType.trim()
+      : request.request.requestType;
+  const priority = input.priority ?? request.request.priority;
+
+  if (!title || !description) {
+    throw new Error("title and description are required.");
+  }
+
+  const updatedRequest: ServiceRequestRecord = {
+    ...request.request,
+    description,
+    priority,
+    requestType,
+    title,
+    updatedAt: nowIso(),
+  };
+
+  await updateWorkflowNote(token, request.noteId, {
+    kind: "request",
+    request: updatedRequest,
+    schema: "service-request-workflow-v1",
+    tenantId: user.tenantId,
+  });
+
+  await appendEvent(token, updatedRequest, user, "service_request_updated", {
+    description,
+    priority,
+    requestType,
+    title,
+  });
+
+  return clone(updatedRequest);
+};
+
+export const deleteLiveServiceRequest = async (
+  user: IMockUser,
+  token: string,
+  requestId: string,
+) => {
+  const { request, state } = await getVisibleRequestOrThrow(user, token, requestId);
+
+  if (!canManageRequest(user, request.request)) {
+    throw new Error("You do not have access to delete this service request.");
+  }
+
+  await deleteWorkflowNote(token, request.noteId);
+
+  for (const assignment of state.assignments.filter(
+    (item) => item.assignment.serviceRequestId === request.request.id,
+  )) {
+    await deleteWorkflowNote(token, assignment.noteId);
+  }
+
+  for (const event of state.events.filter(
+    (item) => item.event.serviceRequestId === request.request.id,
+  )) {
+    await deleteWorkflowNote(token, event.noteId);
+  }
+
+  return clone(request.request);
+};
+
+export const updateLiveServiceRequestMessage = async (
+  user: IMockUser,
+  token: string,
+  requestId: string,
+  messageId: string,
+  input: {
+    content: string;
+  },
+) => {
+  const content = input.content.trim();
+
+  if (!content) {
+    throw new Error("Message content is required.");
+  }
+
+  const { request, state } = await getVisibleRequestOrThrow(user, token, requestId);
+  const storedEvent = state.events.find(
+    (item) =>
+      item.event.id === messageId &&
+      item.event.serviceRequestId === request.request.id &&
+      item.event.eventType === "service_request_message_added",
+  );
+
+  if (!storedEvent) {
+    throw new Error("Service request message not found.");
+  }
+
+  if (!canManageMessageEvent(user, request.request, storedEvent.event)) {
+    throw new Error("You do not have access to update this service request message.");
+  }
+
+  const updatedEvent: WorkflowEventRecord = {
+    ...storedEvent.event,
+    payloadJson: {
+      ...storedEvent.event.payloadJson,
+      content,
+      editedAt: nowIso(),
+    },
+  };
+
+  await updateWorkflowNote(token, storedEvent.noteId, {
+    event: updatedEvent,
+    kind: "event",
+    schema: "service-request-workflow-v1",
+    tenantId: user.tenantId,
+  });
+
+  return getLiveServiceRequestDetail(user, token, requestId);
+};
+
+export const deleteLiveServiceRequestMessage = async (
+  user: IMockUser,
+  token: string,
+  requestId: string,
+  messageId: string,
+) => {
+  const { request, state } = await getVisibleRequestOrThrow(user, token, requestId);
+  const storedEvent = state.events.find(
+    (item) =>
+      item.event.id === messageId &&
+      item.event.serviceRequestId === request.request.id &&
+      item.event.eventType === "service_request_message_added",
+  );
+
+  if (!storedEvent) {
+    throw new Error("Service request message not found.");
+  }
+
+  if (!canManageMessageEvent(user, request.request, storedEvent.event)) {
+    throw new Error("You do not have access to delete this service request message.");
+  }
+
+  await deleteWorkflowNote(token, storedEvent.noteId);
 
   return getLiveServiceRequestDetail(user, token, requestId);
 };

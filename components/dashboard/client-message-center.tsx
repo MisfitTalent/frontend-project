@@ -19,10 +19,14 @@ import {
   addServiceRequestMessage,
   applyServiceRequestClientDecision,
   createServiceRequest,
+  deleteServiceRequest,
+  deleteServiceRequestMessage,
   getServiceRequestDetail,
   listServiceRequests,
   type ServiceRequestDetail,
   type ServiceRequestRecord,
+  updateServiceRequest,
+  updateServiceRequestMessage,
 } from "@/lib/client/service-request-api";
 import { useAuthState } from "@/providers/authProvider";
 import { useClientState } from "@/providers/clientProvider";
@@ -36,6 +40,12 @@ type MessageFormValues = {
   content: string;
   subject: string;
 };
+
+type ComposerMode =
+  | "create_request"
+  | "create_follow_up"
+  | "edit_request"
+  | "edit_follow_up";
 
 const getStatusColor = (status: ServiceRequestRecord["status"]) => {
   switch (status) {
@@ -97,6 +107,15 @@ const formatEventSummary = (detail: ServiceRequestDetail | undefined) => {
   return null;
 };
 
+const getLatestClientEditableMessage = (
+  detail: ServiceRequestDetail | undefined,
+  userId: string | undefined,
+) =>
+  detail?.events.find(
+    (event) =>
+      event.eventType === "service_request_message_added" && event.actorUserId === userId,
+  ) ?? null;
+
 export const ClientMessageCenter = ({
   compact = false,
 }: ClientMessageCenterProps) => {
@@ -111,6 +130,8 @@ export const ClientMessageCenter = ({
     Record<string, ServiceRequestDetail>
   >({});
   const [activeRequest, setActiveRequest] = useState<ServiceRequestRecord | null>(null);
+  const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+  const [composerMode, setComposerMode] = useState<ComposerMode>("create_request");
   const [form] = Form.useForm<MessageFormValues>();
 
   const primaryClientId = user?.clientIds?.[0];
@@ -158,18 +179,40 @@ export const ClientMessageCenter = ({
     [compact, serviceRequests],
   );
 
-  const openComposer = (request?: ServiceRequestRecord) => {
+  const openComposer = (
+    mode: ComposerMode,
+    request?: ServiceRequestRecord,
+    detail?: ServiceRequestDetail,
+  ) => {
+    const editableMessage = getLatestClientEditableMessage(detail, user?.userId);
     form.setFieldsValue({
-      content: request ? "" : client ? `Hello, we need help with ${client.name}.` : "",
-      subject: request?.title ?? (client ? `${client.name} account request` : "Client account request"),
+      content:
+        mode === "edit_follow_up"
+          ? String(editableMessage?.payloadJson.content ?? "")
+          : mode === "edit_request"
+            ? request?.description ?? ""
+            : request
+              ? ""
+              : client
+                ? `Hello, we need help with ${client.name}.`
+                : "",
+      subject:
+        mode === "create_follow_up" || mode === "edit_follow_up"
+          ? request?.title ?? ""
+          : request?.title ??
+            (client ? `${client.name} account request` : "Client account request"),
     });
     setActiveRequest(request ?? null);
+    setActiveMessageId(mode === "edit_follow_up" ? editableMessage?.id ?? null : null);
+    setComposerMode(mode);
     setIsModalOpen(true);
   };
 
   const closeComposer = () => {
     setIsModalOpen(false);
     setActiveRequest(null);
+    setActiveMessageId(null);
+    setComposerMode("create_request");
     form.resetFields();
   };
 
@@ -182,7 +225,18 @@ export const ClientMessageCenter = ({
     setIsSubmitting(true);
 
     try {
-      if (activeRequest) {
+      if (composerMode === "edit_request" && activeRequest) {
+        await updateServiceRequest(activeRequest.id, {
+          description: values.content.trim(),
+          title: values.subject.trim(),
+        });
+        messageApi.success("Request updated.");
+      } else if (composerMode === "edit_follow_up" && activeRequest && activeMessageId) {
+        await updateServiceRequestMessage(activeRequest.id, activeMessageId, {
+          content: values.content.trim(),
+        });
+        messageApi.success("Follow-up updated.");
+      } else if (activeRequest) {
         const assignedRepresentativeUserIds =
           serviceRequestDetailsById[activeRequest.id]?.assignments.map(
             (assignment) => assignment.representativeUserId,
@@ -210,7 +264,13 @@ export const ClientMessageCenter = ({
     } catch (error) {
       console.error(error);
       messageApi.error(
-        activeRequest ? "Could not save the request follow-up." : "Could not submit the request.",
+        composerMode === "create_request"
+          ? "Could not submit the request."
+          : composerMode === "edit_request"
+            ? "Could not update the request."
+            : composerMode === "edit_follow_up"
+              ? "Could not update the follow-up."
+              : "Could not save the request follow-up.",
       );
     } finally {
       setIsSubmitting(false);
@@ -253,6 +313,46 @@ export const ClientMessageCenter = ({
     }
   };
 
+  const handleDeleteRequest = async (request: ServiceRequestRecord) => {
+    setIsSubmitting(true);
+
+    try {
+      await deleteServiceRequest(request.id);
+      await loadServiceRequests();
+      messageApi.success("Request deleted.");
+    } catch (error) {
+      console.error(error);
+      messageApi.error("Could not delete the request.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteLatestFollowUp = async (
+    request: ServiceRequestRecord,
+    detail: ServiceRequestDetail | undefined,
+  ) => {
+    const latestClientMessage = getLatestClientEditableMessage(detail, user?.userId);
+
+    if (!latestClientMessage) {
+      messageApi.error("There is no client follow-up to delete on this request.");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      await deleteServiceRequestMessage(request.id, latestClientMessage.id);
+      await loadServiceRequests();
+      messageApi.success("Follow-up deleted.");
+    } catch (error) {
+      console.error(error);
+      messageApi.error("Could not delete the follow-up.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <Card className={styles.card}>
       {contextHolder}
@@ -267,7 +367,11 @@ export const ClientMessageCenter = ({
               Create real support requests and keep follow-ups attached to the same workflow thread.
             </Typography.Text>
           </div>
-          <Button icon={<MailOutlined />} onClick={() => openComposer()} type="primary">
+          <Button
+            icon={<MailOutlined />}
+            onClick={() => openComposer("create_request")}
+            type="primary"
+          >
             New request
           </Button>
         </div>
@@ -282,6 +386,7 @@ export const ClientMessageCenter = ({
             {requestThreads.map((request) => {
               const detail = serviceRequestDetailsById[request.id];
               const latestSummary = formatEventSummary(detail);
+              const latestClientMessage = getLatestClientEditableMessage(detail, user?.userId);
               const pendingClientAssignments =
                 detail?.assignments.filter(
                   (assignment) => assignment.status === "pending_client_approval",
@@ -324,10 +429,40 @@ export const ClientMessageCenter = ({
                         </>
                       ) : null}
                       <Button
+                        loading={isSubmitting}
+                        onClick={() => openComposer("edit_request", request)}
+                      >
+                        Edit request
+                      </Button>
+                      <Button
                         icon={<SendOutlined />}
-                        onClick={() => openComposer(request)}
+                        onClick={() => openComposer("create_follow_up", request)}
                       >
                         Follow up
+                      </Button>
+                      {latestClientMessage ? (
+                        <>
+                          <Button
+                            loading={isSubmitting}
+                            onClick={() => openComposer("edit_follow_up", request, detail)}
+                          >
+                            Edit follow-up
+                          </Button>
+                          <Button
+                            danger
+                            loading={isSubmitting}
+                            onClick={() => void handleDeleteLatestFollowUp(request, detail)}
+                          >
+                            Delete follow-up
+                          </Button>
+                        </>
+                      ) : null}
+                      <Button
+                        danger
+                        loading={isSubmitting}
+                        onClick={() => void handleDeleteRequest(request)}
+                      >
+                        Delete request
                       </Button>
                     </Space>
                   </div>
@@ -353,12 +488,28 @@ export const ClientMessageCenter = ({
         onCancel={closeComposer}
         onOk={() => form.submit()}
         okButtonProps={{ loading: isSubmitting }}
-        okText={activeRequest ? "Send follow-up" : "Submit request"}
+        okText={
+          composerMode === "create_request"
+            ? "Submit request"
+            : composerMode === "edit_request"
+              ? "Save request"
+              : composerMode === "edit_follow_up"
+                ? "Save follow-up"
+                : "Send follow-up"
+        }
         open={isModalOpen}
-        title={activeRequest ? "Follow up on request" : "Create support request"}
+        title={
+          composerMode === "create_request"
+            ? "Create support request"
+            : composerMode === "edit_request"
+              ? "Edit request"
+              : composerMode === "edit_follow_up"
+                ? "Edit follow-up"
+                : "Follow up on request"
+        }
       >
         <Form className={styles.modalForm} form={form} layout="vertical" onFinish={handleSubmit}>
-          {activeRequest ? null : (
+          {composerMode === "create_follow_up" || composerMode === "edit_follow_up" ? null : (
             <Form.Item
               label="Subject"
               name="subject"
@@ -369,7 +520,11 @@ export const ClientMessageCenter = ({
           )}
 
           <Form.Item
-            label={activeRequest ? "Follow-up message" : "Request details"}
+            label={
+              composerMode === "create_request" || composerMode === "edit_request"
+                ? "Request details"
+                : "Follow-up message"
+            }
             name="content"
             rules={[{ message: "Please enter your message", required: true }]}
           >
