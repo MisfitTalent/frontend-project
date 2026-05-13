@@ -13,7 +13,7 @@ type LoginValues = {
 export const LoginForm = () => {
   const { styles } = useStyles();
   const { login } = useAuthActions();
-  const { isError, isPending } = useAuthState();
+  const { errorMessage, isError, isPending } = useAuthState();
   const [form] = Form.useForm<LoginValues>();
 
   const onFinish = async (values: LoginValues) => {
@@ -34,7 +34,7 @@ export const LoginForm = () => {
       {isError ? (
         <Alert
           className={styles.alert}
-          message="We could not sign you in with those credentials."
+          message={errorMessage || "We could not sign you in with those credentials."}
           type="error"
         />
       ) : null}
