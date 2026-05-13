@@ -5,7 +5,7 @@ import { shouldUseUpstreamAuth } from "@/lib/server/auth-mode";
 import { createBackendUrl } from "@/lib/server/backend-url";
 
 import { readMockUsersFromCookies } from "../mock-user-cookie";
-import { findMockUserByEmail, toAuthPayload } from "../mock-users";
+import { findMockUserByEmail, findUserByEmail, toAuthPayload } from "../mock-users";
 import {
   AUTH_COOKIE_NAME,
   AUTH_COOKIE_OPTIONS,
@@ -31,7 +31,11 @@ export const POST = async (request: NextRequest) => {
   const credentials = JSON.parse(rawBody) as AuthLoginRequestDto;
   const email = credentials.email?.trim().toLowerCase() ?? "";
   const browserMockUsers = readMockUsersFromCookies(request.cookies);
-  const mockUser = email ? findMockUserByEmail(email, browserMockUsers) : undefined;
+  const browserMockUser = email
+    ? browserMockUsers.find((user) => user.email === email)
+    : undefined;
+  const builtInMockUser = email ? findUserByEmail(email) : undefined;
+  const mockUser = browserMockUser ?? builtInMockUser;
 
   if (mockUser && credentials.password === mockUser.password) {
     const payload = toAuthPayload(mockUser);
@@ -51,6 +55,23 @@ export const POST = async (request: NextRequest) => {
   }
 
   if (!shouldUseUpstreamAuth()) {
+    if (browserMockUser) {
+      return NextResponse.json(
+        { message: "Incorrect password for this client account." },
+        { status: 401 },
+      );
+    }
+
+    if (!builtInMockUser && email) {
+      return NextResponse.json(
+        {
+          message:
+            "No registered client account was found for this email in this browser on this site URL.",
+        },
+        { status: 401 },
+      );
+    }
+
     return NextResponse.json(
       { message: "Invalid email or password." },
       { status: 401 },
