@@ -3745,6 +3745,79 @@ const isGenericMutationIntent = (message: string) => {
   ].some((token) => normalized.includes(token));
 };
 
+const isClientScopedInternalRecordMutationIntent = (
+  message: string,
+  workspace: IAssistantWorkspace,
+) => {
+  if (!isClientScopedUser(workspace.clientIds)) {
+    return false;
+  }
+
+  if (isMessageDraftIntent(message) || isMessageSendIntent(message)) {
+    return false;
+  }
+
+  if (isClientRequestCreateIntent(message, workspace)) {
+    return false;
+  }
+
+  if (parseAutonomousSaleRequest(message)) {
+    return true;
+  }
+
+  const normalized = normalizeLookupValue(message);
+  const hasMutationVerb = [
+    "create ",
+    "add ",
+    "update ",
+    "change ",
+    "delete ",
+    "remove ",
+    "assign ",
+    "reassign ",
+    "move ",
+    "mark ",
+    "approve ",
+    "reject ",
+    "draft ",
+  ].some((token) => normalized.includes(token));
+  const mentionsInternalRecord = [
+    "client",
+    "account",
+    "opportunity",
+    "deal",
+    "proposal",
+    "quote",
+    "pricing request",
+    "pricing",
+    "follow up",
+    "follow-up",
+    "activity",
+    "owner",
+    "team member",
+    "representative",
+  ].some((token) => normalized.includes(token));
+
+  return hasMutationVerb && mentionsInternalRecord;
+};
+
+const isClientScopedPendingInternalMutationConfirmation = (
+  messages: AssistantMessage[],
+  workspace: IAssistantWorkspace,
+) => {
+  if (!isClientScopedUser(workspace.clientIds)) {
+    return false;
+  }
+
+  const pendingSummary = getRecentPendingAssistantActionSummary(messages);
+
+  if (!pendingSummary) {
+    return false;
+  }
+
+  return isClientScopedInternalRecordMutationIntent(pendingSummary, workspace);
+};
+
 const isGreetingMessage = (message: string) => {
   const normalized = normalizeLookupValue(message);
 
@@ -11230,6 +11303,28 @@ const createLocalAssistantCapabilitiesResult = (workspace: IAssistantWorkspace) 
   });
 };
 
+const createClientScopedMutationRefusalResult = (
+  workspace: IAssistantWorkspace,
+  latestUserMessage: string,
+) =>
+  createLocalAssistantResult({
+    arguments: {
+      latestUserMessage,
+      role: workspace.role,
+      scopeLabel: workspace.scopeLabel,
+    },
+    message:
+      "From client scope, I can help with proposals, contracts, documents, messages, and submitting a client request, but I cannot create or change internal sales records like clients, opportunities, proposals, pricing requests, follow-ups, or owner assignments. Ask your account team to do that, or tell me to draft/send a message or submit a request instead.",
+    output: {
+      latestUserMessage,
+      restricted: true,
+      role: workspace.role,
+      scopeLabel: workspace.scopeLabel,
+    },
+    reason: "Refused an internal sales-record mutation from client scope.",
+    tool: "client_scope_mutation_refusal",
+  });
+
 const createLocalAssistantWorkspaceResult = (
   workspace: IAssistantWorkspace,
   latestUserMessage: string,
@@ -11604,6 +11699,15 @@ export const runSecureAssistant = async ({
 
   if (!latestUserMessage) {
     throw new Error("The assistant requires a user message.");
+  }
+
+  const clientScopedMutationRefusal =
+    isClientScopedInternalRecordMutationIntent(latestUserMessage, workspace) ||
+    (isConfirmationMessage(latestUserMessage) &&
+      isClientScopedPendingInternalMutationConfirmation(messages, workspace));
+
+  if (clientScopedMutationRefusal) {
+    return createClientScopedMutationRefusalResult(workspace, latestUserMessage);
   }
 
   const pendingSaleRequest =
