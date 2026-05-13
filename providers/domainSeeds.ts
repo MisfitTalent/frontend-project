@@ -14,7 +14,9 @@ import { INITIAL_SALES_DATA } from "./salesFixtures";
 
 export interface IDocumentItem {
   clientId?: string;
+  dataUrl?: string;
   id: string;
+  mimeType?: string;
   name: string;
   size: string;
   type: string;

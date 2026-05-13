@@ -3,6 +3,7 @@ import type { IDocumentItem } from "@/providers/domainSeeds";
 export enum DocumentActionEnums {
   add = "ADD_DOCUMENT",
   delete = "DELETE_DOCUMENT",
+  replace = "REPLACE_DOCUMENTS",
 }
 
 export const addDocumentAction = (payload: IDocumentItem) =>
@@ -15,4 +16,10 @@ export const deleteDocumentAction = (payload: string) =>
   ({
     payload,
     type: DocumentActionEnums.delete,
+  }) as const;
+
+export const replaceDocumentsAction = (payload: IDocumentItem[]) =>
+  ({
+    payload,
+    type: DocumentActionEnums.replace,
   }) as const;
