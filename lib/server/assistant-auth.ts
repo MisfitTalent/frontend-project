@@ -3,6 +3,7 @@ import "server-only";
 import type { NextRequest } from "next/server";
 
 import { createBackendUrl } from "@/lib/server/backend-url";
+import { readMockUsersFromCookies } from "@/app/api/Auth/mock-user-cookie";
 import type { IMockUser } from "@/app/api/Auth/mock-users";
 import { AUTH_COOKIE_NAME } from "@/app/api/Auth/session-cookie";
 import type { AuthSessionUser } from "@/lib/auth/auth-contract";
@@ -61,12 +62,13 @@ const fetchAuthorizedUserFromBackend = async (token: string) => {
 export const getAuthorizedUser = async (request: NextRequest): Promise<IMockUser | null> => {
   const cookieToken = request.cookies.get(AUTH_COOKIE_NAME)?.value;
   const authHeader = request.headers.get("authorization");
+  const browserMockUsers = readMockUsersFromCookies(request.cookies);
   const token = authHeader?.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : cookieToken?.trim() ?? "";
 
   if (cookieToken) {
-    const directUser = getUserFromSessionToken(cookieToken);
+    const directUser = getUserFromSessionToken(cookieToken, browserMockUsers);
 
     if (directUser && (directUser.clientIds?.length ?? 0) > 0) {
       return directUser;
@@ -77,7 +79,7 @@ export const getAuthorizedUser = async (request: NextRequest): Promise<IMockUser
     return null;
   }
 
-  const directUser = getUserFromSessionToken(token);
+  const directUser = getUserFromSessionToken(token, browserMockUsers);
   const enrichedUser = await fetchAuthorizedUserFromBackend(token);
 
   if (enrichedUser) {
