@@ -358,8 +358,10 @@ export function AssistantPanel() {
         ].slice(-MAX_VISIBLE_MESSAGES),
       );
 
-      if ((payload.mutations?.length ?? 0) > 0) {
-        dispatchWorkspaceRefresh(payload.mutations);
+      const responseMutations = payload.mutations ?? [];
+
+      if (responseMutations.length > 0) {
+        dispatchWorkspaceRefresh(responseMutations);
       }
       setStatusLabel(getResponseStatusLabel(payload.mode ?? null, payload.scopeLabel));
     } catch (requestError) {
