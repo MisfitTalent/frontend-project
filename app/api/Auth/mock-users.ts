@@ -22,6 +22,8 @@ export interface IMockUser {
 
 const AUTO_SALES_TENANT_ID = "mock-tenant-autosales";
 const AUTO_SALES_TENANT_NAME = "AutoSales Mock Workspace";
+const SHARED_DEMO_TENANT_ID = "11111111-1111-1111-1111-111111111111";
+const SHARED_DEMO_TENANT_NAME = "Shared Demo Tenant";
 const AUTO_SALES_REP_PASSWORD = "Sales123";
 const AUTO_SALES_ADMIN_MEMBER_IDS = new Set(["tm02"]);
 
@@ -41,10 +43,41 @@ const toAutoSalesRepEmail = (name: string) =>
     .trim()
     .replace(/\s+/g, ".")}@autosales.com`;
 
+const createTenantBoundUser = (
+  tenant: { id: string; name: string },
+  user: Omit<IMockUser, "tenantId" | "tenantName">,
+): IMockUser => ({
+  ...user,
+  tenantId: tenant.id,
+  tenantName: tenant.name,
+});
+
+const createAutoSalesUser = (
+  user: Omit<IMockUser, "tenantId" | "tenantName">,
+): IMockUser =>
+  createTenantBoundUser(
+    {
+      id: AUTO_SALES_TENANT_ID,
+      name: AUTO_SALES_TENANT_NAME,
+    },
+    user,
+  );
+
+const createSharedDemoUser = (
+  user: Omit<IMockUser, "tenantId" | "tenantName">,
+): IMockUser =>
+  createTenantBoundUser(
+    {
+      id: SHARED_DEMO_TENANT_ID,
+      name: SHARED_DEMO_TENANT_NAME,
+    },
+    user,
+  );
+
 const createAutoSalesRepUser = (member: (typeof MOCK_TEAM_MEMBERS)[number]): IMockUser => {
   const [firstName, ...rest] = member.name.split(" ");
 
-  return {
+  return createAutoSalesUser({
     clientIds: [],
     email: toAutoSalesRepEmail(member.name),
     firstName: firstName ?? member.name,
@@ -52,47 +85,53 @@ const createAutoSalesRepUser = (member: (typeof MOCK_TEAM_MEMBERS)[number]): IMo
     lastName: rest.join(" ") || "Rep",
     password: AUTO_SALES_REP_PASSWORD,
     role: AUTO_SALES_ADMIN_MEMBER_IDS.has(member.id) ? "Admin" : "SalesRep",
-    tenantId: AUTO_SALES_TENANT_ID,
-    tenantName: AUTO_SALES_TENANT_NAME,
-  };
+  });
 };
 
 const autoSalesRepUsers = MOCK_TEAM_MEMBERS.filter((member) =>
   isClientFacingRole(member.role),
 ).map(createAutoSalesRepUser);
 
+const validateMockUserConfiguration = (entries: Map<string, IMockUser>) => {
+  for (const [email, user] of entries) {
+    if (email.endsWith("@autosales.com") && user.tenantId !== AUTO_SALES_TENANT_ID) {
+      throw new Error(`Mock user ${email} must belong to the AutoSales tenant.`);
+    }
+
+    if (email === "clients@autosales.com" && user.role !== "Client") {
+      throw new Error("clients@autosales.com must be configured as a Client user.");
+    }
+  }
+};
+
 const users = new Map<string, IMockUser>([
   [
     "admin@autosales.com",
-    {
+    createAutoSalesUser({
       clientIds: [],
       email: "admin@autosales.com",
       firstName: "Admin",
-      id: "admin-shared-demo",
+      id: "admin-autosales",
       lastName: "User",
       password: "Admin123",
       role: "Admin",
-      tenantId: "11111111-1111-1111-1111-111111111111",
-      tenantName: "Shared Demo Tenant",
-    },
+    }),
   ],
   [
     "clients@autosales.com",
-    {
+    createAutoSalesUser({
       clientIds: ["c1"],
       email: "clients@autosales.com",
       firstName: "Client",
       id: "legacy-client-viewer",
       lastName: "Tester",
       password: "Clients123",
-      role: "SalesRep",
-      tenantId: AUTO_SALES_TENANT_ID,
-      tenantName: AUTO_SALES_TENANT_NAME,
-    },
+      role: "Client",
+    }),
   ],
   [
     "salesrep@autosales.com",
-    {
+    createAutoSalesUser({
       clientIds: [],
       email: "salesrep@autosales.com",
       firstName: "Lebo",
@@ -100,13 +139,11 @@ const users = new Map<string, IMockUser>([
       lastName: "Dlamini",
       password: AUTO_SALES_REP_PASSWORD,
       role: "Admin",
-      tenantId: AUTO_SALES_TENANT_ID,
-      tenantName: AUTO_SALES_TENANT_NAME,
-    },
+    }),
   ],
   [
     "admin@salesautomation.com",
-    {
+    createSharedDemoUser({
       clientIds: [],
       email: "admin@salesautomation.com",
       firstName: "Admin",
@@ -114,13 +151,11 @@ const users = new Map<string, IMockUser>([
       lastName: "User",
       password: "Admin@123",
       role: "Admin",
-      tenantId: "11111111-1111-1111-1111-111111111111",
-      tenantName: "Shared Demo Tenant",
-    },
+    }),
   ],
   [
     "salesrep@salesautomation.com",
-    {
+    createSharedDemoUser({
       clientIds: [],
       email: "salesrep@salesautomation.com",
       firstName: "Lebo",
@@ -128,13 +163,11 @@ const users = new Map<string, IMockUser>([
       lastName: "Dlamini",
       password: "Pass@123",
       role: "SalesRep",
-      tenantId: "11111111-1111-1111-1111-111111111111",
-      tenantName: "Shared Demo Tenant",
-    },
+    }),
   ],
   [
     "client@boxfusion.com",
-    {
+    createSharedDemoUser({
       clientIds: ["c1"],
       email: "client@boxfusion.com",
       firstName: "Boxfusion",
@@ -142,12 +175,12 @@ const users = new Map<string, IMockUser>([
       lastName: "Client",
       password: "Pass@123",
       role: "Client",
-      tenantId: "11111111-1111-1111-1111-111111111111",
-      tenantName: "Shared Demo Tenant",
-    },
+    }),
   ],
   ...autoSalesRepUsers.map((user) => [user.email, user] as const),
 ]);
+
+validateMockUserConfiguration(users);
 
 let nextId = 3;
 
@@ -192,8 +225,8 @@ export const registerMockUser = ({
     lastName,
     password,
     role,
-    tenantId: "11111111-1111-1111-1111-111111111111",
-    tenantName: tenantName || "Shared Demo Tenant",
+    tenantId: SHARED_DEMO_TENANT_ID,
+    tenantName: tenantName || SHARED_DEMO_TENANT_NAME,
   };
 
   users.set(normalizedEmail, user);
