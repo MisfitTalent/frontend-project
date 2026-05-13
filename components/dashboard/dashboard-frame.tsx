@@ -247,6 +247,27 @@ export function DashboardFrame({ children }: DashboardFrameProps) {
   const isMessageAlertDismissed =
     incomingMessageCount > 0 && dismissedMessageSignature === currentMessageAlertSignature;
 
+  if (isPending) {
+    return (
+      <div className="min-h-screen bg-slate-50 p-6">
+        <div className="mx-auto max-w-7xl space-y-4">
+          <div className="h-16 rounded-2xl bg-slate-200/80" />
+          <div className="grid gap-4 md:grid-cols-4">
+            <div className="h-28 rounded-2xl bg-slate-200/70" />
+            <div className="h-28 rounded-2xl bg-slate-200/70" />
+            <div className="h-28 rounded-2xl bg-slate-200/70" />
+            <div className="h-28 rounded-2xl bg-slate-200/70" />
+          </div>
+          <div className="h-80 rounded-2xl bg-slate-200/60" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return null;
+  }
+
   const dismissAdminAlert = () => {
     if (typeof window !== "undefined") {
       window.sessionStorage.setItem(alertDismissKey, currentAlertSignature);
