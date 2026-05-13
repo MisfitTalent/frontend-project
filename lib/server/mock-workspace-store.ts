@@ -165,6 +165,52 @@ const getLineItemsTotal = (lineItems: IProposal["lineItems"] = []) =>
 export const getMockWorkspaceSnapshot = (tenantId: string): MockWorkspaceState =>
   clone(getWorkspaceState(tenantId));
 
+export const listMockDocuments = (tenantId: string) =>
+  clone(getWorkspaceState(tenantId).documents);
+
+export const createMockDocument = (
+  user: IMockUser,
+  input: {
+    clientId?: string;
+    fileContentBase64?: string;
+    mimeType?: string;
+    name: string;
+    sizeInBytes?: number;
+    type?: string;
+  },
+) => {
+  const workspace = getWorkspaceState(user.tenantId);
+  const document: IDocumentItem = {
+    clientId: input.clientId,
+    fileContentBase64: input.fileContentBase64,
+    id: createId("doc"),
+    mimeType: input.mimeType,
+    name: input.name,
+    size:
+      typeof input.sizeInBytes === "number"
+        ? input.sizeInBytes < 1024
+          ? `${input.sizeInBytes} B`
+          : input.sizeInBytes < 1024 * 1024
+            ? `${(input.sizeInBytes / 1024).toFixed(1)} KB`
+            : `${(input.sizeInBytes / (1024 * 1024)).toFixed(1)} MB`
+        : "Unknown",
+    sizeInBytes: input.sizeInBytes,
+    type: input.type ?? input.mimeType ?? "FILE",
+    uploadedDate: new Date().toISOString().split("T")[0],
+  };
+
+  workspace.documents.unshift(document);
+  persistWorkspaceStore();
+
+  return clone(document);
+};
+
+export const deleteMockDocument = (tenantId: string, documentId: string) => {
+  const workspace = getWorkspaceState(tenantId);
+  workspace.documents = workspace.documents.filter((item) => item.id !== documentId);
+  persistWorkspaceStore();
+};
+
 export const listMockClients = (tenantId: string) =>
   clone(getWorkspaceState(tenantId).salesData.clients);
 

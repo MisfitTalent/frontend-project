@@ -83,6 +83,7 @@ export function DashboardRouteProviders({
   const needsClientProvider =
     needsDashboardProvider ||
     needsClientDashboard ||
+    isDocumentsRoute ||
     isMessagesRoute ||
     isContactsRoute ||
     isOpportunitiesRoute ||
