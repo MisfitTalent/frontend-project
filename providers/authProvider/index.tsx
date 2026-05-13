@@ -7,7 +7,6 @@ import { getDashboardHomePath } from "@/lib/auth/dashboard-access";
 import { getPrimaryUserRole } from "@/lib/auth/roles";
 import {
   clearAuthSession,
-  getSessionToken,
   getStoredAuthUser,
   storeAuthSession,
 } from "@/lib/client/auth-session";
@@ -84,14 +83,9 @@ const authRequest = async <T,>(
   init: RequestInit = {},
 ) => {
   const headers = new Headers(init.headers);
-  const token = getSessionToken();
 
   if (init.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
-  }
-
-  if (path === "/api/Auth/me" && token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
   }
 
   const response = await fetch(path, {
@@ -120,7 +114,7 @@ const mergeAuthUser = (
   clientIds: payload.clientIds ?? fallback?.clientIds ?? null,
   isMockSession: payload.isMockSession ?? fallback?.isMockSession ?? false,
   roles: payload.roles ?? fallback?.roles ?? null,
-  token: payload.token ?? fallback?.token ?? getSessionToken(),
+  token: null,
 });
 
 export const AuthProvider = ({ children }: AuthProviderProps) => {
@@ -195,13 +189,6 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const getMe = useCallback(async () => {
     dispatch(getMePending());
     const storedUser = getStoredAuthUser();
-    const token = storedUser?.token ?? getSessionToken();
-
-    if (!token && !storedUser) {
-      clearAuthSession();
-      dispatch(logoutSuccess());
-      return;
-    }
 
     try {
       const response = await authRequest<Partial<IUserLoginResponse>>(

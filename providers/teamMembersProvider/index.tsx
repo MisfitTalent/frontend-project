@@ -8,8 +8,7 @@ import {
   type BackendUserDto,
   backendRequest,
   coerceItems,
-  getSessionToken,
-  isMockSessionToken,
+  isStoredMockSession,
   mapBackendUser,
 } from "@/lib/client/backend-api";
 import { createProviderCacheKey, writeProviderCache, readProviderCache } from "@/lib/client/provider-cache";
@@ -54,7 +53,7 @@ export default function TeamMembersProvider({
 }: Readonly<{ children: React.ReactNode }>) {
   const fallbackTeamMembers = useMemo(() => initialTeamMembers(), []);
   const { isAuthenticated, user } = useAuthState();
-  const isDemoMode = isMockSessionToken(getSessionToken());
+  const isDemoMode = isStoredMockSession();
   const role = getPrimaryUserRole(user?.roles);
   const cacheKey = useMemo(
     () => createProviderCacheKey("team-members", user?.tenantId, user?.userId, role),

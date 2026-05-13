@@ -14,8 +14,8 @@ import {
   type IProposal,
   type ITeamMember,
 } from "@/providers/salesTypes";
-import { getSessionToken } from "@/lib/client/auth-session";
-export { getSessionToken } from "@/lib/client/auth-session";
+import { getSessionToken, isStoredMockSession } from "@/lib/client/auth-session";
+export { getSessionToken, isStoredMockSession } from "@/lib/client/auth-session";
 
 export type BackendPagedResult<T> = {
   items?: T[] | null;
@@ -184,14 +184,9 @@ export const backendRequest = async <T>(
   init: RequestInit = {},
 ): Promise<T> => {
   const headers = new Headers(init.headers);
-  const token = getSessionToken();
 
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
-  }
-
-  if (token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
   }
 
   const response = await fetch(`/api/backend${path}`, {

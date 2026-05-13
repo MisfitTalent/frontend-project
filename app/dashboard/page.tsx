@@ -54,7 +54,12 @@ function DashboardHomeLoading() {
 }
 
 function DashboardPageContent() {
-  const { user } = useAuthState();
+  const { isAuthenticated, isPending, user } = useAuthState();
+
+  if (isPending || !isAuthenticated) {
+    return <DashboardHomeLoading />;
+  }
+
   const isScopedClientUser = isClientScopedUser(user?.clientIds);
   const role = getPrimaryUserRole(user?.roles);
 

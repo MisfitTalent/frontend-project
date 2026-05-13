@@ -12,7 +12,6 @@ import { useSearchParams } from "next/navigation";
 
 import { isClientScopedUser } from "@/lib/auth/dashboard-access";
 import { getPrimaryUserRole, getUserRoleLabel, isManagerRole } from "@/lib/auth/roles";
-import { getSessionToken } from "@/lib/client/backend-api";
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { useAuthState } from "@/providers/authProvider";
 import type { UserRole } from "@/providers/salesTypes";
@@ -232,9 +231,8 @@ export function AssistantPanel() {
 
     const loadAssistantStatus = async () => {
       try {
-        const token = getSessionToken();
         const response = await fetch("/api/assistant/status", {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          credentials: "same-origin",
         });
         const payload = (await response.json()) as {
           isConfigured?: boolean;
@@ -304,14 +302,13 @@ export function AssistantPanel() {
     setIsSubmitting(true);
 
     try {
-      const token = getSessionToken();
       const response = await fetch("/api/assistant", {
         body: JSON.stringify({ messages: nextMessages }),
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         method: "POST",
+        credentials: "same-origin",
       });
 
       const payload = (await response.json()) as {

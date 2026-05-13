@@ -11,8 +11,7 @@ import {
   buildCreateClientPayload,
   buildUpdateClientPayload,
   coerceItems,
-  getSessionToken,
-  isMockSessionToken,
+  isStoredMockSession,
   mapBackendClient,
 } from "@/lib/client/backend-api";
 import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
@@ -48,7 +47,7 @@ export default function ClientProvider({
   children,
 }: ClientProviderProps) {
   const { isAuthenticated, user } = useAuthState();
-  const isDemoMode = isMockSessionToken(getSessionToken());
+  const isDemoMode = isStoredMockSession();
   const scopedClientIds = useMemo(() => new Set(user?.clientIds ?? []), [user?.clientIds]);
   const isScopedClient = isClientScopedUser(user?.clientIds);
   const cacheKey = useMemo(

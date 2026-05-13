@@ -11,8 +11,7 @@ import {
   buildCreatePricingRequestPayload,
   buildUpdatePricingRequestPayload,
   coerceItems,
-  getSessionToken,
-  isMockSessionToken,
+  isStoredMockSession,
   mapBackendPricingRequest,
 } from "@/lib/client/backend-api";
 import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
@@ -50,7 +49,7 @@ export default function PricingRequestProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const { isAuthenticated, user } = useAuthState();
-  const isDemoMode = isMockSessionToken(getSessionToken());
+  const isDemoMode = isStoredMockSession();
   const role = getPrimaryUserRole(user?.roles);
   const cacheKey = useMemo(
     () => createProviderCacheKey("pricing-requests", user?.tenantId, user?.userId, role),

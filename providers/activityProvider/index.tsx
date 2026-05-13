@@ -10,8 +10,7 @@ import {
   buildCreateActivityPayload,
   buildUpdateActivityPayload,
   coerceItems,
-  getSessionToken,
-  isMockSessionToken,
+  isStoredMockSession,
   mapBackendActivity,
 } from "@/lib/client/backend-api";
 import { createProviderCacheKey, readProviderCache, writeProviderCache } from "@/lib/client/provider-cache";
@@ -49,7 +48,7 @@ export default function ActivityProvider({
   children,
 }: ActivityProviderProps) {
   const { isAuthenticated, user } = useAuthState();
-  const isDemoMode = isMockSessionToken(getSessionToken());
+  const isDemoMode = isStoredMockSession();
   const role = getPrimaryUserRole(user?.roles);
   const cacheKey = useMemo(
     () => createProviderCacheKey("activities", user?.tenantId, user?.userId, role),

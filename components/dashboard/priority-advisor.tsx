@@ -4,7 +4,6 @@ import { DeleteOutlined, SendOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Input, Spin, Tag, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
-import { getSessionToken } from "@/lib/client/backend-api";
 import { clearSessionDraft, readSessionDraft, writeSessionDraft } from "@/lib/client/session-drafts";
 import { useAuthState } from "@/providers/authProvider";
 import { getAdvisorResponse } from "@/providers/salesSelectors";
@@ -282,7 +281,6 @@ export function PriorityAdvisor() {
     setIsLoading(true);
 
     try {
-      const token = getSessionToken();
       const advisorResponse = await fetch("/api/assistant", {
         body: JSON.stringify({
           messages: nextMessages.map((message) =>
@@ -296,9 +294,9 @@ export function PriorityAdvisor() {
         }),
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         method: "POST",
+        credentials: "same-origin",
       });
 
       const payload = (await advisorResponse.json()) as {
