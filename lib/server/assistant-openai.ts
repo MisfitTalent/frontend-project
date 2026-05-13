@@ -7307,6 +7307,7 @@ const createSalesSetupWorkflowForWorkspace = async (
 ) => {
   const actor = createAssistantActor(workspace);
   const clientName = input.clientName?.trim() || buildGeneratedSalesSetupClientName(workspace);
+  const normalizedClientName = normalizeLookupValue(clientName);
   const industry = input.industry?.trim() || inferIndustryFromClientName(clientName);
   const estimatedValue =
     typeof input.estimatedValue === "number" && input.estimatedValue > 0
@@ -7317,6 +7318,8 @@ const createSalesSetupWorkflowForWorkspace = async (
     input.proposalValidUntil || toIsoDate(addDays(new Date(`${expectedCloseDate}T00:00:00`), 14));
   const opportunityTitle = input.opportunityTitle?.trim() || `${clientName} growth opportunity`;
   const proposalTitle = input.proposalTitle?.trim() || `${clientName} proposal`;
+  const normalizedOpportunityTitle = normalizeLookupValue(opportunityTitle);
+  const normalizedProposalTitle = normalizeLookupValue(proposalTitle);
   const owner =
     findBestReferenceMatch<ITeamMember>(
       workspace.salesData.teamMembers,
@@ -7328,8 +7331,13 @@ const createSalesSetupWorkflowForWorkspace = async (
       pricingRequests: workspace.pricingRequests,
     });
 
+  const existingClient =
+    workspace.salesData.clients.find(
+      (item) => normalizeLookupValue(item.name) === normalizedClientName,
+    ) ?? null;
   const client =
-    workspace.isLiveBackend && workspace.sessionToken
+    existingClient ??
+    (workspace.isLiveBackend && workspace.sessionToken
       ? await createLiveClient(workspace.sessionToken, {
           billingAddress: undefined,
           clientType: 2,
@@ -7347,11 +7355,21 @@ const createSalesSetupWorkflowForWorkspace = async (
           industry,
           name: clientName,
           website: input.website?.trim() || buildClientWebsiteFromName(clientName),
-        });
-  upsertById(workspace.salesData.clients, client);
+        }));
 
+  if (!existingClient) {
+    upsertById(workspace.salesData.clients, client);
+  }
+
+  const existingOpportunity =
+    workspace.salesData.opportunities.find(
+      (item) =>
+        item.clientId === client.id &&
+        normalizeLookupValue(item.title) === normalizedOpportunityTitle,
+    ) ?? null;
   const opportunity =
-    workspace.isLiveBackend && workspace.sessionToken
+    existingOpportunity ??
+    (workspace.isLiveBackend && workspace.sessionToken
       ? await createLiveOpportunity(workspace.sessionToken, {
           clientId: client.id,
           createdDate: new Date().toISOString().split("T")[0],
@@ -7374,11 +7392,21 @@ const createSalesSetupWorkflowForWorkspace = async (
           probability: 50,
           stage: OpportunityStage.New,
           title: opportunityTitle,
-        });
-  upsertById(workspace.salesData.opportunities, opportunity);
+        }));
 
+  if (!existingOpportunity) {
+    upsertById(workspace.salesData.opportunities, opportunity);
+  }
+
+  const existingProposal =
+    workspace.salesData.proposals.find(
+      (item) =>
+        item.opportunityId === opportunity.id &&
+        normalizeLookupValue(item.title) === normalizedProposalTitle,
+    ) ?? null;
   const proposal =
-    workspace.isLiveBackend && workspace.sessionToken
+    existingProposal ??
+    (workspace.isLiveBackend && workspace.sessionToken
       ? await createLiveProposal(workspace.sessionToken, {
           clientId: client.id,
           currency: "ZAR",
@@ -7395,36 +7423,45 @@ const createSalesSetupWorkflowForWorkspace = async (
           opportunityId: opportunity.id,
           title: proposalTitle,
           validUntil: proposalValidUntil,
-        });
-  upsertById(workspace.salesData.proposals, proposal);
+        }));
+
+  if (!existingProposal) {
+    upsertById(workspace.salesData.proposals, proposal);
+  }
 
   const mutations: AssistantMutation[] = [
-    {
-      entityId: client.id,
-      entityType: "client",
-      operation: "create",
-      record: client as unknown as Record<string, unknown>,
-      title: client.name,
-    },
-    {
-      entityId: opportunity.id,
-      entityType: "opportunity",
-      operation: "create",
-      record: opportunity as unknown as Record<string, unknown>,
-      title: opportunity.title,
-    },
-    {
-      entityId: proposal.id,
-      entityType: "proposal",
-      operation: "create",
-      record: proposal as unknown as Record<string, unknown>,
-      title: proposal.title,
-    },
-  ];
+    !existingClient
+      ? {
+          entityId: client.id,
+          entityType: "client",
+          operation: "create",
+          record: client as unknown as Record<string, unknown>,
+          title: client.name,
+        }
+      : null,
+    !existingOpportunity
+      ? {
+          entityId: opportunity.id,
+          entityType: "opportunity",
+          operation: "create",
+          record: opportunity as unknown as Record<string, unknown>,
+          title: opportunity.title,
+        }
+      : null,
+    !existingProposal
+      ? {
+          entityId: proposal.id,
+          entityType: "proposal",
+          operation: "create",
+          record: proposal as unknown as Record<string, unknown>,
+          title: proposal.title,
+        }
+      : null,
+  ].filter(Boolean) as AssistantMutation[];
 
   return {
     client,
-    mutation: mutations[0],
+    mutation: mutations[0] ?? null,
     mutations,
     opportunity,
     owner: owner
@@ -7435,7 +7472,7 @@ const createSalesSetupWorkflowForWorkspace = async (
       : null,
     proposal,
     summary:
-      `Created client ${client.name}, opportunity ${opportunity.title}, and proposal ${proposal.title}` +
+      `${existingClient || existingOpportunity || existingProposal ? "Prepared" : "Created"} client ${client.name}, opportunity ${opportunity.title}, and proposal ${proposal.title}` +
       `${owner ? ` and assigned the work to ${owner.name}.` : "."}`,
   };
 };

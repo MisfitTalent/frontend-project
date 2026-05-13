@@ -56,6 +56,7 @@ type AssistantRuntimeMode =
   | null;
 
 const MAX_VISIBLE_MESSAGES = 12;
+const ASSISTANT_REFRESH_EVENT = "mock-workspace-updated";
 
 const getIntroMessage = (role: UserRole, isScopedClientUser: boolean) =>
   isScopedClientUser
@@ -129,6 +130,22 @@ export function AssistantPanel() {
     : isManagerRole(role)
       ? "Manager scope"
       : `${getUserRoleLabel(role)} scope`;
+
+  const dispatchWorkspaceRefresh = useEffectEvent(
+    (mutations: NonNullable<AssistantMessage["mutations"]>) => {
+      const emit = () => {
+        window.dispatchEvent(
+          new CustomEvent(ASSISTANT_REFRESH_EVENT, {
+            detail: mutations,
+          }),
+        );
+      };
+
+      emit();
+      window.setTimeout(emit, 300);
+      window.setTimeout(emit, 1200);
+    },
+  );
 
   const resetConversation = () => {
     setDraft("");
@@ -342,11 +359,7 @@ export function AssistantPanel() {
       );
 
       if ((payload.mutations?.length ?? 0) > 0) {
-        window.dispatchEvent(
-          new CustomEvent("mock-workspace-updated", {
-            detail: payload.mutations,
-          }),
-        );
+        dispatchWorkspaceRefresh(payload.mutations);
       }
       setStatusLabel(getResponseStatusLabel(payload.mode ?? null, payload.scopeLabel));
     } catch (requestError) {
