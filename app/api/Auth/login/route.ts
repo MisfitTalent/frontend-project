@@ -4,7 +4,8 @@ import type { AuthLoginRequestDto } from "@/lib/auth/auth-contract";
 import { shouldUseUpstreamAuth } from "@/lib/server/auth-mode";
 import { createBackendUrl } from "@/lib/server/backend-url";
 
-import { findUserByEmail, toAuthPayload } from "../mock-users";
+import { readMockUsersFromCookies } from "../mock-user-cookie";
+import { findMockUserByEmail, toAuthPayload } from "../mock-users";
 import {
   AUTH_COOKIE_NAME,
   AUTH_COOKIE_OPTIONS,
@@ -18,14 +19,19 @@ const readJsonBody = async (response: Response) => {
     return {} as Record<string, unknown>;
   }
 
-  return JSON.parse(text) as Record<string, unknown>;
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return { message: text } as Record<string, unknown>;
+  }
 };
 
 export const POST = async (request: NextRequest) => {
   const rawBody = await request.text();
   const credentials = JSON.parse(rawBody) as AuthLoginRequestDto;
   const email = credentials.email?.trim().toLowerCase() ?? "";
-  const mockUser = email ? findUserByEmail(email) : undefined;
+  const browserMockUsers = readMockUsersFromCookies(request.cookies);
+  const mockUser = email ? findMockUserByEmail(email, browserMockUsers) : undefined;
 
   if (mockUser && credentials.password === mockUser.password) {
     const payload = toAuthPayload(mockUser);

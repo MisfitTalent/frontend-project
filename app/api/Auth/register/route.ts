@@ -2,10 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { shouldUseUpstreamAuth } from "@/lib/server/auth-mode";
 import { createBackendUrl } from "@/lib/server/backend-url";
+import { provisionMockClientWorkspace } from "@/lib/server/mock-workspace-store";
 
+import { readMockUsersFromCookies, upsertMockUserCookie } from "../mock-user-cookie";
 import {
   registerMockUser,
   toAuthPayload,
+  updateMockUser,
   type MockUserRole,
 } from "../mock-users";
 import {
@@ -21,13 +24,18 @@ const readJsonBody = async (response: Response) => {
     return {} as Record<string, unknown>;
   }
 
-  return JSON.parse(text) as Record<string, unknown>;
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return { message: text } as Record<string, unknown>;
+  }
 };
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
 
   if (!shouldUseUpstreamAuth()) {
+    const browserMockUsers = readMockUsersFromCookies(request.cookies);
     const payload = JSON.parse(rawBody) as {
       email?: unknown;
       firstName?: unknown;
@@ -62,6 +70,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (role !== "Client") {
+      return NextResponse.json(
+        {
+          message:
+            "Public registration is limited to client accounts. Employee accounts must be created by an administrator.",
+        },
+        { status: 403 },
+      );
+    }
+
     const user = registerMockUser({
       email,
       firstName,
@@ -79,11 +97,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const responsePayload = toAuthPayload(user);
+    const resolvedUser =
+      role === "Client"
+        ? (() => {
+            const client = provisionMockClientWorkspace(user, {
+              organizationName: tenantName || user.tenantName,
+            });
+
+            return (
+              updateMockUser(user.email, {
+                clientIds: [client.id],
+              }) ?? user
+            );
+          })()
+        : user;
+    const responsePayload = toAuthPayload(resolvedUser);
     const response = NextResponse.json(
       sanitizeAuthPayload(responsePayload),
       { status: 200 },
     );
+    upsertMockUserCookie(response.cookies, browserMockUsers, resolvedUser);
 
     if (responsePayload.token) {
       response.cookies.set(

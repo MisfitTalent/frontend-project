@@ -18,6 +18,11 @@ export const useStyles = createStyles(({ token, css }) => ({
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   `,
+  helperText: css`
+    color: ${token.colorTextDescription} !important;
+    margin-bottom: ${token.marginLG}px !important;
+    margin-top: -${token.marginSM}px !important;
+  `,
   intro: css`
     display: flex;
     flex-direction: column;

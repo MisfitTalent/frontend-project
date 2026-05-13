@@ -294,6 +294,41 @@ export const createMockContact = (user: IMockUser, input: Omit<IContact, "id">) 
   return clone(contact);
 };
 
+export const provisionMockClientWorkspace = (
+  user: IMockUser,
+  options: {
+    organizationName?: string;
+  } = {},
+) => {
+  const workspace = getWorkspaceState(user.tenantId);
+  const existingClient = workspace.salesData.clients.find(
+    (item) => (user.clientIds ?? []).includes(item.id),
+  );
+
+  if (existingClient) {
+    return clone(existingClient);
+  }
+
+  const organizationName = options.organizationName?.trim() || user.tenantName || `${user.firstName} ${user.lastName}`.trim();
+  const client = createMockClient(user, {
+    industry: "General",
+    name: organizationName,
+  });
+
+  createMockContact(user, {
+    clientId: client.id,
+    createdAt: new Date().toISOString(),
+    email: user.email,
+    firstName: user.firstName,
+    isPrimaryContact: true,
+    lastName: user.lastName,
+    phoneNumber: undefined,
+    position: "Primary contact",
+  });
+
+  return client;
+};
+
 export const updateMockContact = (
   tenantId: string,
   contactId: string,
